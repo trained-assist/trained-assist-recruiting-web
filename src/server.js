@@ -300,24 +300,30 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
                   body = { error: 'idempotency_key_reused' };
                 } else {
                   let operation = inFlight;
+                  const joined = Boolean(operation);
                   if (!operation) {
-                    const promise = executeColdSearch({ profileId: context.profileId, idempotencyKey: `manual:${key}`, request: searchRequest });
+                    const promise = (async () => {
+                      const result = await executeColdSearch({ profileId: context.profileId, idempotencyKey: `manual:${key}`, request: searchRequest });
+                      if (result.status !== 'completed') return { result };
+                      const searchedAt = prior?.searchedAt ?? scheduleClock().toISOString();
+                      manualSearchOperations.set(operationKey, { requestFingerprint, jobId: result.jobId, searchedAt });
+                      const latest = manualSearches.get(manualKey(context.profileId, vacancyId));
+                      if (!latest || searchedAt >= latest.searchedAt) manualSearches.set(manualKey(context.profileId, vacancyId), { jobId: result.jobId, searchedAt });
+                      return { result, searchedAt };
+                    })();
                     operation = { requestFingerprint, promise };
                     manualSearchInFlight.set(operationKey, operation);
                   }
-                  let result;
-                  try { result = await operation.promise; }
-                  catch { result = { status: 'failed', providerError: { code: 'search_outcome_unknown' } }; }
+                  let outcome;
+                  try { outcome = await operation.promise; }
+                  catch { outcome = { result: { status: 'failed', providerError: { code: 'search_outcome_unknown' } } }; }
                   finally { if (manualSearchInFlight.get(operationKey) === operation) manualSearchInFlight.delete(operationKey); }
+                  const { result, searchedAt } = outcome;
                   if (result.status !== 'completed') {
                     status = result.providerError?.code === 'idempotency_conflict' || result.providerError?.code === 'stale_search_criteria' ? 409 : result.phase === 'pre_dispatch' && result.providerError?.code === 'job_capacity_reached' ? 429 : 503;
                     body = { error: result.providerError?.code ?? 'search_incomplete', jobId: result.jobId ?? null };
                   } else {
-                    const searchedAt = prior?.searchedAt ?? scheduleClock().toISOString();
-                    manualSearchOperations.set(operationKey, { requestFingerprint, jobId: result.jobId, searchedAt });
-                    const latest = manualSearches.get(manualKey(context.profileId, vacancyId));
-                    if (!latest || searchedAt >= latest.searchedAt) manualSearches.set(manualKey(context.profileId, vacancyId), { jobId: result.jobId, searchedAt });
-                    body = { ok: true, jobId: result.jobId, resultCount: result.resultCount, sourceRevision: result.sourceRevision, searchedAt, replayed: !result.created };
+                    body = { ok: true, jobId: result.jobId, resultCount: result.resultCount, sourceRevision: result.sourceRevision, searchedAt, replayed: joined || !result.created };
                   }
                 }
               }

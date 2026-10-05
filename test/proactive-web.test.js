@@ -105,3 +105,44 @@ test('proactive page and API return a typed error when trusted profile lookup fa
     }
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
+
+test('concurrent manual retries share one finalized job and one search time', async () => {
+  let current = new Date('2026-10-06T00:00:00.000Z');
+  let providerCalls = 0;
+  let enteredResolve;
+  let releaseResolve;
+  const entered = new Promise(resolve => { enteredResolve = resolve; });
+  const release = new Promise(resolve => { releaseResolve = resolve; });
+  const server = createRecruitingServer({
+    resolveTrustedProfileContext: () => ({ profileId: 'profile_demo_001', scopes: ['recruiting.candidateSearch'] }),
+    resolveCurrentSearchCriteriaRevision: () => request.criteriaRevision,
+    resolveScheduledSearchRequest: async () => request,
+    candidateSearchProvider: async input => {
+      providerCalls++;
+      if (providerCalls === 1) { enteredResolve(); await release; }
+      return syntheticColdSearchProvider(input);
+    },
+    scheduleClock: () => { const at = new Date(current); current = new Date(current.getTime() + 1_000); return at; }
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const submit = () => fetch(`${base}/api/hh/proactive/search`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'concurrent-manual-001' },
+    body: JSON.stringify({ vacancy_id: vacancyId })
+  });
+  try {
+    const first = submit();
+    await entered;
+    const second = submit();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    releaseResolve();
+    const [a, b] = await Promise.all([first, second]);
+    assert.equal(a.status, 200);
+    assert.equal(b.status, 200);
+    const [firstBody, secondBody] = await Promise.all([a.json(), b.json()]);
+    assert.equal(firstBody.jobId, secondBody.jobId);
+    assert.equal(firstBody.searchedAt, secondBody.searchedAt, 'one completion timestamp is stored for all joined requests');
+    assert.deepEqual([firstBody.replayed, secondBody.replayed], [false, true]);
+    assert.equal(providerCalls, 2, 'one two-page provider search runs');
+  } finally { releaseResolve(); await new Promise(resolve => server.close(resolve)); }
+});
