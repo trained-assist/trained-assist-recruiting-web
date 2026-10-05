@@ -307,6 +307,14 @@ test('R-04 synthetic report draft lifecycle enforces client fields, review, publ
   let publishAttempts = 0;
   let adapterPublishCalls = 0;
   let adapterRevokeCalls = 0;
+  const publishEffects = new Map();
+  const revokeEffects = new Map();
+  let releasePublish;
+  let publishEntered;
+  let releaseRevoke;
+  let revokeEntered;
+  let holdPublish = false;
+  let holdRevoke = false;
   const publicationAdapter = {
     async publish(input) {
       adapterPublishCalls++;
@@ -316,10 +324,31 @@ test('R-04 synthetic report draft lifecycle enforces client fields, review, publ
         assert.equal(JSON.stringify(input).includes(marker), false, `internal source leaked to publication adapter: ${marker}`);
       }
       publishAttempts++;
+      let effect = publishEffects.get(input.operationId);
+      if (!effect) {
+        effect = { receiptId: 'publication_demo_abcdef123456' };
+        publishEffects.set(input.operationId, effect);
+      }
       if (publishAttempts === 1) throw new Error('private policy/provider diagnostic');
-      return { allowed: true, receiptId: 'publication_demo_abcdef123456' };
+      if (holdPublish) {
+        holdPublish = false;
+        publishEntered();
+        await new Promise(resolve => { releasePublish = resolve; });
+      }
+      return { allowed: true, receiptId: effect.receiptId };
     },
-    async revoke(input) { adapterRevokeCalls++; assert.equal(input.receiptId, 'publication_demo_abcdef123456'); return { allowed: true }; }
+    async revoke(input) {
+      adapterRevokeCalls++;
+      assert.equal(input.receiptId, 'publication_demo_abcdef123456');
+      let effect = revokeEffects.get(input.operationId);
+      if (!effect) { effect = { allowed: true }; revokeEffects.set(input.operationId, effect); }
+      if (holdRevoke) {
+        holdRevoke = false;
+        revokeEntered();
+        await new Promise(resolve => { releaseRevoke = resolve; });
+      }
+      return effect;
+    }
   };
   const authorizedServer = createRecruitingServer({
     resolveTrustedProfileContext: resolveReportTestContext,
@@ -341,29 +370,55 @@ test('R-04 synthetic report draft lifecycle enforces client fields, review, publ
     const publishAction = { expectedReportRevision: reviewed.reportRevision };
     const failedPublish = await fetch(`${reportUrl}/publish`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: JSON.stringify(publishAction) });
     assert.equal(failedPublish.status, 503);
-    assert.deepEqual((await failedPublish.json()).error, 'publication_unavailable');
+    const unknownPublish = await failedPublish.json();
+    assert.equal(unknownPublish.error, 'publication_outcome_unknown');
+    assert.match(unknownPublish.operationId, /^reportop_demo_[a-f0-9]{16}$/);
     const keptDraft = await (await fetch(reportUrl, { headers: { 'X-Test-Principal': 'profile_demo_001' } })).json();
     assert.equal(keptDraft.status, 'draft');
     assert.equal(keptDraft.reviewState, 'approved');
     assert.equal(keptDraft.reportRevision, reviewed.reportRevision, 'publication failure keeps approved draft intact');
 
-    const successResponse = await fetch(`${reportUrl}/publish`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: JSON.stringify(publishAction) });
+    holdPublish = true;
+    const publishStarted = new Promise(resolve => { publishEntered = resolve; });
+    const publishBody = JSON.stringify(publishAction);
+    const firstPublish = fetch(`${reportUrl}/publish`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: publishBody });
+    await publishStarted;
+    const secondPublish = fetch(`${reportUrl}/publish`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: publishBody });
+    await new Promise(resolve => setImmediate(resolve));
+    releasePublish();
+    const [successResponse, coalescedPublishResponse] = await Promise.all([firstPublish, secondPublish]);
     const published = await successResponse.json();
+    const coalescedPublished = await coalescedPublishResponse.json();
     assert.equal(successResponse.status, 200);
+    assert.equal(coalescedPublishResponse.status, 200);
     assert.equal(validateDraft(published), true, JSON.stringify(validateDraft.errors));
     assert.equal(published.status, 'published');
     assert.equal(published.reportRef, created.reportRef);
     assert.equal(published.publicationReceipt, 'publication_demo_abcdef123456');
-    assert.equal(adapterPublishCalls, 2);
+    assert.match(published.publicationOperationId, /^reportop_demo_[a-f0-9]{16}$/);
+    assert.deepEqual(coalescedPublished, published);
+    assert.equal(adapterPublishCalls, 2, 'the failed attempt plus one coalesced concurrent adapter call');
     assert.equal((await fetch(reportUrl, { headers: { 'X-Test-Principal': 'profile_demo_002' } })).status, 404);
     assert.equal((await fetch(`http://127.0.0.1:${authorizedServer.address().port}/api/v1/reports/${created.reportRef}`)).status, 404, 'there is no public sharing endpoint');
     const noRevokeScope = await fetch(`${reportUrl}/revoke`, { method: 'POST', headers: jsonHeaders('profile_demo_001_no_revoke'), body: JSON.stringify({ expectedReportRevision: published.reportRevision }) });
     assert.equal(noRevokeScope.status, 403);
-    const revokedResponse = await fetch(`${reportUrl}/revoke`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: JSON.stringify({ expectedReportRevision: published.reportRevision }) });
+    holdRevoke = true;
+    const revokeEnteredPromise = new Promise(resolve => { revokeEntered = resolve; });
+    const revokeBody = JSON.stringify({ expectedReportRevision: published.reportRevision });
+    const firstRevoke = fetch(`${reportUrl}/revoke`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: revokeBody });
+    await revokeEnteredPromise;
+    const secondRevoke = fetch(`${reportUrl}/revoke`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: revokeBody });
+    await new Promise(resolve => setImmediate(resolve));
+    releaseRevoke();
+    const [revokedResponse, coalescedRevokeResponse] = await Promise.all([firstRevoke, secondRevoke]);
     const revoked = await revokedResponse.json();
+    const coalescedRevoked = await coalescedRevokeResponse.json();
     assert.equal(revokedResponse.status, 200);
+    assert.equal(coalescedRevokeResponse.status, 200);
     assert.equal(revoked.status, 'revoked');
     assert.equal(revoked.reportRef, created.reportRef);
+    assert.match(revoked.revocationOperationId, /^reportop_demo_[a-f0-9]{16}$/);
+    assert.deepEqual(coalescedRevoked, revoked);
     assert.equal(adapterRevokeCalls, 1);
     assert.equal((await fetch(`${reportUrl}/preview`, { headers: { 'X-Test-Principal': 'profile_demo_001' } })).status, 410, 'revoked report access is denied');
   } finally { await new Promise(resolve => authorizedServer.close(resolve)); }

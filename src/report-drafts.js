@@ -3,6 +3,7 @@ import { findReportSource, findReportVacancy, projectClientView, renderClientRep
 
 const revisionOf = number => `report-demo-r${number}`;
 const hash = value => createHash('sha256').update(value).digest('hex');
+const operationIdOf = (action, reportRef, reportRevision) => `reportop_demo_${hash(JSON.stringify([action, reportRef, reportRevision])).slice(0, 16)}`;
 const deniedPublicationAdapter = {
   async publish() { return { allowed: false }; },
   async revoke() { return { allowed: false }; }
@@ -15,6 +16,8 @@ function publicReport(report) {
     sourceRevision: report.sourceRevision, reportRevision: revisionOf(report.revision),
     status: report.status, reviewState: report.reviewState,
     publicationReceipt: report.publication?.receiptId ?? null,
+    publicationOperationId: report.publication?.operationId ?? null,
+    revocationOperationId: report.publication?.revocationOperationId ?? null,
     clientFields: structuredClone(report.clientFields)
   };
 }
@@ -22,6 +25,21 @@ function publicReport(report) {
 export function createReportDrafts({ publicationAdapter = deniedPublicationAdapter } = {}) {
   const reports = new Map();
   const idempotency = new Map();
+  const inFlightOperations = new Map();
+  const completedOperations = new Map();
+
+  async function runOperation(operationId, operation) {
+    if (completedOperations.has(operationId)) return structuredClone(completedOperations.get(operationId));
+    if (inFlightOperations.has(operationId)) return inFlightOperations.get(operationId);
+    const pending = (async () => {
+      const result = await operation();
+      if (result.kind === 'published' || result.kind === 'revoked') completedOperations.set(operationId, structuredClone(result));
+      return result;
+    })();
+    inFlightOperations.set(operationId, pending);
+    try { return await pending; }
+    finally { if (inFlightOperations.get(operationId) === pending) inFlightOperations.delete(operationId); }
+  }
 
   return {
     create(profileId, key, { candidateId, vacancyId, expectedSourceRevision }, currentSourceRevision) {
@@ -81,41 +99,51 @@ export function createReportDrafts({ publicationAdapter = deniedPublicationAdapt
     async publish(profileId, reportRef, expectedReportRevision) {
       const report = reports.get(reportRef);
       if (!report || report.profileId !== profileId) return { kind: 'not_found' };
+      const operationId = operationIdOf('publish', reportRef, expectedReportRevision);
+      if (completedOperations.has(operationId)) return structuredClone(completedOperations.get(operationId));
+      if (inFlightOperations.has(operationId)) return inFlightOperations.get(operationId);
       if (report.status !== 'draft') return { kind: 'not_publishable', report: publicReport(report) };
       if (expectedReportRevision !== revisionOf(report.revision)) return { kind: 'stale_report', currentReportRevision: revisionOf(report.revision) };
       if (report.reviewState !== 'approved') return { kind: 'review_required', report: publicReport(report) };
-      let decision;
-      try {
-        decision = await publicationAdapter.publish({
-          profileId, reportRef, candidateId: report.candidateId, vacancyId: report.vacancyId,
-          audience: 'client', sourceRevision: report.sourceRevision,
-          reportRevision: revisionOf(report.revision), clientFields: structuredClone(report.clientFields)
-        });
-      } catch { return { kind: 'publication_unavailable', report: publicReport(report) }; }
-      if (!decision || decision.allowed !== true) return { kind: 'publication_denied', report: publicReport(report) };
-      if (typeof decision.receiptId !== 'string' || !/^publication_demo_[a-f0-9]{12}$/.test(decision.receiptId)) return { kind: 'publication_invalid_receipt', report: publicReport(report) };
-      report.status = 'published';
-      report.publication = { receiptId: decision.receiptId, publishedRevision: revisionOf(report.revision), state: 'published' };
-      report.revision++;
-      return { kind: 'published', report: publicReport(report) };
+      return runOperation(operationId, async () => {
+        let decision;
+        try {
+          decision = await publicationAdapter.publish({
+            operationId, profileId, reportRef, candidateId: report.candidateId, vacancyId: report.vacancyId,
+            audience: 'client', sourceRevision: report.sourceRevision,
+            reportRevision: revisionOf(report.revision), clientFields: structuredClone(report.clientFields)
+          });
+        } catch { return { kind: 'publication_outcome_unknown', operationId, report: publicReport(report) }; }
+        if (!decision || decision.allowed !== true) return { kind: 'publication_denied', operationId, report: publicReport(report) };
+        if (typeof decision.receiptId !== 'string' || !/^publication_demo_[a-f0-9]{12}$/.test(decision.receiptId)) return { kind: 'publication_outcome_unknown', operationId, report: publicReport(report) };
+        report.status = 'published';
+        report.publication = { receiptId: decision.receiptId, operationId, publishedRevision: revisionOf(report.revision), state: 'published' };
+        report.revision++;
+        return { kind: 'published', operationId, report: publicReport(report) };
+      });
     },
     async revoke(profileId, reportRef, expectedReportRevision) {
       const report = reports.get(reportRef);
       if (!report || report.profileId !== profileId) return { kind: 'not_found' };
+      const operationId = operationIdOf('revoke', reportRef, expectedReportRevision);
+      if (completedOperations.has(operationId)) return structuredClone(completedOperations.get(operationId));
+      if (inFlightOperations.has(operationId)) return inFlightOperations.get(operationId);
       if (report.status !== 'published' || !report.publication) return { kind: 'not_revokeable', report: publicReport(report) };
       if (expectedReportRevision !== revisionOf(report.revision)) return { kind: 'stale_report', currentReportRevision: revisionOf(report.revision) };
-      let decision;
-      try {
-        decision = await publicationAdapter.revoke({
-          profileId, reportRef, receiptId: report.publication.receiptId,
-          publishedRevision: report.publication.publishedRevision
-        });
-      } catch { return { kind: 'revocation_unavailable', report: publicReport(report) }; }
-      if (!decision || decision.allowed !== true) return { kind: 'revocation_denied', report: publicReport(report) };
-      report.status = 'revoked';
-      report.publication = { ...report.publication, state: 'revoked' };
-      report.revision++;
-      return { kind: 'revoked', report: publicReport(report) };
+      return runOperation(operationId, async () => {
+        let decision;
+        try {
+          decision = await publicationAdapter.revoke({
+            operationId, profileId, reportRef, receiptId: report.publication.receiptId,
+            publishedRevision: report.publication.publishedRevision
+          });
+        } catch { return { kind: 'revocation_outcome_unknown', operationId, report: publicReport(report) }; }
+        if (!decision || decision.allowed !== true) return { kind: 'revocation_denied', operationId, report: publicReport(report) };
+        report.status = 'revoked';
+        report.publication = { ...report.publication, revocationOperationId: operationId, state: 'revoked' };
+        report.revision++;
+        return { kind: 'revoked', operationId, report: publicReport(report) };
+      });
     },
     preview(profileId, reportRef) {
       const result = this.get(profileId, reportRef);

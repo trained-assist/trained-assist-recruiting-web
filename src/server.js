@@ -264,7 +264,7 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
                 if (result.kind === 'stale_report') { status = 409; body = { error: 'stale_report_revision', currentReportRevision: result.currentReportRevision }; }
                 else if (result.kind === 'not_revokeable') { status = 409; body = { error: 'report_not_revokeable', report: result.report }; }
                 else if (result.kind === 'revocation_denied') { status = 403; body = { error: 'revocation_denied', report: result.report }; }
-                else if (result.kind === 'revocation_unavailable') { status = 503; body = { error: 'revocation_unavailable', report: result.report }; }
+                else if (result.kind === 'revocation_outcome_unknown') { status = 503; body = { error: 'revocation_outcome_unknown', operationId: result.operationId, report: result.report }; }
                 else { body = result.report; }
               }
             }
@@ -326,8 +326,7 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
                   if (published.kind === 'stale_report') { status = 409; body = { error: 'stale_report_revision', currentReportRevision: published.currentReportRevision }; }
                   else if (published.kind === 'review_required') { status = 409; body = { error: 'report_review_required', report: published.report }; }
                   else if (published.kind === 'publication_denied') { status = 403; body = { error: 'publication_denied', report: published.report }; }
-                  else if (published.kind === 'publication_unavailable') { status = 503; body = { error: 'publication_unavailable', report: published.report }; }
-                  else if (published.kind === 'publication_invalid_receipt') { status = 502; body = { error: 'publication_invalid_receipt', report: published.report }; }
+                  else if (published.kind === 'publication_outcome_unknown') { status = 503; body = { error: 'publication_outcome_unknown', operationId: published.operationId, report: published.report }; }
                   else if (published.kind === 'not_publishable') { status = 409; body = { error: 'report_not_publishable', report: published.report }; }
                   else body = published.report;
                 }
