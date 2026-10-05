@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
 const safeId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
-const jobIdFor = occurrenceId => `hh_occurrence_${createHash('sha256').update(occurrenceId).digest('hex').slice(0, 32)}`;
+export const hhJobIdForOccurrence = occurrenceId => `hh_occurrence_${createHash('sha256').update(occurrenceId).digest('hex').slice(0, 32)}`;
 
 // The schedule repository owns the atomic due claim and occurrence fence. The
 // search runner owns the candidate/seen/snapshot transaction. There is no
@@ -20,7 +20,7 @@ export function createDurableHhOccurrenceWorker({ scheduleRepository, loadSearch
     const claimed = scheduleRepository.claimDueOccurrences({ now, workerId, leaseUntil });
     const totals = { claimed: claimed.length, completed: 0, rejected: 0, unknown: 0 };
     for (const { schedule, occurrence } of claimed) {
-      const jobId = jobIdFor(occurrence.occurrenceId);
+      const jobId = hhJobIdForOccurrence(occurrence.occurrenceId);
       const context = { profileId: schedule.profileId, scopes: ['recruiting.candidateSearch'] };
       const finish = result => scheduleRepository.finishOccurrence(occurrence.occurrenceId, workerId, result, clock().toISOString());
       let plan;

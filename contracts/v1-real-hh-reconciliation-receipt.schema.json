@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-real-hh-reconciliation-receipt.schema.json",
+  "title": "Offline real-HH occurrence reconciliation receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["receiptVersion", "command", "priorStatus", "priorErrorCode", "searchedAt", "reconciledAt", "resultRevision", "candidateCount", "materialized"],
+  "properties": {
+    "receiptVersion": { "const": "real-hh-v1" },
+    "command": {
+      "type": "object", "additionalProperties": false,
+      "required": ["operatorId", "profileId", "vacancyId", "occurrenceId", "jobId", "operationId", "expectedCriteriaRevision", "expectedSourceRevision", "expectedResultRevision", "reasonCode"],
+      "properties": {
+        "operatorId": { "$ref": "#/$defs/id" }, "profileId": { "$ref": "#/$defs/id" },
+        "vacancyId": { "$ref": "#/$defs/id" }, "occurrenceId": { "$ref": "#/$defs/id" },
+        "jobId": { "$ref": "#/$defs/id" }, "operationId": { "$ref": "#/$defs/id" },
+        "expectedCriteriaRevision": { "type": "string", "minLength": 1 },
+        "expectedSourceRevision": { "type": "string", "minLength": 1 },
+        "expectedResultRevision": { "type": "string", "pattern": "^[a-f0-9]{24}$" },
+        "reasonCode": { "enum": ["lease_expired_after_completion", "operator_verified"] }
+      }
+    },
+    "priorStatus": { "const": "outcome_unknown" },
+    "priorErrorCode": { "type": ["string", "null"] },
+    "searchedAt": { "type": "string" },
+    "reconciledAt": { "type": "string" },
+    "resultRevision": { "type": "string", "pattern": "^[a-f0-9]{24}$" },
+    "candidateCount": { "type": "integer", "minimum": 0 },
+    "materialized": { "const": false }
+  },
+  "$defs": { "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" } }
+}
