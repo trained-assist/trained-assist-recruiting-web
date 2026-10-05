@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/trained-assist/trained-assist-recruiting-web/contracts/v1-real-hh-assessment.schema.json",
+  "title": "R-03 HH background ATS assessment v1",
+  "type": "object",
+  "required": ["atsScore", "atsTag", "knockout"],
+  "properties": {
+    "atsScore": { "type": "number", "minimum": 0, "maximum": 10 },
+    "atsTag": { "enum": ["PASS", "REVIEW", "WEAK"] },
+    "knockout": {
+      "type": "object",
+      "required": ["status", "criteria"],
+      "properties": {
+        "status": { "enum": ["passed", "failed"] },
+        "criteria": { "type": "array", "maxItems": 20, "items": { "type": "string", "maxLength": 200 } }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
