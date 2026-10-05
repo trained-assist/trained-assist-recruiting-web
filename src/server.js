@@ -7,6 +7,7 @@ import { createClientReportPreview, findReportSource, findReportVacancy } from '
 import { createReportDrafts } from './report-drafts.js';
 import { evaluateSyntheticResponse, getResponseScenario, makeEvaluationId, validEvaluatorOutput } from './response-evaluation.js';
 import { createCandidateSearchJobs } from './candidate-search-jobs.js';
+import { createColdSearchScheduleHandler, InMemoryColdSearchScheduleRepository } from './cold-search-schedules.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
@@ -138,7 +139,7 @@ function validReportAction(value) {
   return isPlainObject(value) && Object.keys(value).sort().join(',') === 'expectedReportRevision' && isReportRevision(value.expectedReportRevision);
 }
 
-export function createRecruitingServer({ resolveTrustedProfileContext = () => null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, resolveCurrentSearchCriteriaRevision = () => null, maxCandidateSearchJobs = 100, publicationAdapter, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
+export function createRecruitingServer({ resolveTrustedProfileContext = () => null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), scheduleClock = () => new Date(), maxCandidateSearchJobs = 100, publicationAdapter, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
   const candidateSearchJobs = createCandidateSearchJobs({ provider: candidateSearchProvider, maxJobs: maxCandidateSearchJobs });
   const reportDrafts = createReportDrafts({ publicationAdapter });
   const currentSearchCriteriaRevision = async (context, vacancyId) => {
@@ -153,7 +154,29 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
       return typeof revision === 'string' && /^synthetic-[a-z0-9-]+-r[0-9]+$/.test(revision) ? revision : null;
     } catch { return null; }
   };
-  return createServer(async (req, res) => {
+  const startCandidateSearch = (profileId, key, request) => candidateSearchJobs.start(profileId, key, request);
+  const coldSearchSchedules = createColdSearchScheduleHandler({
+    repository: candidateSearchScheduleRepository,
+    clock: scheduleClock,
+    resolveSearchRequest: resolveScheduledSearchRequest,
+    executeSearch: async ({ profileId, idempotencyKey, request }) => {
+      const context = { profileId, scopes: ['recruiting.candidateSearch'] };
+      if (await currentSearchCriteriaRevision(context, request.vacancyId) !== request.criteriaRevision) return { status: 'failed', providerError: { code: 'stale_search_criteria' } };
+      const started = await startCandidateSearch(profileId, idempotencyKey, request);
+      if (started.conflict || started.capacityExceeded) return { status: 'failed', providerError: { code: started.capacityExceeded ? 'job_capacity_reached' : 'idempotency_conflict' } };
+      let job = started.job;
+      for (let page = 0; page < 4 && job.status !== 'completed'; page++) {
+        if (job.status !== 'partial' || !job.canResume) break;
+        const resumed = await candidateSearchJobs.resume(profileId, job.jobId);
+        if (resumed.conflict) break;
+        job = resumed.job;
+      }
+      if (job.status !== 'completed') return { ...job, status: 'failed', providerError: job.providerError ?? { code: 'scheduled_search_incomplete' } };
+      const snapshot = candidateSearchJobs.results(profileId, job.jobId, { limit: 200, cursor: null });
+      return { ...job, ...snapshot };
+    }
+  });
+  const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const path = url.pathname;
     const isCandidateSearchPath = path === '/api/v1/ui/candidate-searches' || /^\/api\/v1\/ui\/candidate-searches\/[^/]+(?:\/results|\/resume)?$/.test(path);
@@ -382,7 +405,7 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
               status = 409;
               body = { domainApiVersion: 'v1', error: 'stale_search_criteria', requestedRevision: request.criteriaRevision, currentRevision };
             } else {
-              const started = await candidateSearchJobs.start(context.profileId, key, request);
+              const started = await startCandidateSearch(context.profileId, key, request);
               if (started.conflict) {
                 status = 409;
                 body = { error: 'idempotency_key_reused' };
@@ -576,6 +599,11 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
     if (req.method === 'HEAD') return res.end();
     res.end(typeof body === 'string' ? body : JSON.stringify(body));
   });
+  // Local event entrypoint for the minute worker and offline harness. It is not
+  // an HTTP route or agent capability; production requires a durable repository.
+  server.coldSearchSchedules = coldSearchSchedules;
+  server.coldSearchScheduleRepository = candidateSearchScheduleRepository;
+  return server;
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
