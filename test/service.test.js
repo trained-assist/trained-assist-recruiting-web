@@ -315,6 +315,8 @@ test('R-04 synthetic report draft lifecycle enforces client fields, review, publ
   let revokeEntered;
   let holdPublish = false;
   let holdRevoke = false;
+  let invalidReceiptNext = false;
+  let throwRevokeNext = false;
   const publicationAdapter = {
     async publish(input) {
       adapterPublishCalls++;
@@ -335,6 +337,7 @@ test('R-04 synthetic report draft lifecycle enforces client fields, review, publ
         publishEntered();
         await new Promise(resolve => { releasePublish = resolve; });
       }
+      if (invalidReceiptNext) { invalidReceiptNext = false; return { allowed: true, receiptId: 'not-a-receipt' }; }
       return { allowed: true, receiptId: effect.receiptId };
     },
     async revoke(input) {
@@ -342,6 +345,7 @@ test('R-04 synthetic report draft lifecycle enforces client fields, review, publ
       assert.equal(input.receiptId, 'publication_demo_abcdef123456');
       let effect = revokeEffects.get(input.operationId);
       if (!effect) { effect = { allowed: true }; revokeEffects.set(input.operationId, effect); }
+      if (throwRevokeNext) { throwRevokeNext = false; throw new Error('private revoke diagnostic'); }
       if (holdRevoke) {
         holdRevoke = false;
         revokeEntered();
@@ -359,7 +363,7 @@ test('R-04 synthetic report draft lifecycle enforces client fields, review, publ
   try {
     const base = `http://127.0.0.1:${authorizedServer.address().port}/api/v1/ui/report-drafts`;
     const createdResponse = await createDraft(base, startRequest, 'r04-authorized-publish');
-    const created = await createdResponse.json();
+    let created = await createdResponse.json();
     assert.equal(createdResponse.status, 201);
     const reportUrl = `${base}/${created.reportRef}`;
     const unreviewedPublish = await fetch(`${reportUrl}/publish`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: JSON.stringify({ expectedReportRevision: created.reportRevision }) });
@@ -377,13 +381,35 @@ test('R-04 synthetic report draft lifecycle enforces client fields, review, publ
     assert.equal(keptDraft.status, 'draft');
     assert.equal(keptDraft.reviewState, 'approved');
     assert.equal(keptDraft.reportRevision, reviewed.reportRevision, 'publication failure keeps approved draft intact');
+    const retryUnknown = await fetch(`${reportUrl}/publish`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: JSON.stringify(publishAction) });
+    assert.equal(retryUnknown.status, 503);
+    assert.equal((await retryUnknown.json()).operationId, unknownPublish.operationId);
+    assert.equal(adapterPublishCalls, 1, 'uncertain publish is not sent to the adapter again before reconciliation');
+    const editWhileUnknown = await fetch(reportUrl, { method: 'PATCH', headers: jsonHeaders('profile_demo_001'), body: JSON.stringify({ expectedReportRevision: reviewed.reportRevision, clientFields: { summary: 'must remain unchanged' } }) });
+    assert.equal(editWhileUnknown.status, 409);
+    assert.equal((await editWhileUnknown.json()).error, 'report_operation_outcome_unknown');
+
+    const concurrentCreatedResponse = await createDraft(base, startRequest, 'r04-authorized-concurrent');
+    created = await concurrentCreatedResponse.json();
+    const reportUrlForConcurrent = `${base}/${created.reportRef}`;
+    const concurrentReviewedResponse = await fetch(`${reportUrlForConcurrent}/review`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: JSON.stringify({ expectedReportRevision: created.reportRevision, decision: 'approved' }) });
+    const concurrentReviewed = await concurrentReviewedResponse.json();
+    const concurrentPublishAction = { expectedReportRevision: concurrentReviewed.reportRevision };
 
     holdPublish = true;
     const publishStarted = new Promise(resolve => { publishEntered = resolve; });
-    const publishBody = JSON.stringify(publishAction);
-    const firstPublish = fetch(`${reportUrl}/publish`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: publishBody });
+    const publishBody = JSON.stringify(concurrentPublishAction);
+    const firstPublish = fetch(`${reportUrlForConcurrent}/publish`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: publishBody });
     await publishStarted;
-    const secondPublish = fetch(`${reportUrl}/publish`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: publishBody });
+    const concurrentEdit = fetch(reportUrlForConcurrent, { method: 'PATCH', headers: jsonHeaders('profile_demo_001'), body: JSON.stringify({ expectedReportRevision: concurrentReviewed.reportRevision, clientFields: { summary: 'racing edit' } }) });
+    const concurrentReview = fetch(`${reportUrlForConcurrent}/review`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: JSON.stringify({ expectedReportRevision: concurrentReviewed.reportRevision, decision: 'changes_requested' }) });
+    const editRaceResult = await concurrentEdit;
+    const reviewRaceResult = await concurrentReview;
+    assert.equal(editRaceResult.status, 409);
+    assert.equal(reviewRaceResult.status, 409);
+    assert.equal((await editRaceResult.json()).error, 'report_operation_in_progress');
+    assert.equal((await reviewRaceResult.json()).error, 'report_operation_in_progress');
+    const secondPublish = fetch(`${reportUrlForConcurrent}/publish`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: publishBody });
     await new Promise(resolve => setImmediate(resolve));
     releasePublish();
     const [successResponse, coalescedPublishResponse] = await Promise.all([firstPublish, secondPublish]);
@@ -400,14 +426,14 @@ test('R-04 synthetic report draft lifecycle enforces client fields, review, publ
     assert.equal(adapterPublishCalls, 2, 'the failed attempt plus one coalesced concurrent adapter call');
     assert.equal((await fetch(reportUrl, { headers: { 'X-Test-Principal': 'profile_demo_002' } })).status, 404);
     assert.equal((await fetch(`http://127.0.0.1:${authorizedServer.address().port}/api/v1/reports/${created.reportRef}`)).status, 404, 'there is no public sharing endpoint');
-    const noRevokeScope = await fetch(`${reportUrl}/revoke`, { method: 'POST', headers: jsonHeaders('profile_demo_001_no_revoke'), body: JSON.stringify({ expectedReportRevision: published.reportRevision }) });
+    const noRevokeScope = await fetch(`${reportUrlForConcurrent}/revoke`, { method: 'POST', headers: jsonHeaders('profile_demo_001_no_revoke'), body: JSON.stringify({ expectedReportRevision: published.reportRevision }) });
     assert.equal(noRevokeScope.status, 403);
     holdRevoke = true;
     const revokeEnteredPromise = new Promise(resolve => { revokeEntered = resolve; });
     const revokeBody = JSON.stringify({ expectedReportRevision: published.reportRevision });
-    const firstRevoke = fetch(`${reportUrl}/revoke`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: revokeBody });
+    const firstRevoke = fetch(`${reportUrlForConcurrent}/revoke`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: revokeBody });
     await revokeEnteredPromise;
-    const secondRevoke = fetch(`${reportUrl}/revoke`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: revokeBody });
+    const secondRevoke = fetch(`${reportUrlForConcurrent}/revoke`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: revokeBody });
     await new Promise(resolve => setImmediate(resolve));
     releaseRevoke();
     const [revokedResponse, coalescedRevokeResponse] = await Promise.all([firstRevoke, secondRevoke]);
@@ -420,7 +446,33 @@ test('R-04 synthetic report draft lifecycle enforces client fields, review, publ
     assert.match(revoked.revocationOperationId, /^reportop_demo_[a-f0-9]{16}$/);
     assert.deepEqual(coalescedRevoked, revoked);
     assert.equal(adapterRevokeCalls, 1);
-    assert.equal((await fetch(`${reportUrl}/preview`, { headers: { 'X-Test-Principal': 'profile_demo_001' } })).status, 410, 'revoked report access is denied');
+    assert.equal((await fetch(`${reportUrlForConcurrent}/preview`, { headers: { 'X-Test-Principal': 'profile_demo_001' } })).status, 410, 'revoked report access is denied');
+
+    const invalidReceiptCreated = await (await createDraft(base, startRequest, 'r04-invalid-receipt')).json();
+    const invalidReceiptUrl = `${base}/${invalidReceiptCreated.reportRef}`;
+    const invalidReceiptReviewed = await (await fetch(`${invalidReceiptUrl}/review`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: JSON.stringify({ expectedReportRevision: invalidReceiptCreated.reportRevision, decision: 'approved' }) })).json();
+    invalidReceiptNext = true;
+    const invalidReceiptRequest = JSON.stringify({ expectedReportRevision: invalidReceiptReviewed.reportRevision });
+    const invalidReceiptResponse = await fetch(`${invalidReceiptUrl}/publish`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: invalidReceiptRequest });
+    assert.equal(invalidReceiptResponse.status, 503);
+    assert.equal((await invalidReceiptResponse.json()).error, 'publication_outcome_unknown');
+    const callsAfterInvalidReceipt = adapterPublishCalls;
+    assert.equal((await fetch(`${invalidReceiptUrl}/publish`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: invalidReceiptRequest })).status, 503);
+    assert.equal(adapterPublishCalls, callsAfterInvalidReceipt, 'invalid receipt is uncertain and is not retried automatically');
+
+    const uncertainRevokeCreated = await (await createDraft(base, startRequest, 'r04-uncertain-revoke')).json();
+    const uncertainRevokeUrl = `${base}/${uncertainRevokeCreated.reportRef}`;
+    const uncertainRevokeReviewed = await (await fetch(`${uncertainRevokeUrl}/review`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: JSON.stringify({ expectedReportRevision: uncertainRevokeCreated.reportRevision, decision: 'approved' }) })).json();
+    const uncertainRevokePublished = await (await fetch(`${uncertainRevokeUrl}/publish`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: JSON.stringify({ expectedReportRevision: uncertainRevokeReviewed.reportRevision }) })).json();
+    throwRevokeNext = true;
+    const uncertainRevokeRequest = JSON.stringify({ expectedReportRevision: uncertainRevokePublished.reportRevision });
+    const uncertainRevokeResponse = await fetch(`${uncertainRevokeUrl}/revoke`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: uncertainRevokeRequest });
+    assert.equal(uncertainRevokeResponse.status, 503);
+    assert.equal((await uncertainRevokeResponse.json()).error, 'revocation_outcome_unknown');
+    const revokeCallsAfterUnknown = adapterRevokeCalls;
+    const repeatedUncertainRevoke = await fetch(`${uncertainRevokeUrl}/revoke`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: uncertainRevokeRequest });
+    assert.equal(repeatedUncertainRevoke.status, 503);
+    assert.equal(adapterRevokeCalls, revokeCallsAfterUnknown, 'uncertain revoke is not sent to the adapter again before reconciliation');
   } finally { await new Promise(resolve => authorizedServer.close(resolve)); }
 
   assert.equal((await (await get('/api/v1/capabilities')).json()).capabilities.some(item => item.id.includes('report')), false, 'report lifecycle is not advertised as a platform capability');

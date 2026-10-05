@@ -27,18 +27,31 @@ export function createReportDrafts({ publicationAdapter = deniedPublicationAdapt
   const idempotency = new Map();
   const inFlightOperations = new Map();
   const completedOperations = new Map();
+  const inFlightByReport = new Map();
+  const uncertainByReport = new Map();
 
-  async function runOperation(operationId, operation) {
+  function mutationBlocked(reportRef) {
+    return uncertainByReport.get(reportRef) ?? inFlightByReport.get(reportRef) ?? null;
+  }
+
+  async function runOperation(operationId, reportRef, operation) {
     if (completedOperations.has(operationId)) return structuredClone(completedOperations.get(operationId));
     if (inFlightOperations.has(operationId)) return inFlightOperations.get(operationId);
+    inFlightByReport.set(reportRef, operationId);
     const pending = (async () => {
       const result = await operation();
-      if (result.kind === 'published' || result.kind === 'revoked') completedOperations.set(operationId, structuredClone(result));
+      if (['published', 'revoked', 'publication_outcome_unknown', 'revocation_outcome_unknown'].includes(result.kind)) {
+        completedOperations.set(operationId, structuredClone(result));
+      }
+      if (result.kind === 'publication_outcome_unknown' || result.kind === 'revocation_outcome_unknown') uncertainByReport.set(reportRef, operationId);
       return result;
     })();
     inFlightOperations.set(operationId, pending);
     try { return await pending; }
-    finally { if (inFlightOperations.get(operationId) === pending) inFlightOperations.delete(operationId); }
+    finally {
+      if (inFlightOperations.get(operationId) === pending) inFlightOperations.delete(operationId);
+      if (inFlightByReport.get(reportRef) === operationId) inFlightByReport.delete(reportRef);
+    }
   }
 
   return {
@@ -80,6 +93,8 @@ export function createReportDrafts({ publicationAdapter = deniedPublicationAdapt
     edit(profileId, reportRef, expectedReportRevision, patch) {
       const report = reports.get(reportRef);
       if (!report || report.profileId !== profileId) return { kind: 'not_found' };
+      const blockedBy = mutationBlocked(reportRef);
+      if (blockedBy) return { kind: uncertainByReport.has(reportRef) ? 'operation_outcome_unknown' : 'operation_in_progress', operationId: blockedBy, report: publicReport(report) };
       if (report.status !== 'draft') return { kind: 'not_editable', report: publicReport(report) };
       if (expectedReportRevision !== revisionOf(report.revision)) return { kind: 'stale_report', currentReportRevision: revisionOf(report.revision) };
       report.clientFields = { ...report.clientFields, ...structuredClone(patch) };
@@ -90,6 +105,8 @@ export function createReportDrafts({ publicationAdapter = deniedPublicationAdapt
     review(profileId, reportRef, expectedReportRevision, decision) {
       const report = reports.get(reportRef);
       if (!report || report.profileId !== profileId) return { kind: 'not_found' };
+      const blockedBy = mutationBlocked(reportRef);
+      if (blockedBy) return { kind: uncertainByReport.has(reportRef) ? 'operation_outcome_unknown' : 'operation_in_progress', operationId: blockedBy, report: publicReport(report) };
       if (report.status !== 'draft') return { kind: 'not_reviewable', report: publicReport(report) };
       if (expectedReportRevision !== revisionOf(report.revision)) return { kind: 'stale_report', currentReportRevision: revisionOf(report.revision) };
       report.reviewState = decision;
@@ -102,10 +119,12 @@ export function createReportDrafts({ publicationAdapter = deniedPublicationAdapt
       const operationId = operationIdOf('publish', reportRef, expectedReportRevision);
       if (completedOperations.has(operationId)) return structuredClone(completedOperations.get(operationId));
       if (inFlightOperations.has(operationId)) return inFlightOperations.get(operationId);
+      const blockedBy = mutationBlocked(reportRef);
+      if (blockedBy) return { kind: uncertainByReport.has(reportRef) ? 'operation_outcome_unknown' : 'operation_in_progress', operationId: blockedBy, report: publicReport(report) };
       if (report.status !== 'draft') return { kind: 'not_publishable', report: publicReport(report) };
       if (expectedReportRevision !== revisionOf(report.revision)) return { kind: 'stale_report', currentReportRevision: revisionOf(report.revision) };
       if (report.reviewState !== 'approved') return { kind: 'review_required', report: publicReport(report) };
-      return runOperation(operationId, async () => {
+      return runOperation(operationId, reportRef, async () => {
         let decision;
         try {
           decision = await publicationAdapter.publish({
@@ -115,7 +134,7 @@ export function createReportDrafts({ publicationAdapter = deniedPublicationAdapt
           });
         } catch { return { kind: 'publication_outcome_unknown', operationId, report: publicReport(report) }; }
         if (!decision || decision.allowed !== true) return { kind: 'publication_denied', operationId, report: publicReport(report) };
-        if (typeof decision.receiptId !== 'string' || !/^publication_demo_[a-f0-9]{12}$/.test(decision.receiptId)) return { kind: 'publication_outcome_unknown', operationId, report: publicReport(report) };
+      if (typeof decision.receiptId !== 'string' || !/^publication_demo_[a-f0-9]{12}$/.test(decision.receiptId)) return { kind: 'publication_outcome_unknown', operationId, report: publicReport(report) };
         report.status = 'published';
         report.publication = { receiptId: decision.receiptId, operationId, publishedRevision: revisionOf(report.revision), state: 'published' };
         report.revision++;
@@ -128,9 +147,11 @@ export function createReportDrafts({ publicationAdapter = deniedPublicationAdapt
       const operationId = operationIdOf('revoke', reportRef, expectedReportRevision);
       if (completedOperations.has(operationId)) return structuredClone(completedOperations.get(operationId));
       if (inFlightOperations.has(operationId)) return inFlightOperations.get(operationId);
+      const blockedBy = mutationBlocked(reportRef);
+      if (blockedBy) return { kind: uncertainByReport.has(reportRef) ? 'operation_outcome_unknown' : 'operation_in_progress', operationId: blockedBy, report: publicReport(report) };
       if (report.status !== 'published' || !report.publication) return { kind: 'not_revokeable', report: publicReport(report) };
       if (expectedReportRevision !== revisionOf(report.revision)) return { kind: 'stale_report', currentReportRevision: revisionOf(report.revision) };
-      return runOperation(operationId, async () => {
+      return runOperation(operationId, reportRef, async () => {
         let decision;
         try {
           decision = await publicationAdapter.revoke({

@@ -265,6 +265,8 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
                 else if (result.kind === 'not_revokeable') { status = 409; body = { error: 'report_not_revokeable', report: result.report }; }
                 else if (result.kind === 'revocation_denied') { status = 403; body = { error: 'revocation_denied', report: result.report }; }
                 else if (result.kind === 'revocation_outcome_unknown') { status = 503; body = { error: 'revocation_outcome_unknown', operationId: result.operationId, report: result.report }; }
+                else if (result.kind === 'operation_in_progress') { status = 409; body = { error: 'report_operation_in_progress', operationId: result.operationId, report: result.report }; }
+                else if (result.kind === 'operation_outcome_unknown') { status = 409; body = { error: 'report_operation_outcome_unknown', operationId: result.operationId, report: result.report }; }
                 else { body = result.report; }
               }
             }
@@ -298,6 +300,8 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
                 } else {
                   const updated = reportDrafts.edit(context.profileId, reportRef, request.expectedReportRevision, request.clientFields);
                   if (updated.kind === 'stale_report') { status = 409; body = { error: 'stale_report_revision', currentReportRevision: updated.currentReportRevision }; }
+                  else if (updated.kind === 'operation_in_progress') { status = 409; body = { error: 'report_operation_in_progress', operationId: updated.operationId, report: updated.report }; }
+                  else if (updated.kind === 'operation_outcome_unknown') { status = 409; body = { error: 'report_operation_outcome_unknown', operationId: updated.operationId, report: updated.report }; }
                   else if (updated.kind === 'not_editable') { status = 409; body = { error: 'report_not_editable', report: updated.report }; }
                   else body = updated.report;
                 }
@@ -312,6 +316,8 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
                 } else {
                   const reviewed = reportDrafts.review(context.profileId, reportRef, request.expectedReportRevision, request.decision);
                   if (reviewed.kind === 'stale_report') { status = 409; body = { error: 'stale_report_revision', currentReportRevision: reviewed.currentReportRevision }; }
+                  else if (reviewed.kind === 'operation_in_progress') { status = 409; body = { error: 'report_operation_in_progress', operationId: reviewed.operationId, report: reviewed.report }; }
+                  else if (reviewed.kind === 'operation_outcome_unknown') { status = 409; body = { error: 'report_operation_outcome_unknown', operationId: reviewed.operationId, report: reviewed.report }; }
                   else if (reviewed.kind === 'not_reviewable') { status = 409; body = { error: 'report_not_reviewable', report: reviewed.report }; }
                   else body = reviewed.report;
                 }
@@ -327,6 +333,8 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
                   else if (published.kind === 'review_required') { status = 409; body = { error: 'report_review_required', report: published.report }; }
                   else if (published.kind === 'publication_denied') { status = 403; body = { error: 'publication_denied', report: published.report }; }
                   else if (published.kind === 'publication_outcome_unknown') { status = 503; body = { error: 'publication_outcome_unknown', operationId: published.operationId, report: published.report }; }
+                  else if (published.kind === 'operation_in_progress') { status = 409; body = { error: 'report_operation_in_progress', operationId: published.operationId, report: published.report }; }
+                  else if (published.kind === 'operation_outcome_unknown') { status = 409; body = { error: 'report_operation_outcome_unknown', operationId: published.operationId, report: published.report }; }
                   else if (published.kind === 'not_publishable') { status = 409; body = { error: 'report_not_publishable', report: published.report }; }
                   else body = published.report;
                 }
