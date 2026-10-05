@@ -74,7 +74,7 @@ test('failed snapshot commit leaves candidate and seen state unchanged', () => {
   assert.deepEqual(store.read(profileId).snapshotsByVacancy, {});
 });
 
-test('comment exclusion changes query revision only in its vacancy and invalidates generated cache', () => {
+test('recruiter comments change query revision only in their vacancy and invalidate generated cache', () => {
   const model = createModel();
   model.recordSearch(search(vacancyA, [candidate('candidate_demo_001', vacancyA)]));
   model.recordSearch(search(vacancyB, [candidate('candidate_demo_001', vacancyB)], 'job_demo_002'));
@@ -88,6 +88,9 @@ test('comment exclusion changes query revision only in its vacancy and invalidat
   model.saveQueries({ profileId, vacancyId: vacancyA, criteriaRevision: 'criteria-r1', queries: ['Synthetic pinned query'], manual: true, generatedAt: '2026-10-06T07:00:00.000Z' });
   model.saveComment({ profileId, vacancyId: vacancyA, candidateRef: 'candidate_demo_001', text: 'Synthetic exclude region beta', excludeFromSearch: true, updatedAt: '2026-10-06T08:00:00.000Z' });
   assert.deepEqual(model.queries(profileId, vacancyA, 'criteria-r1').queries, ['Synthetic pinned query']);
+  const beforeOrdinaryComment = model.queryRevision(profileId, vacancyA, 'criteria-r1');
+  model.saveComment({ profileId, vacancyId: vacancyA, candidateRef: 'candidate_demo_001', text: 'Synthetic ordinary recruiter feedback', excludeFromSearch: false, updatedAt: '2026-10-06T09:00:00.000Z' });
+  assert.notEqual(model.queryRevision(profileId, vacancyA, 'criteria-r1'), beforeOrdinaryComment, 'legacy query generation uses all nonempty comments');
 });
 
 test('sanitized legacy conversion is dry-run, preserves multi-vacancy and wildcard, rejects unsafe fields', async () => {

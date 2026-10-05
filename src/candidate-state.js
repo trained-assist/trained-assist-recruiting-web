@@ -81,7 +81,9 @@ export function createCandidateState({ store = createMemoryCandidateStateStore()
     queryRevision(profileId, vacancyId, criteriaRevision) {
       if (!nonempty(criteriaRevision)) throw new TypeError('criteriaRevision is required');
       const state = read(profileId, vacancyId);
-      const exclusions = Object.values(state.commentsByVacancy[vacancyId] ?? {}).filter(comment => comment.excludeFromSearch).map(comment => comment.text).sort();
+      // Legacy getSearchExclusions treats every nonempty recruiter comment as
+      // query feedback; the flag is retained for a future UI affordance only.
+      const exclusions = Object.values(state.commentsByVacancy[vacancyId] ?? {}).map(comment => comment.text).filter(nonempty).sort();
       return hash({ criteriaRevision, exclusions });
     },
     saveComment({ profileId, vacancyId, candidateRef, text, excludeFromSearch, updatedAt }) {
