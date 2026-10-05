@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-report-preview-query.schema.json",
+  "title": "Local synthetic client report preview query",
+  "type": "object",
+  "required": ["candidateId", "vacancyId"],
+  "properties": {
+    "candidateId": { "type": "string", "pattern": "^candidate_demo_[0-9]{3}$" },
+    "vacancyId": { "type": "string", "pattern": "^vac_demo_[0-9]{3}$" }
+  },
+  "additionalProperties": false
+}

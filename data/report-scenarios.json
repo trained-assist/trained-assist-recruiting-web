@@ -1,0 +1,36 @@
+[
+  {
+    "candidateId": "candidate_demo_001",
+    "vacancyId": "vac_demo_001",
+    "sourceRevision": "synthetic-candidate-demo-001-r1",
+    "audience": "internal",
+    "candidate": {
+      "name": "Casey Example",
+      "position": "Synthetic Backend Engineer"
+    },
+    "client": {
+      "summary": "Synthetic candidate summary: <script>alert(\"synthetic\")</script> & reliable APIs.",
+      "experience": [
+        {
+          "company": "Example Systems (synthetic)",
+          "role": "Backend Engineer",
+          "period": "2022–2025",
+          "details": ["Built synthetic service examples", "Documented API contracts"]
+        }
+      ],
+      "fit": [
+        { "requirement": "Backend service experience", "status": "yes", "comment": "Synthetic fixture: demonstrated in example projects." },
+        { "requirement": "Production database ownership", "status": "partial", "comment": "Synthetic fixture: scope not fully described." }
+      ],
+      "conclusion": "Synthetic recruiter conclusion: suitable for a technical conversation."
+    },
+    "internal": {
+      "score": 9,
+      "expertCheck": "INTERNAL_ONLY_EXPERT_MARKER_741",
+      "riskLog": ["INTERNAL_ONLY_RISK_MARKER_852"],
+      "evidence": ["INTERNAL_ONLY_EVIDENCE_MARKER_963"],
+      "questionsNextStage": ["INTERNAL_ONLY_QUESTION_MARKER_174"],
+      "correspondence": ["INTERNAL_ONLY_CORRESPONDENCE_MARKER_285"]
+    }
+  }
+]

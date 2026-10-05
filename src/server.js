@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { getProfile, listProfileVacancies, profileHasScope, readVacancyResponses } from './recruiting-domain.js';
+import { createClientReportPreview } from './report-preview.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
@@ -66,6 +67,15 @@ function parseResponsePageOptions(url) {
   return { limit: rawLimit === null ? 25 : Number(rawLimit), cursor: params.get('cursor') };
 }
 
+function parseReportPreviewQuery(url) {
+  const keys = [...url.searchParams.keys()];
+  if (keys.some(key => !['candidateId', 'vacancyId'].includes(key)) || new Set(keys).size !== keys.length) return null;
+  const candidateId = url.searchParams.get('candidateId');
+  const vacancyId = url.searchParams.get('vacancyId');
+  if (!candidateId || !vacancyId || !/^candidate_demo_[0-9]{3}$/.test(candidateId) || !/^vac_demo_[0-9]{3}$/.test(vacancyId)) return null;
+  return { candidateId, vacancyId };
+}
+
 export function createRecruitingServer() {
   return createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
@@ -95,6 +105,23 @@ export function createRecruitingServer() {
         body = { error: 'unexpected_query_parameters' };
       } else {
         body = { apiVersion: 'v1', items: vacancies };
+      }
+    } else if (path === '/api/v1/ui/report-previews') {
+      const query = parseReportPreviewQuery(url);
+      if (!query) {
+        status = 400;
+        body = { error: 'invalid_preview_query' };
+      } else {
+        const preview = createClientReportPreview(query.candidateId, query.vacancyId);
+        if (preview.kind === 'candidate_not_found' || preview.kind === 'vacancy_not_found') {
+          status = 404;
+          body = { error: 'not_found' };
+        } else if (preview.kind === 'candidate_vacancy_mismatch') {
+          status = 409;
+          body = { error: 'candidate_vacancy_mismatch' };
+        } else {
+          body = preview.body;
+        }
       }
     } else {
       const responseRoute = path.match(/^\/api\/v1\/profiles\/([^/]+)\/vacancies\/([^/]+)\/responses$/);

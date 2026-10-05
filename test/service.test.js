@@ -134,6 +134,57 @@ test('local UI fixture routes enforce synthetic profile checks and paginate revi
   assert.deepEqual(await insufficientScope.json(), { error: 'demo_scope_required' });
 });
 
+test('client report preview is synthetic, audience-scoped, escaped, pair-checked, and never publishes', async () => {
+  const sources = JSON.parse(await readFile(new URL('data/report-scenarios.json', root), 'utf8'));
+  const sourceSchema = await loadSchema('v1-report-source-internal.schema.json');
+  const querySchema = await loadSchema('v1-report-preview-query.schema.json');
+  const previewSchema = await loadSchema('v1-client-report-preview.schema.json');
+  const ajv = new Ajv2020({ allErrors: true });
+  const validateSource = ajv.compile(sourceSchema);
+  const validateQuery = ajv.compile(querySchema);
+  const validatePreview = ajv.compile(previewSchema);
+  const source = sources[0];
+  const query = { candidateId: source.candidateId, vacancyId: source.vacancyId };
+  assert.equal(validateSource(source), true, JSON.stringify(validateSource.errors));
+  assert.equal(validateQuery(query), true);
+  assert.equal(validateQuery({ ...query, audience: 'internal' }), false);
+  assert.equal(validateSource({ ...source, audience: 'client' }), false);
+
+  const fixtureBefore = await readFile(new URL('data/report-scenarios.json', root));
+  const previewUrl = `/api/v1/ui/report-previews?candidateId=${query.candidateId}&vacancyId=${query.vacancyId}`;
+  const response = await get(previewUrl);
+  const payload = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(validatePreview(payload), true, JSON.stringify(validatePreview.errors));
+  assert.equal(payload.mode, 'preview');
+  assert.equal(payload.audience, 'client');
+  assert.equal(payload.previewOnly, true);
+  assert.equal(payload.publication, 'disabled');
+  assert.equal(payload.sourceRevision, source.sourceRevision);
+  assert.equal(validatePreview({ ...payload, clientView: { ...payload.clientView, internalNotes: 'not allowed' } }), false);
+  assert.match(payload.html, new RegExp(`report-source-revision" content="${source.sourceRevision}`));
+  assert.match(payload.html, /СИНТЕТИЧЕСКИЙ ЧЕРНОВИК · НЕ ДЛЯ ОТПРАВКИ/);
+  assert.match(payload.html, /&lt;script&gt;alert\(&quot;synthetic&quot;\)&lt;\/script&gt; &amp; reliable APIs\./);
+  assert.equal(payload.html.includes('<script>alert("synthetic")</script>'), false);
+  const internalMarkers = Object.values(source.internal).flatMap(value => typeof value === 'string' ? [value] : Array.isArray(value) ? value : []);
+  for (const marker of internalMarkers) {
+    assert.equal(payload.html.includes(marker), false, `internal marker leaked: ${marker}`);
+    assert.equal(JSON.stringify(payload.clientView).includes(marker), false, `internal marker leaked into client view: ${marker}`);
+  }
+  assert.equal(Object.hasOwn(payload, 'internal'), false);
+  assert.equal((await (await get(previewUrl)).json()).html, payload.html, 'renderer output is deterministic');
+
+  const mismatch = await get(`/api/v1/ui/report-previews?candidateId=${query.candidateId}&vacancyId=vac_demo_002`);
+  assert.equal(mismatch.status, 409);
+  assert.deepEqual(await mismatch.json(), { error: 'candidate_vacancy_mismatch' });
+  assert.equal((await get('/api/v1/ui/report-previews?candidateId=candidate_demo_999&vacancyId=vac_demo_001')).status, 404);
+  assert.equal((await get('/api/v1/ui/report-previews?candidateId=candidate_demo_001&vacancyId=vac_demo_001&audience=internal')).status, 400);
+  assert.equal((await fetch(`${base}${previewUrl}`, { method: 'POST' })).status, 405);
+  assert.equal((await fetch(`${base}/api/v1/ui/report-publish`, { method: 'POST' })).status, 405);
+  assert.equal((await get('/api/v1/ui/report-publish')).status, 404);
+  assert.deepEqual(await readFile(new URL('data/report-scenarios.json', root)), fixtureBefore);
+});
+
 test('browser landing page is useful and all writes are rejected', async () => {
   const page = await get('/');
   const html = await page.text();
@@ -142,6 +193,8 @@ test('browser landing page is useful and all writes are rejected', async () => {
   assert.match(html, /Read-only responses/);
   assert.match(html, /not agent capabilities/);
   assert.match(html, /Load more responses/);
+  assert.match(html, /Client report draft preview/);
+  assert.match(html, /not saved, published, or shared/);
   assert.match(html, /not production authentication/);
   assert.equal((await fetch(`${base}/api/v1/vacancies`, { method: 'POST' })).status, 405);
 });
