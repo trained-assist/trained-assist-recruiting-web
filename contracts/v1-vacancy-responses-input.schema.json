@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-vacancy-responses-input.schema.json",
+  "title": "Vacancy responses path input",
+  "type": "object",
+  "required": ["profileId", "vacancyId"],
+  "properties": {
+    "profileId": { "type": "string", "pattern": "^profile_demo_[0-9]{3}$" },
+    "vacancyId": { "type": "string", "pattern": "^vac_demo_[0-9]{3}$" }
+  },
+  "additionalProperties": false
+}

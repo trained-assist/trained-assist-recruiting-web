@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width">
+  <title>Recruiting API demo</title>
+  <style>
+    body { max-width: 52rem; margin: 3rem auto; padding: 0 1rem; font: 16px/1.5 system-ui, sans-serif; color: #182230; }
+    label { display: block; margin: 1rem 0 .25rem; font-weight: 600; }
+    select { min-width: 20rem; max-width: 100%; padding: .55rem; }
+    #responses { padding-left: 1.25rem; }
+    .notice { padding: .75rem; background: #fff6df; border-radius: .4rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Recruiting API demo</h1>
+    <p class="notice">Local synthetic-data demonstration. The selected profile is a fixture principal, not production authentication.</p>
+    <label for="profile">Synthetic profile</label>
+    <select id="profile"><option value="profile_demo_001">Synthetic recruiter north</option><option value="profile_demo_002">Synthetic recruiter south</option></select>
+    <label for="vacancy">Select a vacancy</label>
+    <select id="vacancy"></select>
+    <h2>Read-only responses</h2>
+    <ul id="responses"></ul>
+    <p id="message" role="status"></p>
+    <p><a href="/api/v1/manifest">API manifest</a> · <a href="/api/v1/vacancies">All synthetic vacancies</a></p>
+  </main>
+  <script type="module">
+    const profile = document.querySelector('#profile');
+    const vacancy = document.querySelector('#vacancy');
+    const responses = document.querySelector('#responses');
+    const message = document.querySelector('#message');
+    async function refreshVacancies() {
+      const profileId = profile.value;
+      const response = await fetch(`/api/v1/profiles/${profileId}/vacancies`, { headers: { 'X-Demo-Profile-Id': profileId } });
+      const payload = await response.json();
+      vacancy.replaceChildren(...payload.items.map(item => new Option(`${item.title} — ${item.location}`, item.id)));
+      await refreshResponses();
+    }
+    async function refreshResponses() {
+      const profileId = profile.value;
+      if (!vacancy.value) { responses.replaceChildren(); message.textContent = 'No vacancies are assigned to this profile.'; return; }
+      const response = await fetch(`/api/v1/profiles/${profileId}/vacancies/${vacancy.value}/responses`, { headers: { 'X-Demo-Profile-Id': profileId } });
+      const payload = await response.json();
+      if (!response.ok) { responses.replaceChildren(); message.textContent = 'This synthetic profile is not granted response-read scope.'; return; }
+      responses.replaceChildren(...payload.items.map(item => {
+        const li = document.createElement('li');
+        li.textContent = `${item.id} — ${item.status} — ${item.receivedAt}`;
+        return li;
+      }));
+      message.textContent = `${payload.items.length} synthetic response(s)`;
+    }
+    profile.addEventListener('change', refreshVacancies);
+    vacancy.addEventListener('change', refreshResponses);
+    refreshVacancies().catch(() => { message.textContent = 'Could not load local fixture data.'; });
+  </script>
+</body>
+</html>

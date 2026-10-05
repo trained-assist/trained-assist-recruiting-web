@@ -1,0 +1,27 @@
+{
+  "profiles": [
+    {
+      "id": "profile_demo_001",
+      "label": "Synthetic recruiter north",
+      "scopes": ["recruiting.profile.read", "recruiting.responses.read"],
+      "vacancyIds": ["vac_demo_001"],
+      "responses": {
+        "vac_demo_001": [
+          { "id": "response_demo_001", "status": "received", "receivedAt": "2026-10-01T09:00:00Z" },
+          { "id": "response_demo_002", "status": "reviewing", "receivedAt": "2026-10-02T11:30:00Z" }
+        ]
+      }
+    },
+    {
+      "id": "profile_demo_002",
+      "label": "Synthetic recruiter south",
+      "scopes": ["recruiting.profile.read"],
+      "vacancyIds": ["vac_demo_002"],
+      "responses": {
+        "vac_demo_002": [
+          { "id": "response_demo_003", "status": "received", "receivedAt": "2026-10-03T14:15:00Z" }
+        ]
+      }
+    }
+  ]
+}

@@ -40,6 +40,15 @@ test('manifest, capabilities, and readiness expose a versioned read-only contrac
     operationRef: 'GET /api/v1/vacancies'
   });
   assert.deepEqual(schema.properties.readiness.properties.status.enum, ['ready', 'degraded', 'blocked', 'unavailable']);
+  const profileCapabilities = manifest.capabilities.filter(capability => capability.id.startsWith('recruiting.profile.'));
+  assert.deepEqual(profileCapabilities.map(({ id, requiredScopes }) => [id, requiredScopes]), [
+    ['recruiting.profile.vacancies.list', ['recruiting.profile.read']],
+    ['recruiting.profile.vacancy-responses.list', ['recruiting.responses.read']]
+  ]);
+  for (const capability of profileCapabilities) {
+    ajv.compile(await loadSchema(capability.inputSchemaRef.replace(/^contracts\//, '')));
+    ajv.compile(await loadSchema(capability.outputSchemaRef.replace(/^contracts\//, '')));
+  }
   const capabilities = await (await get('/api/v1/capabilities')).json();
   assert.deepEqual(capabilities.capabilities, manifest.capabilities);
   const readiness = await (await get('/api/v1/readiness')).json();
@@ -65,9 +74,53 @@ test('vacancies match the published schema and contain synthetic data only', asy
   assert.deepEqual(await queryResponse.json(), { error: 'unexpected_query_parameters' });
 });
 
+test('profile-scoped vacancy selection and response reads enforce the synthetic principal and declared scopes', async () => {
+  const profileId = 'profile_demo_001';
+  const vacancyId = 'vac_demo_001';
+  const vacanciesInput = await loadSchema('v1-profile-vacancies-input.schema.json');
+  const vacanciesOutput = await loadSchema('v1-profile-vacancies.schema.json');
+  const responsesInput = await loadSchema('v1-vacancy-responses-input.schema.json');
+  const responsesOutput = await loadSchema('v1-vacancy-responses.schema.json');
+  const ajv = new Ajv2020({ allErrors: true });
+  const validateVacanciesInput = ajv.compile(vacanciesInput);
+  const validateVacanciesOutput = ajv.compile(vacanciesOutput);
+  const validateResponsesInput = ajv.compile(responsesInput);
+  const validateResponsesOutput = ajv.compile(responsesOutput);
+
+  assert.equal(validateVacanciesInput({ profileId }), true);
+  assert.equal(validateResponsesInput({ profileId, vacancyId }), true);
+  assert.equal(validateResponsesInput({ profileId, vacancyId, applicantEmail: 'person@example.com' }), false);
+
+  const url = `/api/v1/profiles/${profileId}/vacancies`;
+  assert.equal((await get(url)).status, 401);
+  assert.equal((await fetch(`${base}${url}`, { headers: { 'X-Demo-Profile-Id': 'profile_demo_002' } })).status, 403);
+
+  const vacanciesResponse = await fetch(`${base}${url}`, { headers: { 'X-Demo-Profile-Id': profileId } });
+  const vacanciesPayload = await vacanciesResponse.json();
+  assert.equal(vacanciesResponse.status, 200);
+  assert.equal(validateVacanciesOutput(vacanciesPayload), true, JSON.stringify(validateVacanciesOutput.errors));
+  assert.deepEqual(vacanciesPayload.items.map(item => item.id), [vacancyId]);
+
+  const responsesUrl = `/api/v1/profiles/${profileId}/vacancies/${vacancyId}/responses`;
+  const responsesResponse = await fetch(`${base}${responsesUrl}`, { headers: { 'X-Demo-Profile-Id': profileId } });
+  const responsesPayload = await responsesResponse.json();
+  assert.equal(responsesResponse.status, 200);
+  assert.equal(validateResponsesOutput(responsesPayload), true, JSON.stringify(validateResponsesOutput.errors));
+  assert.equal(responsesPayload.items.length, 2);
+  assert.equal((await fetch(`${base}${responsesUrl}`, { method: 'POST', headers: { 'X-Demo-Profile-Id': profileId } })).status, 405);
+  assert.equal((await fetch(`${base}/api/v1/profiles/${profileId}/vacancies/vac_demo_002/responses`, { headers: { 'X-Demo-Profile-Id': profileId } })).status, 404);
+  const insufficientScope = await fetch(`${base}/api/v1/profiles/profile_demo_002/vacancies/vac_demo_002/responses`, { headers: { 'X-Demo-Profile-Id': 'profile_demo_002' } });
+  assert.equal(insufficientScope.status, 403);
+  assert.deepEqual(await insufficientScope.json(), { error: 'demo_scope_required' });
+});
+
 test('browser landing page is useful and all writes are rejected', async () => {
   const page = await get('/');
-  assert.match(await page.text(), /Recruiting API demo/);
+  const html = await page.text();
+  assert.match(html, /Recruiting API demo/);
+  assert.match(html, /Select a vacancy/);
+  assert.match(html, /Read-only responses/);
+  assert.match(html, /not production authentication/);
   assert.equal((await fetch(`${base}/api/v1/vacancies`, { method: 'POST' })).status, 405);
 });
 
