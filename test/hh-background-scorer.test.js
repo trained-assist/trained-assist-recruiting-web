@@ -55,6 +55,11 @@ test('five-minute pass scores invented latest candidates, keeps source snapshot 
   assert.equal(reopened.assessedResultPage({ profileId, vacancyId, jobId: 'job_synthetic_1' }).items[0].atsTag, 'PASS');
   assert.equal((await runHhBackgroundScoringTick({ ...options, state: reopened })).pending, 0);
   assert.equal(calls, 2);
+  reopened.recordCompletedSearch(search('job_synthetic_2', [candidate(1), { ...candidate(2), title: 'Вымышленный старший инженер' }]));
+  assert.deepEqual(reopened.unassessedLatest({ profileId, vacancyId }).map(item => item.candidate.id), [candidate(2).id]);
+  assert.deepEqual(reopened.assessedResultPage({ profileId, vacancyId, jobId: 'job_synthetic_2' }).items.map(item => item.atsScore).sort(), [8, null].sort());
+  assert.equal((await runHhBackgroundScoringTick({ ...options, state: reopened })).written, 1);
+  assert.equal(calls, 3);
 });
 
 test('late evaluator cannot score a superseded search or changed criteria', async t => {
@@ -88,10 +93,10 @@ test('two writers converge, reject cross-scope and invalid assessments, and hide
   a.recordCompletedSearch(search('job_synthetic_2', [candidate(1), candidate(2)]));
   const summary = await runHhBackgroundScoringTick({ state: b, profileId, vacancyId,
     currentCriteriaRevision: async () => criteriaRevision, evaluate: async () => { throw new Error('synthetic private resume in error'); } });
-  assert.equal(summary.failed, 2);
+  assert.equal(summary.failed, 1);
   assert.equal(JSON.stringify(summary).includes('resume'), false);
   const invalid = await runHhBackgroundScoringTick({ state: b, profileId, vacancyId,
     currentCriteriaRevision: async () => criteriaRevision, evaluate: async () => ({ ...assessment, atsScore: 11 }) });
-  assert.equal(invalid.failed, 2);
-  assert.equal(b.unassessedLatest({ profileId, vacancyId }).length, 2);
+  assert.equal(invalid.failed, 1);
+  assert.equal(b.unassessedLatest({ profileId, vacancyId }).length, 1);
 });
