@@ -17,5 +17,11 @@
       "additionalProperties": false
     }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "allOf": [
+    { "if": { "type": "object", "properties": { "knockout": { "type": "object", "properties": { "status": { "const": "failed" } } } } },
+      "then": { "type": "object", "properties": { "atsScore": { "type": "number", "maximum": 2 }, "knockout": { "type": "object", "properties": { "criteria": { "type": "array", "minItems": 1 } } } } } },
+    { "if": { "type": "object", "properties": { "knockout": { "type": "object", "properties": { "status": { "const": "passed" } } } } },
+      "then": { "type": "object", "properties": { "knockout": { "type": "object", "properties": { "criteria": { "type": "array", "maxItems": 0 } } } } } }
+  ]
 }
