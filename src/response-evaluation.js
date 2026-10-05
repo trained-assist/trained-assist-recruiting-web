@@ -25,7 +25,8 @@ export function validEvaluatorOutput(output, criteria) {
   if (!output || typeof output !== 'object' || Array.isArray(output)) return false;
   if (Object.keys(output).sort().join(',') !== 'evidence,gaps,result') return false;
   if (!['meets', 'partial', 'does_not_meet'].includes(output.result) || !Array.isArray(output.evidence) || !Array.isArray(output.gaps)) return false;
-  const criterionIds = new Set(criteria.map(item => item.id));
+  const criterionById = new Map(criteria.map(item => [item.id, item]));
+  const criterionIds = new Set(criterionById.keys());
   const seen = new Set();
   for (const [items, kind] of [[output.evidence, 'evidence'], [output.gaps, 'gaps']]) {
     for (const item of items) {
@@ -33,10 +34,14 @@ export function validEvaluatorOutput(output, criteria) {
       seen.add(item.criterionId);
       const keys = Object.keys(item).sort().join(',');
       if (kind === 'evidence' && (keys !== 'criterionId,excerpt,source' || item.source !== 'resume' || typeof item.excerpt !== 'string' || !item.excerpt)) return false;
-      if (kind === 'gaps' && (keys !== 'criterionId,kind,reason,required' || item.kind !== 'missing_evidence' || typeof item.required !== 'boolean' || typeof item.reason !== 'string' || !item.reason)) return false;
+      if (kind === 'gaps' && (keys !== 'criterionId,kind,reason,required' || item.kind !== 'missing_evidence' || typeof item.required !== 'boolean' || item.required !== criterionById.get(item.criterionId).required || typeof item.reason !== 'string' || !item.reason)) return false;
     }
   }
-  return seen.size === criteria.length;
+  if (seen.size !== criteria.length) return false;
+  const required = criteria.filter(item => item.required);
+  const coveredRequired = required.filter(item => output.evidence.some(evidence => evidence.criterionId === item.id)).length;
+  const expectedResult = coveredRequired === required.length ? 'meets' : coveredRequired === 0 ? 'does_not_meet' : 'partial';
+  return output.result === expectedResult;
 }
 
 export function makeEvaluationId(scenario) {

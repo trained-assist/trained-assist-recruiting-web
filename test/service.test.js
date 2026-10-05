@@ -240,13 +240,20 @@ test('R-02 synthetic evaluation is profile scoped, revision pinned, typed, deter
     }
     assert.equal(calls, 2, 'stale sources never reach the evaluator');
 
-    const invalidServer = createRecruitingServer({ resolveTrustedProfileContext: () => ({ profileId: fixture.profileId, scopes: ['recruiting.responses.evaluate'] }), evaluator: () => ({ result: 'publish', evidence: [], gaps: [], sideEffect: true }) });
-    await new Promise(resolve => invalidServer.listen(0, '127.0.0.1', resolve));
-    try {
-      const invalid = await fetch(`http://127.0.0.1:${invalidServer.address().port}${urlFor(input)}`);
-      assert.equal(invalid.status, 502);
-      assert.deepEqual(await invalid.json(), { error: 'invalid_evaluator_output' });
-    } finally { await new Promise(resolve => invalidServer.close(resolve)); }
+    const inconsistentOutputs = [
+      { result: 'meets', evidence: [], gaps: fixture.criteria.map(item => ({ criterionId: item.id, kind: 'missing_evidence', required: item.required, reason: 'Synthetic missing evidence.' })) },
+      { result: 'meets', evidence: fixture.criteria.filter(item => item.id !== 'database-operations').map(item => ({ criterionId: item.id, source: 'resume', excerpt: 'Synthetic evidence.' })), gaps: [{ criterionId: 'database-operations', kind: 'missing_evidence', required: true, reason: 'Synthetic missing evidence.' }] }
+    ];
+    for (const malformedOutput of [{ result: 'publish', evidence: [], gaps: [], sideEffect: true }, ...inconsistentOutputs]) {
+      if (inconsistentOutputs.includes(malformedOutput)) assert.equal(ajv.validate(evaluatorSchema, malformedOutput), true, 'inconsistent fixture output remains structurally schema-valid');
+      const invalidServer = createRecruitingServer({ resolveTrustedProfileContext: () => ({ profileId: fixture.profileId, scopes: ['recruiting.responses.evaluate'] }), evaluator: () => malformedOutput });
+      await new Promise(resolve => invalidServer.listen(0, '127.0.0.1', resolve));
+      try {
+        const invalid = await fetch(`http://127.0.0.1:${invalidServer.address().port}${urlFor(input)}`);
+        assert.equal(invalid.status, 502);
+        assert.deepEqual(await invalid.json(), { error: 'invalid_evaluator_output' });
+      } finally { await new Promise(resolve => invalidServer.close(resolve)); }
+    }
 
     assert.equal((await fetch(`${trustedBase}${urlFor(input)}`, { method: 'POST' })).status, 405);
     assert.equal((await (await fetch(`${base}/api/v1/capabilities`)).json()).capabilities.some(item => item.id.includes('response')), false);
