@@ -105,7 +105,7 @@ test('minute tick claims unique occurrences, coalesces downtime, leases overlap,
     repository,
     clock: () => new Date(current),
     leaseMs: 60_000,
-    resolveSearchRequest: async () => request,
+    resolveSearchRequest: async (_profileId, vacancyId) => ({ ...request, vacancyId }),
     executeSearch: async () => {
       executions++;
       if (makeUnknown) { makeUnknown = false; throw new Error('ambiguous fake provider outcome'); }
@@ -187,4 +187,45 @@ test('minute tick claims unique occurrences, coalesces downtime, leases overlap,
   const anotherVacancy = await schedule.handle({ action: 'enable', vacancyId: 'vac_demo_003', interval_hours: 1 }, principal('profile_demo_003'));
   assert.notEqual(anotherVacancy.schedule.scheduleId, leaseSchedule.schedule.scheduleId);
   assert.equal(repository.listSchedules('profile_demo_003').length, 2, 'one profile can own distinct vacancy schedules without cross-collision');
+});
+
+test('resolver vacancy mismatch and known pre-dispatch stale criteria are rejected without unknown quarantine', async () => {
+  let current = new Date('2026-10-06T00:00:00.000Z');
+  const repository = new InMemoryColdSearchScheduleRepository();
+  let resolverVacancy = 'vac_demo_001';
+  let executions = 0;
+  const handler = createColdSearchScheduleHandler({
+    repository, clock: () => new Date(current),
+    resolveSearchRequest: async () => ({ ...request, vacancyId: resolverVacancy }),
+    executeSearch: async () => { executions++; return { status: 'failed', providerError: { code: 'stale_search_criteria' } }; }
+  });
+  resolverVacancy = 'vac_demo_002';
+  assert.equal((await handler.handle({ action: 'enable', vacancyId: 'vac_demo_001' }, principal('profile_demo_001'))).kind, 'search_context_unavailable');
+  assert.equal(repository.listSchedules('profile_demo_001').length, 0, 'mismatched context cannot create a schedule');
+  resolverVacancy = 'vac_demo_001';
+  const enabled = await handler.handle({ action: 'enable', vacancyId: 'vac_demo_001', interval_hours: 1 }, principal('profile_demo_001'));
+  current = new Date(enabled.schedule.nextRunAt);
+  resolverVacancy = 'vac_demo_002';
+  assert.deepEqual(await handler.tick('worker-mismatch'), { claimed: 1, completed: 0, unknown: 0 });
+  const [mismatched] = repository.listOccurrences('profile_demo_001');
+  assert.equal(mismatched.status, 'rejected');
+  assert.equal(mismatched.errorCode, 'criteria_context_unavailable');
+  assert.equal(executions, 0, 'vacancy mismatch is rejected before dispatch');
+  assert.equal(repository.getSchedule(enabled.schedule.scheduleId).blockedByUnknownOccurrenceId, null);
+
+  resolverVacancy = 'vac_demo_001';
+  const staleRepo = new InMemoryColdSearchScheduleRepository();
+  const staleHandler = createColdSearchScheduleHandler({
+    repository: staleRepo, clock: () => new Date(current),
+    resolveSearchRequest: async () => ({ ...request, vacancyId: 'vac_demo_001' }),
+    executeSearch: async () => { executions++; return { status: 'failed', providerError: { code: 'stale_search_criteria' } }; }
+  });
+  const staleEnabled = await staleHandler.handle({ action: 'enable', vacancyId: 'vac_demo_001', interval_hours: 1 }, principal('profile_demo_002'));
+  current = new Date(staleEnabled.schedule.nextRunAt);
+  assert.deepEqual(await staleHandler.tick('worker-stale'), { claimed: 1, completed: 0, unknown: 0 });
+  const [stale] = staleRepo.listOccurrences('profile_demo_002');
+  assert.equal(stale.status, 'rejected');
+  assert.equal(stale.errorCode, 'stale_search_criteria');
+  assert.equal(staleRepo.getSchedule(staleEnabled.schedule.scheduleId).blockedByUnknownOccurrenceId, null);
+  assert.equal(executions, 1, 'stale rejection is a known pre-dispatch failure');
 });

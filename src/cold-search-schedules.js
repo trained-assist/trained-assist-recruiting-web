@@ -67,9 +67,9 @@ function scheduleId(profileId, vacancyId) { return `schedule_demo_${digest(JSON.
 function occurrenceKey(legacyJobId, scheduledAt) { return JSON.stringify([legacyJobId, scheduledAt]); }
 function occurrenceId(legacyJobId, scheduledAt) { return `occurrence_demo_${digest(occurrenceKey(legacyJobId, scheduledAt)).slice(0, 16)}`; }
 const clone = value => structuredClone(value);
-function validSearchContext(value) {
+function validSearchContext(value, vacancyId) {
   const criteria = value?.criteria;
-  return /^criteria-search-demo-r[0-9]+$/.test(value?.criteriaRevision ?? '') && criteria && typeof criteria === 'object' && !Array.isArray(criteria) &&
+  return value?.vacancyId === vacancyId && /^criteria-search-demo-r[0-9]+$/.test(value?.criteriaRevision ?? '') && criteria && typeof criteria === 'object' && !Array.isArray(criteria) &&
     Object.keys(criteria).every(key => ['keywords', 'regions'].includes(key)) && Array.isArray(criteria.keywords) && Array.isArray(criteria.regions) &&
     criteria.keywords.length <= 8 && criteria.regions.length <= 8 &&
     criteria.keywords.every(item => typeof item === 'string' && item.length > 0 && item.length <= 100) &&
@@ -171,7 +171,7 @@ export function createColdSearchScheduleHandler({ repository, resolveSearchReque
     if (existing?.blockedByUnknownOccurrenceId) return { kind: 'outcome_unknown', schedule: existing, occurrenceId: existing.blockedByUnknownOccurrenceId };
     let searchRequest;
     try { searchRequest = await resolveSearchRequest(profileId, command.vacancyId); } catch { searchRequest = null; }
-    if (!validSearchContext(searchRequest)) return { kind: 'search_context_unavailable' };
+    if (!validSearchContext(searchRequest, command.vacancyId)) return { kind: 'search_context_unavailable' };
     const at = clock().toISOString();
     const plan = intervalPlan(command.interval_hours, command.vacancyId);
     const preserveDueSlot = existing && new Date(existing.nextRunAt).getTime() <= new Date(at).getTime();
@@ -201,9 +201,8 @@ export function createColdSearchScheduleHandler({ repository, resolveSearchReque
     for (const { schedule, occurrence } of claimed) {
       let currentRequest;
       try { currentRequest = await resolveSearchRequest(schedule.profileId, schedule.vacancyId); } catch { currentRequest = null; }
-      if (!validSearchContext(currentRequest)) {
-        repository.finishOccurrence(occurrence.occurrenceId, workerId, { status: 'outcome_unknown', errorCode: 'criteria_context_unavailable' }, now);
-        unknown++;
+      if (!validSearchContext(currentRequest, schedule.vacancyId)) {
+        repository.finishOccurrence(occurrence.occurrenceId, workerId, { status: 'rejected', errorCode: 'criteria_context_unavailable' }, now);
         continue;
       }
       try {
@@ -213,7 +212,10 @@ export function createColdSearchScheduleHandler({ repository, resolveSearchReque
           request: { vacancyId: schedule.vacancyId, criteriaRevision: currentRequest.criteriaRevision, criteria: clone(currentRequest.criteria) }
         });
         if (!result || result.status === 'failed' || result.providerError) {
-          repository.finishOccurrence(occurrence.occurrenceId, workerId, { status: 'outcome_unknown', criteriaRevision: currentRequest.criteriaRevision, errorCode: result?.providerError?.code ?? 'search_outcome_unknown', jobId: result?.jobId ?? null }, now);
+          const errorCode = result?.providerError?.code ?? 'search_outcome_unknown';
+          const status = ['stale_search_criteria', 'criteria_context_unavailable', 'invalid_search_request'].includes(errorCode) ? 'rejected' : 'outcome_unknown';
+          repository.finishOccurrence(occurrence.occurrenceId, workerId, { status, criteriaRevision: currentRequest.criteriaRevision, errorCode, jobId: result?.jobId ?? null }, now);
+          if (status === 'rejected') continue;
           unknown++;
         } else if (result.status !== 'completed') {
           repository.finishOccurrence(occurrence.occurrenceId, workerId, { status: 'outcome_unknown', criteriaRevision: currentRequest.criteriaRevision, errorCode: 'scheduled_search_incomplete', jobId: result.jobId ?? null }, now);
@@ -231,5 +233,15 @@ export function createColdSearchScheduleHandler({ repository, resolveSearchReque
     return { claimed: claimed.length, completed, unknown };
   }
 
-  return { handle, tick };
+  function listOccurrences(trustedContext, vacancyId) {
+    if (!trustedContext || typeof trustedContext.profileId !== 'string' || !trustedContext.profileId ||
+        !Array.isArray(trustedContext.scopes) || !trustedContext.scopes.includes('recruiting.candidateSearch')) return { kind: 'denied' };
+    if (vacancyId !== undefined && !/^vac_demo_[0-9]{3}$/.test(vacancyId)) return { kind: 'invalid_vacancy' };
+    const rows = repository.listOccurrences(trustedContext.profileId)
+      .filter(row => vacancyId === undefined || row.vacancyId === vacancyId)
+      .map(({ leaseOwner, leaseUntil, ...row }) => row);
+    return { kind: 'occurrences', occurrences: rows };
+  }
+
+  return { handle, listOccurrences, tick };
 }

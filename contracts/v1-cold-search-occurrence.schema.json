@@ -11,7 +11,7 @@
     "scheduledAt": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$" },
     "coalescedMissedCount": { "type": "integer", "minimum": 0 },
     "criteriaRevision": { "type": ["string", "null"], "pattern": "^criteria-search-demo-r[0-9]+$" },
-    "status": { "type": "string", "enum": ["running", "succeeded", "outcome_unknown"] },
+    "status": { "type": "string", "enum": ["running", "succeeded", "rejected", "outcome_unknown"] },
     "startedAt": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$" },
     "finishedAt": { "type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$" },
     "jobId": { "type": ["string", "null"], "pattern": "^search_demo_[a-f0-9]{12}$" },
