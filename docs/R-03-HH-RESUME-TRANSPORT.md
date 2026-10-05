@@ -6,6 +6,12 @@
 
 Source mapping inspected from `trained-assist-hh-skill` at `af25f267bd20498c02f578b7b77ffc587dad3e85`:
 
+Rechecked against `origin/main` `60566b5` on 2026-10-06: the context and
+transport source files are unchanged. The current legacy routes/search code
+also has asynchronous manual search polling and phase/ATS-refresh progress;
+those lifecycle endpoints are outside this transport boundary and remain
+required for public-route parity.
+
 | Legacy owner | This slice |
 |---|---|
 | `src/hh-cold-search-context.js:27-41` resolves profile/vacancy ATS config, including legacy files | Trusted `loadVacancyContext` port; no legacy file reader or importer yet |
