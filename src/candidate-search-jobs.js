@@ -19,7 +19,7 @@ function publicJob(job) {
     domainApiVersion: 'v1', jobId: job.jobId, vacancyId: job.vacancyId,
     criteriaRevision: job.criteriaRevision, sourceRevision: job.sourceRevision ?? 'pending',
     status: job.status, resultCount: job.items.length,
-    canResume: ['partial', 'failed'].includes(job.status) && (job.status !== 'failed' || job.providerError?.retryable === true),
+    canResume: job.status === 'partial' && (job.providerError === null || job.providerError.retryable === true),
     ranking: 'provider_order_unranked', providerError: job.providerError
   };
 }
@@ -52,6 +52,7 @@ export function createCandidateSearchJobs({ provider = syntheticColdSearchProvid
     if (page.kind !== 'page' || !/^cold-search-provider-demo-r[0-9]+$/.test(page.sourceRevision ?? '') || !Array.isArray(page.items) || page.items.length > 50 ||
         !(page.nextCursor === null || typeof page.nextCursor === 'string' && page.nextCursor.length <= 512) || typeof page.complete !== 'boolean' ||
         (page.complete && page.nextCursor !== null) || (!page.complete && page.nextCursor === null) ||
+        (!page.complete && page.nextCursor === job.providerCursor) ||
         (job.sourceRevision !== null && job.sourceRevision !== page.sourceRevision)) {
       job.providerError = normalizeProviderError('provider_invalid_response');
       job.status = job.items.length ? 'partial' : 'failed';
@@ -84,16 +85,18 @@ export function createCandidateSearchJobs({ provider = syntheticColdSearchProvid
     async start(profileId, key, request) {
       const input = canonicalRequest(request);
       const requestHash = digest(JSON.stringify(input));
-      const scopeKey = `${profileId}:${key}`;
+      const scopeKey = JSON.stringify([profileId, key]);
       const existingId = idempotency.get(scopeKey);
       if (existingId) {
         const existing = jobs.get(existingId);
-        if (existing.requestHash !== requestHash) return { conflict: true };
+        if (!existing || existing.profileId !== profileId || existing.idempotencyKey !== key || existing.requestHash !== requestHash) return { conflict: true };
         return { conflict: false, created: false, job: publicJob(existing) };
       }
       if (jobs.size >= maxJobs) return { capacityExceeded: true };
       const jobId = `search_demo_${digest(scopeKey).slice(0, 12)}`;
-      const job = { jobId, profileId, requestHash, vacancyId: input.vacancyId, criteriaRevision: input.criteriaRevision, criteria: input.criteria, sourceRevision: null, status: 'running', items: [], providerCursor: null, providerError: null };
+      const collision = jobs.get(jobId);
+      if (collision && (collision.profileId !== profileId || collision.idempotencyKey !== key)) return { conflict: true };
+      const job = { jobId, profileId, idempotencyKey: key, requestHash, vacancyId: input.vacancyId, criteriaRevision: input.criteriaRevision, criteria: input.criteria, sourceRevision: null, status: 'running', items: [], providerCursor: null, providerError: null };
       jobs.set(jobId, job);
       idempotency.set(scopeKey, jobId);
       return { conflict: false, created: true, job: await runProvider(job) };

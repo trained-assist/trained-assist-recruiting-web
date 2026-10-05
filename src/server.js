@@ -111,6 +111,12 @@ function parseSearchResultPage(url) {
 
 export function createRecruitingServer({ resolveTrustedProfileContext = () => null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, resolveCurrentSearchCriteriaRevision = () => null, maxCandidateSearchJobs = 100 } = {}) {
   const candidateSearchJobs = createCandidateSearchJobs({ provider: candidateSearchProvider, maxJobs: maxCandidateSearchJobs });
+  const currentSearchCriteriaRevision = async (context, vacancyId) => {
+    try {
+      const revision = await resolveCurrentSearchCriteriaRevision(context, vacancyId);
+      return typeof revision === 'string' && /^criteria-search-demo-r[0-9]+$/.test(revision) ? revision : null;
+    } catch { return null; }
+  };
   return createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const path = url.pathname;
@@ -169,8 +175,11 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
             status = 400;
             body = { error: 'invalid_search_start' };
           } else {
-            const currentRevision = await resolveCurrentSearchCriteriaRevision(context, request.vacancyId);
-            if (currentRevision && currentRevision !== request.criteriaRevision) {
+            const currentRevision = await currentSearchCriteriaRevision(context, request.vacancyId);
+            if (!currentRevision) {
+              status = 503;
+              body = { error: 'criteria_revision_unavailable' };
+            } else if (currentRevision !== request.criteriaRevision) {
               status = 409;
               body = { domainApiVersion: 'v1', error: 'stale_search_criteria', requestedRevision: request.criteriaRevision, currentRevision };
             } else {
@@ -197,8 +206,11 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
           status = 404;
           body = { error: 'not_found' };
         } else {
-          const currentRevision = await resolveCurrentSearchCriteriaRevision(context, job.vacancyId);
-          if (currentRevision && currentRevision !== job.criteriaRevision) {
+          const currentRevision = await currentSearchCriteriaRevision(context, job.vacancyId);
+          if (!currentRevision) {
+            status = 503;
+            body = { error: 'criteria_revision_unavailable' };
+          } else if (currentRevision !== job.criteriaRevision) {
             status = 409;
             body = { domainApiVersion: 'v1', error: 'stale_search_criteria', requestedRevision: job.criteriaRevision, currentRevision };
           } else if (subpath === '/results' && (req.method === 'GET' || req.method === 'HEAD')) {
