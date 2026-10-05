@@ -245,18 +245,20 @@ export class SqliteRealHhCandidateState {
       return { ...candidate, ...JSON.parse(row.assessment) };
     }) };
   }
-  acceptedCandidateFeed({ profileId, vacancyId, acceptedScheduledJobIds = [] }) {
+  acceptedCandidateFeed({ profileId, vacancyId, acceptedScheduledJobIds = [], acceptedManualJobIds = [] }) {
     this.assertScope(profileId, vacancyId);
     if (!Array.isArray(acceptedScheduledJobIds) || acceptedScheduledJobIds.length > 1000 ||
-        acceptedScheduledJobIds.some(id => !safeId(id))) throw new TypeError('invalid_accepted_job_ids');
-    const jobs = [...new Set(acceptedScheduledJobIds)];
-    const placeholders = jobs.map(() => '?').join(',');
-    const accepted = jobs.length ? ` OR (s.source='scheduled' AND s.job_id IN (${placeholders}))` : '';
+        acceptedScheduledJobIds.some(id => !safeId(id)) || !Array.isArray(acceptedManualJobIds) ||
+        acceptedManualJobIds.length > 1000 || acceptedManualJobIds.some(id => !safeId(id))) throw new TypeError('invalid_accepted_job_ids');
+    const scheduled = [...new Set(acceptedScheduledJobIds)];
+    const manual = [...new Set(acceptedManualJobIds)];
+    const scheduledClause = scheduled.length ? `(s.source='scheduled' AND s.job_id IN (${scheduled.map(() => '?').join(',')}))` : '0';
+    const manualClause = manual.length ? `(s.source='manual' AND s.job_id IN (${manual.map(() => '?').join(',')}))` : '0';
     const rows = this.db.prepare(`SELECT s.job_id,s.source,s.searched_at,s.criteria_revision,s.source_revision,m.resume_id,m.projection
       FROM real_hh_snapshot s JOIN real_hh_snapshot_member m
       ON m.profile_id=s.profile_id AND m.vacancy_id=s.vacancy_id AND m.job_id=s.job_id
-      WHERE s.profile_id=? AND s.vacancy_id=? AND (s.source='manual'${accepted})
-      ORDER BY s.searched_at DESC,s.job_id DESC,m.position LIMIT 50001`).all(profileId, vacancyId, ...jobs);
+      WHERE s.profile_id=? AND s.vacancy_id=? AND (${scheduledClause} OR ${manualClause})
+      ORDER BY s.searched_at DESC,s.job_id DESC,m.position LIMIT 50001`).all(profileId, vacancyId, ...scheduled, ...manual);
     if (rows.length > 50000) throw new Error('real_hh_feed_capacity_exceeded');
     const byResume = new Map();
     for (const row of rows) {

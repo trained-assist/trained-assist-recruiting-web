@@ -31,9 +31,14 @@ function fixture(t) {
   const open = () => { const state = new SqliteRealHhCandidateState({ filename,
     isVacancyOwned: (p, v) => [profileA, profileB].includes(p) && [vacancyA, vacancyB].includes(v) }); stores.push(state); return state; };
   const occurrences = [];
+  const manualReceipts = [];
   const scheduleRepository = { listOccurrences: profileId => occurrences.filter(row => row.profileId === profileId) };
-  return { open, occurrences, scheduleRepository };
+  const loadAcceptedManualReceipts = (profileId, vacancyId) => manualReceipts.filter(row => row.profileId === profileId && row.vacancyId === vacancyId);
+  return { open, occurrences, manualReceipts, scheduleRepository, loadAcceptedManualReceipts };
 }
+const receipt = snapshot => ({ profileId: snapshot.profileId, vacancyId: snapshot.vacancyId, jobId: snapshot.jobId,
+  status: 'succeeded', resultRevision: snapshot.resultRevision, sourceRevision: snapshot.sourceRevision,
+  resultCount: snapshot.candidateCount });
 
 test('feed accumulates accepted scheduled and manual candidates across two vacancies and profiles with score/review overlays', t => {
   const f = fixture(t);
@@ -47,13 +52,15 @@ test('feed accumulates accepted scheduled and manual candidates across two vacan
     assessedAt: '2026-10-06T06:05:00.000Z' }).kind, 'written');
   f.occurrences.push({ profileId: profileA, vacancyId: vacancyA, scheduledAt: '2026-10-06T06:00:00.000Z', status: 'succeeded',
     jobId: first.jobId, snapshot: { resultRevision: first.resultRevision, sourceRevision: first.sourceRevision, resultCount: first.candidateCount } });
-  state.recordCompletedSearch(search({ jobId: 'job_synthetic_2', source: 'manual', searchedAt: '2026-10-06T07:00:00.000Z',
+  const manualA = state.recordCompletedSearch(search({ jobId: 'job_synthetic_2', source: 'manual', searchedAt: '2026-10-06T07:00:00.000Z',
     candidates: [candidate(2, vacancyA, 'Вымышленный старший инженер'), candidate(3, vacancyA)] }));
-  state.recordCompletedSearch(search({ profileId: profileA, vacancyId: vacancyB, jobId: 'job_synthetic_3', source: 'manual',
+  const manualB = state.recordCompletedSearch(search({ profileId: profileA, vacancyId: vacancyB, jobId: 'job_synthetic_3', source: 'manual',
     searchedAt: '2026-10-06T08:00:00.000Z', candidates: [candidate(1, vacancyB)] }));
-  state.recordCompletedSearch(search({ profileId: profileB, vacancyId: vacancyA, jobId: 'job_synthetic_4', source: 'manual',
+  const manualC = state.recordCompletedSearch(search({ profileId: profileB, vacancyId: vacancyA, jobId: 'job_synthetic_4', source: 'manual',
     searchedAt: '2026-10-06T09:00:00.000Z', candidates: [candidate(1, vacancyA)] }));
-  const feed = createR03AccumulatedRealFeed({ scheduleRepository: f.scheduleRepository, candidateState: state });
+  f.manualReceipts.push(receipt(manualA), receipt(manualB), receipt(manualC));
+  const feed = createR03AccumulatedRealFeed({ scheduleRepository: f.scheduleRepository, candidateState: state,
+    loadAcceptedManualReceipts: f.loadAcceptedManualReceipts });
   const items = feed.read(context(profileA), vacancyA).items;
   assert.equal(items.length, 3);
   assert.equal(items[0].id, toScore.candidate.id, 'assessed candidates rank ahead of pending ATS evaluations');
@@ -71,7 +78,8 @@ test('feed accumulates accepted scheduled and manual candidates across two vacan
   assert.throws(() => feed.update({ profileId: profileB, scopes: [] }, vacancyA, candidate(1, vacancyA).id, {}), /candidate_scope_denied/);
   state.close();
   const reopened = f.open();
-  assert.equal(createR03AccumulatedRealFeed({ scheduleRepository: f.scheduleRepository, candidateState: reopened })
+  assert.equal(createR03AccumulatedRealFeed({ scheduleRepository: f.scheduleRepository, candidateState: reopened,
+    loadAcceptedManualReceipts: f.loadAcceptedManualReceipts })
     .read(context(profileA), vacancyA).items.find(item => item.id === candidate(1, vacancyA).id).comment, 'Синтетическая заметка');
 });
 
@@ -92,4 +100,20 @@ test('unknown scheduled snapshot is quarantined from feed, older accepted result
     expectedRevision: 0, status: 'starred', comment: null, excludeFromSearch: false }), /candidate_not_in_accepted_vacancy_feed/);
   assert.throws(() => state.recordCompletedSearch(search({ jobId: 'job_synthetic_3', searchedAt: '2026-10-08T06:00:00.000Z',
     candidates: [candidate(3, vacancyB)] })), /invalid_real_hh_candidate/, 'legacy candidate without this vacancy binding must be quarantined');
+});
+
+test('committed manual snapshot stays hidden until a matching durable completion receipt exists', t => {
+  const f = fixture(t);
+  const state = f.open();
+  const completed = state.recordCompletedSearch(search({ jobId: 'job_synthetic_manual', source: 'manual',
+    searchedAt: '2026-10-06T06:00:00.000Z', candidates: [candidate(1, vacancyA)] }));
+  const feed = createR03AccumulatedRealFeed({ scheduleRepository: f.scheduleRepository, candidateState: state,
+    loadAcceptedManualReceipts: f.loadAcceptedManualReceipts });
+  assert.equal(feed.read(context(profileA), vacancyA).total, 0, 'snapshot commit is not a manual completion receipt');
+  f.manualReceipts.push({ ...receipt(completed), status: 'outcome_unknown' });
+  assert.equal(feed.read(context(profileA), vacancyA).total, 0);
+  f.manualReceipts[0] = { ...receipt(completed), resultRevision: 'wrong_revision' };
+  assert.equal(feed.read(context(profileA), vacancyA).total, 0);
+  f.manualReceipts[0] = receipt(completed);
+  assert.equal(feed.read(context(profileA), vacancyA).total, 1);
 });
