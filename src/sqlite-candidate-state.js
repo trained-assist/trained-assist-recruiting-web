@@ -47,12 +47,15 @@ export class SqliteCandidateStateStore {
 
   transact(profileId, fn) {
     if (!safeProfileId(profileId) || typeof fn !== 'function') throw new TypeError('safe profileId and transaction function are required');
-    return this.db.transaction(() => {
+    const run = () => {
       const next = this.read(profileId);
       const result = fn(next, step => this.onStep(step, structuredClone(next)));
       if (next.profileId !== profileId || next.stateVersion !== CANDIDATE_STATE_VERSION) throw new Error('candidate_state_owner_or_version_mismatch');
       this.upsert.run(profileId, CANDIDATE_STATE_VERSION, JSON.stringify(next));
       return result;
-    }).immediate();
+    };
+    // A reconciler may already hold BEGIN IMMEDIATE on this same connection;
+    // its outer transaction then owns the candidate-state write as well.
+    return this.db.inTransaction ? run() : this.db.transaction(run).immediate();
   }
 }
