@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { getProfile, listProfileVacancies, profileHasScope, readVacancyResponses } from './recruiting-domain.js';
 import { createClientReportPreview } from './report-preview.js';
+import { evaluateSyntheticResponse, getResponseScenario, makeEvaluationId, validEvaluatorOutput } from './response-evaluation.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
@@ -76,7 +77,19 @@ function parseReportPreviewQuery(url) {
   return { candidateId, vacancyId };
 }
 
-export function createRecruitingServer() {
+function parseEvaluationQuery(url) {
+  const fields = ['responseId', 'vacancyId', 'expectedResponseRevision', 'expectedResumeRevision', 'expectedCriteriaRevision'];
+  const keys = [...url.searchParams.keys()];
+  if (keys.length !== fields.length || keys.some(key => !fields.includes(key)) || new Set(keys).size !== keys.length) return null;
+  const value = Object.fromEntries(fields.map(key => [key, url.searchParams.get(key)]));
+  if (!/^response_demo_[0-9]{3}$/.test(value.responseId) || !/^vac_demo_[0-9]{3}$/.test(value.vacancyId) ||
+      !/^response-demo-[0-9]{3}-r[0-9]+$/.test(value.expectedResponseRevision) ||
+      !/^resume-demo-[0-9]{3}-r[0-9]+$/.test(value.expectedResumeRevision) ||
+      !/^criteria-vac-demo-[0-9]{3}-r[0-9]+$/.test(value.expectedCriteriaRevision)) return null;
+  return value;
+}
+
+export function createRecruitingServer({ resolveTrustedProfileContext = () => null, evaluator = evaluateSyntheticResponse } = {}) {
   return createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const path = url.pathname;
@@ -121,6 +134,46 @@ export function createRecruitingServer() {
           body = { error: 'candidate_vacancy_mismatch' };
         } else {
           body = preview.body;
+        }
+      }
+    } else if (path === '/api/v1/ui/response-evaluations') {
+      const context = resolveTrustedProfileContext(req);
+      if (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes)) {
+        status = 401;
+        body = { error: 'trusted_profile_context_required' };
+      } else if (!context.scopes.includes('recruiting.responses.evaluate')) {
+        status = 403;
+        body = { error: 'evaluation_scope_required' };
+      } else {
+        const query = parseEvaluationQuery(url);
+        if (!query) {
+          status = 400;
+          body = { error: 'invalid_evaluation_query' };
+        } else {
+          const scenario = getResponseScenario(query.responseId);
+          if (!scenario || scenario.profileId !== context.profileId) {
+            status = 404;
+            body = { error: 'not_found' };
+          } else if (query.vacancyId !== scenario.vacancyId) {
+            status = 409;
+            body = { error: 'response_vacancy_mismatch' };
+          } else {
+            const currentSourceRevisions = { response: scenario.responseRevision, resume: scenario.resumeRevision, vacancyCriteria: scenario.criteriaRevision };
+            const requested = { response: query.expectedResponseRevision, resume: query.expectedResumeRevision, vacancyCriteria: query.expectedCriteriaRevision };
+            const staleRevisions = Object.keys(requested).filter(key => requested[key] !== currentSourceRevisions[key]).map(source => ({ source, requested: requested[source], current: currentSourceRevisions[source] }));
+            if (staleRevisions.length) {
+              status = 409;
+              body = { domainApiVersion: 'v1', error: 'stale_evaluation_inputs', staleRevisions, currentSourceRevisions };
+            } else {
+              const evaluated = evaluator({ resume: scenario.resume, criteria: scenario.criteria });
+              if (!validEvaluatorOutput(evaluated, scenario.criteria)) {
+                status = 502;
+                body = { error: 'invalid_evaluator_output' };
+              } else {
+                body = { domainApiVersion: 'v1', evaluationId: makeEvaluationId(scenario), responseId: scenario.responseId, vacancyId: scenario.vacancyId, sourceRevisions: currentSourceRevisions, ...evaluated };
+              }
+            }
+          }
         }
       }
     } else {

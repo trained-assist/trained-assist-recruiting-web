@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import Ajv2020 from 'ajv/dist/2020.js';
 import { createRecruitingServer } from '../src/server.js';
+import { evaluateSyntheticResponse } from '../src/response-evaluation.js';
 
 const root = new URL('../', import.meta.url);
 let server;
@@ -183,6 +184,74 @@ test('client report preview is synthetic, audience-scoped, escaped, pair-checked
   assert.equal((await fetch(`${base}/api/v1/ui/report-publish`, { method: 'POST' })).status, 405);
   assert.equal((await get('/api/v1/ui/report-publish')).status, 404);
   assert.deepEqual(await readFile(new URL('data/report-scenarios.json', root)), fixtureBefore);
+});
+
+test('R-02 synthetic evaluation is profile scoped, revision pinned, typed, deterministic, and side-effect free', async () => {
+  const inputSchema = await loadSchema('v1-response-evaluation-input.schema.json');
+  const evaluatorSchema = await loadSchema('v1-evaluator-result.schema.json');
+  const outputSchema = await loadSchema('v1-response-evaluation.schema.json');
+  const sourceSchema = await loadSchema('v1-response-evaluation-source.schema.json');
+  const fixture = JSON.parse(await readFile(new URL('data/response-evaluation-scenarios.json', root), 'utf8'))[0];
+  const ajv = new Ajv2020({ allErrors: true });
+  ajv.addSchema(evaluatorSchema);
+  const validateInput = ajv.compile(inputSchema);
+  const validateOutput = ajv.compile(outputSchema);
+  const validateSource = ajv.compile(sourceSchema);
+  const input = { responseId: fixture.responseId, vacancyId: fixture.vacancyId, expectedResponseRevision: fixture.responseRevision, expectedResumeRevision: fixture.resumeRevision, expectedCriteriaRevision: fixture.criteriaRevision };
+  assert.equal(validateInput(input), true);
+  assert.equal(validateSource(fixture), true, JSON.stringify(validateSource.errors));
+  assert.equal(validateInput({ ...input, profileId: fixture.profileId }), false, 'profile is never model supplied');
+  assert.equal(validateInput({ ...input, extra: true }), false);
+  assert.equal(validateOutput({}), false);
+
+  const fixturePath = new URL('data/response-evaluation-scenarios.json', root);
+  const before = await readFile(fixturePath);
+  let calls = 0;
+  const trustedServer = createRecruitingServer({
+    resolveTrustedProfileContext: req => ['profile_demo_001', 'profile_demo_002', 'profile_demo_003'].includes(req.headers['x-test-principal']) ? { profileId: req.headers['x-test-principal'], scopes: req.headers['x-test-principal'] === 'profile_demo_003' ? [] : ['recruiting.responses.evaluate'] } : null,
+    evaluator: args => { calls++; return evaluateSyntheticResponse(args); }
+  });
+  await new Promise(resolve => trustedServer.listen(0, '127.0.0.1', resolve));
+  const trustedBase = `http://127.0.0.1:${trustedServer.address().port}`;
+  const urlFor = values => `/api/v1/ui/response-evaluations?${new URLSearchParams(values)}`;
+  const request = (values, principal = fixture.profileId) => fetch(`${trustedBase}${urlFor(values)}`, { headers: { 'X-Test-Principal': principal } });
+  try {
+    assert.equal((await get(urlFor(input))).status, 401, 'default resolver denies profile route');
+    const successResponse = await request(input);
+    const payload = await successResponse.json();
+    assert.equal(successResponse.status, 200);
+    assert.equal(validateOutput(payload), true, JSON.stringify(validateOutput.errors));
+    assert.equal(payload.result, 'meets');
+    assert.equal(payload.evidence.length, 2);
+    assert.equal(payload.gaps.length, 1);
+    assert.deepEqual(payload.sourceRevisions, { response: fixture.responseRevision, resume: fixture.resumeRevision, vacancyCriteria: fixture.criteriaRevision });
+    assert.deepEqual(await (await request(input)).json(), payload, 'evaluation output and ID are deterministic');
+    assert.equal(calls, 2);
+
+    assert.equal((await request({ ...input, vacancyId: 'vac_demo_002' })).status, 409);
+    assert.equal((await request(input, 'profile_demo_002')).status, 404, 'cross-profile requests do not reveal the fixture');
+    assert.equal((await request(input, 'profile_demo_003')).status, 403);
+    for (const [field, stale] of [['expectedResponseRevision', 'response-demo-001-r0'], ['expectedResumeRevision', 'resume-demo-001-r0'], ['expectedCriteriaRevision', 'criteria-vac-demo-001-r0']]) {
+      const response = await request({ ...input, [field]: stale });
+      const body = await response.json();
+      assert.equal(response.status, 409);
+      assert.equal(validateOutput(body), true, JSON.stringify(validateOutput.errors));
+      assert.ok(body.staleRevisions.length);
+    }
+    assert.equal(calls, 2, 'stale sources never reach the evaluator');
+
+    const invalidServer = createRecruitingServer({ resolveTrustedProfileContext: () => ({ profileId: fixture.profileId, scopes: ['recruiting.responses.evaluate'] }), evaluator: () => ({ result: 'publish', evidence: [], gaps: [], sideEffect: true }) });
+    await new Promise(resolve => invalidServer.listen(0, '127.0.0.1', resolve));
+    try {
+      const invalid = await fetch(`http://127.0.0.1:${invalidServer.address().port}${urlFor(input)}`);
+      assert.equal(invalid.status, 502);
+      assert.deepEqual(await invalid.json(), { error: 'invalid_evaluator_output' });
+    } finally { await new Promise(resolve => invalidServer.close(resolve)); }
+
+    assert.equal((await fetch(`${trustedBase}${urlFor(input)}`, { method: 'POST' })).status, 405);
+    assert.equal((await (await fetch(`${base}/api/v1/capabilities`)).json()).capabilities.some(item => item.id.includes('response')), false);
+    assert.deepEqual(await readFile(fixturePath), before, 'evaluation does not mutate source fixtures');
+  } finally { await new Promise(resolve => trustedServer.close(resolve)); }
 });
 
 test('browser landing page is useful and all writes are rejected', async () => {
