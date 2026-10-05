@@ -19,6 +19,7 @@ export function publicJob(job) {
     domainApiVersion: 'v1', jobId: job.jobId, vacancyId: job.vacancyId,
     criteriaRevision: job.criteriaRevision, sourceRevision: job.sourceRevision ?? 'pending',
     status: job.status === 'dispatching' ? 'running' : job.status, resultCount: job.items.length,
+    ...(job.completedAt ? { completedAt: job.completedAt } : {}),
     canResume: job.status === 'partial' && (job.providerError === null || job.providerError.retryable === true),
     ranking: 'provider_order_unranked', providerError: job.providerError
   };

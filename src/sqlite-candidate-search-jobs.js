@@ -149,6 +149,7 @@ export class SqliteCandidateSearchJobs {
         job.items.push(...newItems);
         job.providerCursor = page.nextCursor;
         job.status = page.complete ? 'completed' : 'partial';
+        if (page.complete) job.completedAt = this.now();
         job.providerError = null;
       }
       job.dispatchOwner = null;
