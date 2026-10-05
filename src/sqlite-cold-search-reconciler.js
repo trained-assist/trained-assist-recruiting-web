@@ -62,7 +62,8 @@ export class SqliteColdSearchReconciler {
       if (occurrence.jobId && occurrence.jobId !== jobId || occurrence.criteriaRevision && occurrence.criteriaRevision !== expectedCriteriaRevision) return { kind: 'binding_conflict' };
       const scheduleRow = this.schedule.get(occurrence.scheduleId);
       const schedule = parse(scheduleRow);
-      if (!schedule || scheduleRow.profile_id !== profileId || schedule.profileId !== profileId || schedule.vacancyId !== vacancyId ||
+      if (!schedule || scheduleRow.profile_id !== profileId || schedule.scheduleId !== occurrence.scheduleId ||
+          schedule.legacyJobId !== occurrence.legacyJobId || schedule.profileId !== profileId || schedule.vacancyId !== vacancyId ||
           schedule.blockedByUnknownOccurrenceId !== occurrenceId || scheduleRow.blocked_by_unknown_occurrence_id !== occurrenceId) return { kind: 'schedule_conflict' };
 
       const jobRow = this.job.get(jobId);

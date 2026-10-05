@@ -157,3 +157,43 @@ test('an already matching snapshot is verified, not duplicated, before resolving
   assert.equal(state.read(profileId).snapshotsByVacancy[vacancyId].length, 1);
   assert.equal(setup.providerCalls, 1);
 });
+
+test('reconciling an older scheduled run cannot replace newer manual freshness', async t => {
+  const setup = await fixture(t);
+  const state = new SqliteCandidateStateStore({ filename: setup.filename });
+  t.after(() => { if (state.db.open) state.close(); });
+  const model = createCandidateState({ store: state, isVacancyOwned: owned });
+  const laterAt = '2026-10-06T11:00:00.000Z';
+  model.recordSearch({ profileId, vacancyId, jobId: 'search_demo_later', searchedAt: laterAt,
+    criteriaRevision: setup.job.criteriaRevision, sourceRevision: setup.job.sourceRevision, source: 'manual',
+    candidates: [{ ...item, candidateRef: 'candidate_search_demo_002' }], totalCollected: 1 });
+  assert.equal(model.latestSnapshot(profileId, vacancyId).source, 'manual');
+  const reconciler = setup.openReconciler();
+  assert.equal(reconciler.reconcile(setup.command).kind, 'reconciled');
+  assert.equal(model.latestSnapshot(profileId, vacancyId).jobId, 'search_demo_later');
+  assert.equal(model.latestSnapshot(profileId, vacancyId).searchedAt, laterAt);
+  assert.equal(model.candidates(profileId, vacancyId).length, 2);
+  state.close();
+  const restarted = new SqliteCandidateStateStore({ filename: setup.filename });
+  t.after(() => { if (restarted.db.open) restarted.close(); });
+  const reopened = createCandidateState({ store: restarted, isVacancyOwned: owned });
+  assert.equal(reopened.latestSnapshot(profileId, vacancyId).jobId, 'search_demo_later');
+});
+
+test('equal search timestamps choose a stable job ID across append order and restart', async t => {
+  const setup = await fixture(t);
+  const state = new SqliteCandidateStateStore({ filename: setup.filename });
+  t.after(() => { if (state.db.open) state.close(); });
+  const model = createCandidateState({ store: state, isVacancyOwned: owned });
+  const at = '2026-10-06T11:00:00.000Z';
+  for (const [jobId, candidateRef] of [['search_demo_z', 'candidate_search_demo_002'], ['search_demo_a', 'candidate_search_demo_003']]) {
+    model.recordSearch({ profileId, vacancyId, jobId, searchedAt: at,
+      criteriaRevision: setup.job.criteriaRevision, sourceRevision: setup.job.sourceRevision, source: 'manual',
+      candidates: [{ ...item, candidateRef }], totalCollected: 1 });
+  }
+  assert.equal(model.latestSnapshot(profileId, vacancyId).jobId, 'search_demo_z');
+  state.close();
+  const restarted = new SqliteCandidateStateStore({ filename: setup.filename });
+  t.after(() => { if (restarted.db.open) restarted.close(); });
+  assert.equal(createCandidateState({ store: restarted, isVacancyOwned: owned }).latestSnapshot(profileId, vacancyId).jobId, 'search_demo_z');
+});
