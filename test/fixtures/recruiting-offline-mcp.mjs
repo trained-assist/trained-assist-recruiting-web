@@ -12,6 +12,7 @@ const relayCompatibility = JSON.parse(await readFile(resolve(root, 'contracts/ca
 const schema = async ref => JSON.parse(await readFile(resolve(root, 'contracts', ref), 'utf8'));
 const ajv = new Ajv2020({ allErrors: true });
 ajv.addSchema(await schema('v1-cold-search-occurrence.schema.json'));
+ajv.addSchema(await schema('v1-cold-search-schedule.schema.json'));
 const descriptors = await Promise.all(descriptor.capabilities.map(async capability => {
   const inputSchema = await schema(capability.inputSchemaRef);
   const outputSchema = await schema(capability.outputSchemaRef);
@@ -22,6 +23,7 @@ const relayContractVersion = relayCompatibility.version;
 let now = new Date(process.env.OFFLINE_MCP_CLOCK ?? '2026-10-06T00:00:00.000Z');
 let providerMode = 'normal';
 let providerCalls = 0;
+let lifecycle = 'new';
 const profileId = process.env.OFFLINE_MCP_PROFILE_ID ?? '';
 const scopes = (process.env.OFFLINE_MCP_SCOPES ?? '').split(',').filter(Boolean);
 
@@ -59,11 +61,16 @@ function replyError(id, code, message) {
 }
 async function handle(request) {
   const { id, method, params = {} } = request;
+  if (request.jsonrpc === '2.0' && method === 'notifications/initialized' && id === undefined) {
+    if (lifecycle === 'awaiting_initialized') lifecycle = 'ready';
+    return;
+  }
   if (request.jsonrpc !== '2.0' || typeof method !== 'string' || id === undefined || id === null) {
     replyError(id ?? null, -32600, 'invalid_json_rpc_request');
     return;
   }
   if (method === 'initialize') {
+    if (lifecycle !== 'new') { replyError(id, -32600, 'already_initialized'); return; }
     const requestedRelayVersion = params.capabilities?.experimental?.relayContractVersion;
     if (params.protocolVersion !== protocolVersion || requestedRelayVersion !== undefined && requestedRelayVersion !== relayContractVersion) {
       replyError(id, errorCodes.version_mismatch, 'protocol_or_relay_contract_version_mismatch');
@@ -74,8 +81,10 @@ async function handle(request) {
       capabilities: { tools: {}, experimental: { relayContract: { urn: descriptor.relayContract.urn, version: relayContractVersion }, recruitingCapabilityContract: { urn: descriptor.urn, version: descriptor.version } } },
       serverInfo: { name: 'recruiting-offline-contract-fixture', version: String(descriptor.version) }
     } });
+    lifecycle = 'awaiting_initialized';
     return;
   }
+  if (lifecycle !== 'ready') { replyError(id, -32016, 'initialization_required'); return; }
   if (method === 'tools/list') {
     send({ jsonrpc: '2.0', id, result: { tools: descriptors.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) } });
     return;

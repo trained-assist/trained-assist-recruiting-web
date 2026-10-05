@@ -25,11 +25,12 @@ async function startFixture({ profileId = 'profile_demo_001', scopes = ['recruit
   const lines = createInterface({ input: proc.stdout, terminal: false });
   let seq = 0;
   const pending = new Map();
+  const unsolicited = [];
   lines.on('line', line => {
     let response;
     try { response = JSON.parse(line); } catch { return; }
     const item = pending.get(response.id);
-    if (!item) return;
+    if (!item) { unsolicited.push(response); return; }
     pending.delete(response.id);
     clearTimeout(item.timer);
     item.resolve(response);
@@ -51,12 +52,24 @@ async function startFixture({ profileId = 'profile_demo_001', scopes = ['recruit
     pending.set(expectedId, { resolve: resolveCall, reject, timer });
     proc.stdin.write(`${line}\n`);
   });
+  const notify = (method, params = {}) => proc.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method, params })}\n`);
   const stop = async () => {
     if (proc.exitCode !== null) return;
     proc.kill('SIGTERM');
     await new Promise(resolveStop => proc.once('exit', resolveStop));
   };
-  return { call, rawCall, stop, proc };
+  return { call, rawCall, notify, stop, proc, unsolicited };
+}
+
+async function initializeFixture(fixture, protocolVersion = '2024-11-05') {
+  const response = await fixture.call('initialize', {
+    protocolVersion,
+    capabilities: { experimental: { relayContractVersion: 1 } },
+    clientInfo: { name: 'offline-contract-test', version: '1' }
+  });
+  assert.equal(response.error, undefined, JSON.stringify(response.error));
+  fixture.notify('notifications/initialized');
+  return response;
 }
 
 function contentResult(response) {
@@ -87,15 +100,14 @@ test('descriptor-driven local MCP round-trip invokes shared schedule handlers wi
 
   const fixture = await startFixture();
   t.after(fixture.stop);
-  const init = await fixture.call('initialize', {
-    protocolVersion: descriptor.relayContract.source.protocolVersion,
-    capabilities: { experimental: { relayContractVersion: 1 } },
-    clientInfo: { name: 'offline-contract-test', version: '1' }
-  });
+  const preInit = await fixture.call('tools/list');
+  assert.equal(preInit.error.message, 'initialization_required');
+  const init = await initializeFixture(fixture, descriptor.relayContract.source.protocolVersion);
   assert.equal(init.error, undefined);
   assert.equal(init.result.capabilities.experimental.relayContract.version, 1);
   const listed = await fixture.call('tools/list');
   assert.equal(listed.error, undefined);
+  assert.deepEqual(fixture.unsolicited, [], 'initialized notification has no JSON-RPC response');
   assert.equal(listed.result.tools.length, descriptor.capabilities.length);
   for (let i = 0; i < descriptor.capabilities.length; i++) {
     const capability = descriptor.capabilities[i];
@@ -108,6 +120,15 @@ test('descriptor-driven local MCP round-trip invokes shared schedule handlers wi
   const enabled = contentResult(enabledResponse);
   assert.equal(enabled.kind, 'updated');
   assert.equal(enabled.schedule.profileId, 'profile_demo_001');
+  const scheduleSchema = await loadJson('contracts/v1-cold-search-schedule.schema.json');
+  const scheduleResultSchema = await loadJson('contracts/v1-cold-search-schedule-result.schema.json');
+  const scheduleAjv = new Ajv2020({ allErrors: true });
+  scheduleAjv.addSchema(scheduleSchema);
+  const validateScheduleResult = scheduleAjv.compile(scheduleResultSchema);
+  assert.equal(validateScheduleResult(enabled), true, JSON.stringify(validateScheduleResult.errors));
+  const malformed = structuredClone(enabled);
+  delete malformed.schedule.timezone;
+  assert.equal(validateScheduleResult(malformed), false, 'missing required schedule fields fail output validation');
   const duplicate = contentResult(await fixture.call('tools/call', { name: 'manage_cold_search_schedule', arguments: { action: 'enable', vacancyId: 'vac_demo_001', interval_hours: 6 } }));
   assert.equal(duplicate.schedule.scheduleId, enabled.schedule.scheduleId);
   assert.equal(contentResult(await fixture.call('tools/call', { name: 'manage_cold_search_schedule', arguments: { action: 'status' } })).schedules.length, 1);
@@ -138,23 +159,26 @@ test('local MCP fixture fails closed for protocol/relay version, auth, schema, u
   assert.equal((await fixture.rawCall('{"jsonrpc":"1.0","id":101,"method":"tools/list"}', 101)).error.code, -32600);
   const badRelay = await fixture.call('initialize', { protocolVersion: '2024-11-05', capabilities: { experimental: { relayContractVersion: 2 } } });
   assert.equal(badRelay.error.data.code, 'version_mismatch');
+  await initializeFixture(fixture);
   const invalid = await fixture.call('tools/call', { name: 'manage_cold_search_schedule', arguments: { action: 'enable', vacancyId: 'vac_demo_001', profileId: 'profile_demo_002' }, _meta: { authContext: { profileId: 'profile_demo_002' } } });
   assert.equal(invalid.error.data.code, 'invalid_arguments', 'profile fields are rejected, and caller _meta cannot override host-bound identity');
   assert.equal((await fixture.call('tools/call', { name: 'no_such_capability', arguments: {} })).error.data.code, 'not_found');
 
   const noAuth = await startFixture({ profileId: '', scopes: [] });
   t.after(noAuth.stop);
+  await initializeFixture(noAuth);
   const authFailure = await noAuth.call('tools/call', { name: 'manage_cold_search_schedule', arguments: { action: 'status' } });
   assert.equal(authFailure.error.data.code, 'unauthorized');
   const insufficient = await startFixture({ profileId: 'profile_demo_001', scopes: ['recruiting.profile.read'] });
   t.after(insufficient.stop);
+  await initializeFixture(insufficient);
   assert.equal((await insufficient.call('tools/call', { name: 'manage_cold_search_schedule', arguments: { action: 'status' } })).error.data.code, 'unauthorized');
 });
 
 test('unknown scheduler outcome stays quarantined across MCP calls and does not replay provider effects', async t => {
   const fixture = await startFixture();
   t.after(fixture.stop);
-  await fixture.call('initialize', { protocolVersion: '2024-11-05', capabilities: { experimental: { relayContractVersion: 1 } } });
+  await initializeFixture(fixture);
   const enabled = contentResult(await fixture.call('tools/call', { name: 'manage_cold_search_schedule', arguments: { action: 'enable', vacancyId: 'vac_demo_001', interval_hours: 6 } }));
   await fixture.call('testing/clock.set', { iso: enabled.schedule.nextRunAt });
   await fixture.call('testing/provider.setMode', { mode: 'unknown' });
