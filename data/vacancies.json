@@ -1,0 +1,18 @@
+[
+  {
+    "id": "vac_demo_001",
+    "title": "Synthetic Backend Engineer",
+    "location": "Example City (synthetic)",
+    "employmentType": "full-time",
+    "status": "open",
+    "summary": "Fixture vacancy for local contract development. No real employer or candidate data."
+  },
+  {
+    "id": "vac_demo_002",
+    "title": "Synthetic Product Analyst",
+    "location": "Remote (synthetic)",
+    "employmentType": "contract",
+    "status": "open",
+    "summary": "Fixture vacancy for local contract development. No real employer or candidate data."
+  }
+]

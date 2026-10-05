@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-manifest.schema.json",
+  "title": "Recruiting API v1 manifest",
+  "type": "object",
+  "required": ["apiVersion", "service", "capabilities", "readiness", "endpoints"],
+  "properties": {
+    "apiVersion": { "const": "v1" },
+    "service": { "const": "recruiting" },
+    "capabilities": { "type": "array", "items": { "type": "string" } },
+    "readiness": { "type": "string", "enum": ["ready", "not_ready"] },
+    "endpoints": { "type": "object", "additionalProperties": { "type": "string" } }
+  },
+  "additionalProperties": false
+}

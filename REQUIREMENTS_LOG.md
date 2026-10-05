@@ -1,0 +1,7 @@
+# Requirements log
+
+| ID | Date | Status | Requirement / decision | Rationale | Affected artifacts | Validation |
+|---|---|---|---|---|---|---|
+| R-001 | 2026-10-05 | active | Recruiting owns its domain API and data. The platform/agent consumes a versioned API contract; the service does not import agent internals. | Keep domain ownership independent and make integration boundaries explicit. | `src/`, `contracts/`, `README.md` | Contract and HTTP behavior tests |
+| R-002 | 2026-10-05 | active | This slice uses synthetic fixtures only, performs no writes, and contains no production state, credentials, or real candidate PII. | Safe isolated prototype pending domain/API review. | `data/`, `src/`, `test/` | Fixture and route assertions; repository secret/PII review |
+| R-003 | 2026-10-05 | active | Existing `trained-assist-hh-skill` is in-process and profile-file coupled; do not copy it blindly into this service. | Preserve current integration knowledge without carrying its coupling into the new boundary. | `README.md` | Documented; no source imported |
