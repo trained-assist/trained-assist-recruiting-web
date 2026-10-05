@@ -202,6 +202,8 @@ export class SqliteRealHhCandidateState {
         !ownKeysOnly(assessment.knockout, new Set(['status', 'criteria'])) ||
         !['passed', 'failed'].includes(assessment.knockout.status) || !Array.isArray(assessment.knockout.criteria) ||
         assessment.knockout.criteria.length > 20 || assessment.knockout.criteria.some(item => typeof item !== 'string' || item.length > 200) ||
+        assessment.knockout.status === 'failed' && (assessment.knockout.criteria.length === 0 || assessment.atsScore > 2) ||
+        assessment.knockout.status === 'passed' && assessment.knockout.criteria.length > 0 ||
         Buffer.byteLength(JSON.stringify(assessment)) > 8192) throw new TypeError('invalid_real_hh_assessment');
     return this.db.transaction(() => {
       const snapshot = this.latestSnapshot(profileId, vacancyId);

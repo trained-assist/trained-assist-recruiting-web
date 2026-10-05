@@ -25,6 +25,7 @@ test('assessment DTO matches the versioned allowlist', () => {
   const validate = new Ajv2020({ strict: true }).compile(schema);
   assert.equal(validate(assessment), true, JSON.stringify(validate.errors));
   assert.equal(validate({ ...assessment, rawResume: 'synthetic private text' }), false);
+  assert.equal(validate({ ...assessment, knockout: { status: 'failed', criteria: ['вымышленный стоп-фактор'] } }), false);
 });
 
 function fixture(t) {
@@ -83,6 +84,7 @@ test('two writers converge, reject cross-scope and invalid assessments, and hide
   assert.deepEqual(b.recordAssessment(input), { kind: 'already_scored' });
   assert.throws(() => b.recordAssessment({ ...input, profileId: 'profile_synthetic_other' }), /real_hh_scope_denied/);
   assert.throws(() => b.recordAssessment({ ...input, assessment: { ...assessment, atsScore: 11 } }), /invalid_real_hh_assessment/);
+  assert.throws(() => b.recordAssessment({ ...input, assessment: { ...assessment, knockout: { status: 'failed', criteria: ['вымышленный стоп-фактор'] } } }), /invalid_real_hh_assessment/);
   a.recordCompletedSearch(search('job_synthetic_2', [candidate(1), candidate(2)]));
   const summary = await runHhBackgroundScoringTick({ state: b, profileId, vacancyId,
     currentCriteriaRevision: async () => criteriaRevision, evaluate: async () => { throw new Error('synthetic private resume in error'); } });
