@@ -26,9 +26,9 @@ export function publicJob(job) {
 }
 
 export function normalizeProviderError(code, retryable = false) {
-  const allowed = ['provider_forbidden', 'provider_unavailable', 'provider_invalid_response'];
+  const allowed = ['provider_forbidden', 'provider_unavailable', 'provider_invalid_response', 'search_outcome_unknown'];
   const normalizedCode = allowed.includes(code) ? code : 'provider_unavailable';
-  return { code: normalizedCode, retryable: normalizedCode === 'provider_forbidden' ? false : Boolean(retryable) };
+  return { code: normalizedCode, retryable: ['provider_forbidden', 'search_outcome_unknown'].includes(normalizedCode) ? false : Boolean(retryable) };
 }
 
 export function candidateSearchResultPage(job, { limit, cursor }) {
@@ -58,14 +58,14 @@ export function createCandidateSearchJobs({ provider = syntheticColdSearchProvid
     let page;
     try { page = await provider({ vacancyId: job.vacancyId, criteria: job.criteria, cursor: job.providerCursor }); }
     catch (error) {
-      const forbidden = error?.status === 403;
-      job.providerError = normalizeProviderError(forbidden ? 'provider_forbidden' : 'provider_unavailable', !forbidden);
-      job.status = job.items.length ? 'partial' : 'failed';
+      const code = error?.code === 'search_outcome_unknown' ? 'search_outcome_unknown' : error?.status === 403 ? 'provider_forbidden' : 'provider_unavailable';
+      job.providerError = normalizeProviderError(code, code === 'provider_unavailable');
+      job.status = code === 'search_outcome_unknown' ? 'outcome_unknown' : job.items.length ? 'partial' : 'failed';
       return publicJob(job);
     }
     if (!page || page.kind === 'error') {
       job.providerError = normalizeProviderError(page?.code, page?.retryable);
-      job.status = job.items.length ? 'partial' : 'failed';
+      job.status = page?.code === 'search_outcome_unknown' ? 'outcome_unknown' : job.items.length ? 'partial' : 'failed';
       return publicJob(job);
     }
     if (page.kind !== 'page' || !/^cold-search-provider-demo-r[0-9]+$/.test(page.sourceRevision ?? '') || !Array.isArray(page.items) || page.items.length > 50 ||

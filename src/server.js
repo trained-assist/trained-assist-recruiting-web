@@ -8,6 +8,7 @@ import { createClientReportPreview, findReportSource, findReportVacancy } from '
 import { createReportDrafts } from './report-drafts.js';
 import { evaluateSyntheticResponse, getResponseScenario, makeEvaluationId, validEvaluatorOutput } from './response-evaluation.js';
 import { createCandidateSearchJobs } from './candidate-search-jobs.js';
+import { createManualColdSearchRuns } from './manual-cold-search-runs.js';
 import { createCandidateState, createMemoryCandidateStateStore } from './candidate-state.js';
 import { createColdSearchScheduleHandler, InMemoryColdSearchScheduleRepository, validSearchContext } from './cold-search-schedules.js';
 
@@ -146,6 +147,7 @@ function validReportAction(value) {
 
 export function createRecruitingServer({ resolveTrustedProfileContext = () => null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, candidateSearchJobStore = null, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), scheduleLeaseMs = 5 * 60_000, maxCandidateSearchJobs = 100, publicationAdapter, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
   const candidateSearchJobs = candidateSearchJobStore ?? createCandidateSearchJobs({ provider: candidateSearchProvider, maxJobs: maxCandidateSearchJobs });
+  const manualColdSearchRuns = createManualColdSearchRuns({ searchJobs: candidateSearchJobs, clock: scheduleClock, maxRuns: maxCandidateSearchJobs });
   const candidateState = createCandidateState({ store: candidateStateStore, isVacancyOwned: (profileId, vacancyId) => listProfileVacancies(profileId)?.some(item => item.id === vacancyId) ?? false });
   const reportDrafts = createReportDrafts({ publicationAdapter });
   const currentSearchCriteriaRevision = async (context, vacancyId) => {
@@ -193,6 +195,8 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
     const url = new URL(req.url ?? '/', 'http://localhost');
     const path = url.pathname;
     const isCandidateSearchPath = path === '/api/v1/ui/candidate-searches' || /^\/api\/v1\/ui\/candidate-searches\/[^/]+(?:\/results|\/resume)?$/.test(path);
+    const manualSearchRunsRoot = '/api/v1/ui/manual-search-runs';
+    const isManualSearchRunPath = path === manualSearchRunsRoot || /^\/api\/v1\/ui\/manual-search-runs\/[0-9a-f-]{36}$/i.test(path);
     const isProactivePath = path === '/hh/proactive' || path === '/hh/proactive/app.js' || /^\/api\/hh\/proactive\/(?:candidates|schedule|occurrences|vacancy-state|search)$/.test(path);
     const reportDraftRoot = '/api/v1/ui/report-drafts';
     const isReportDraftPath = path === reportDraftRoot || new RegExp(`^${reportDraftRoot}/report_demo_[a-f0-9]{12}(?:/preview|/review|/publish|/revoke)?$`).test(path);
@@ -200,10 +204,10 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
     let type = mime.json;
     let body;
 
-    if (req.method !== 'GET' && req.method !== 'HEAD' && !(req.method === 'POST' && (isCandidateSearchPath || isReportDraftPath || path === '/api/hh/proactive/vacancy-state' || path === '/api/hh/proactive/search')) && !(req.method === 'PATCH' && isReportDraftPath)) {
+    if (req.method !== 'GET' && req.method !== 'HEAD' && !(req.method === 'POST' && (isCandidateSearchPath || isManualSearchRunPath || isReportDraftPath || path === '/api/hh/proactive/vacancy-state' || path === '/api/hh/proactive/search')) && !(req.method === 'PATCH' && isReportDraftPath)) {
       status = 405;
       body = { error: 'method_not_allowed' };
-      res.setHeader('Allow', isCandidateSearchPath || isReportDraftPath ? 'GET, HEAD, POST, PATCH' : 'GET, HEAD');
+      res.setHeader('Allow', isCandidateSearchPath || isReportDraftPath ? 'GET, HEAD, POST, PATCH' : isManualSearchRunPath ? 'GET, HEAD, POST' : 'GET, HEAD');
     } else if (path === '/') {
       type = mime.html;
       body = landingPage;
@@ -221,6 +225,69 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
         body = { error: 'unexpected_query_parameters' };
       } else {
         body = { apiVersion: 'v1', items: vacancies };
+      }
+    } else if (isManualSearchRunPath) {
+      let context;
+      try { context = await resolveTrustedProfileContext(req); }
+      catch { status = 503; body = { error: 'trusted_profile_unavailable' }; }
+      if (status !== 200) {
+        // A failed resolver cannot enter a profile-owned search handler.
+      } else if (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes)) {
+        status = 401;
+        body = { error: 'trusted_profile_context_required' };
+      } else if (!context.scopes.includes('recruiting.candidateSearch')) {
+        status = 403;
+        body = { error: 'search_scope_required' };
+      } else if (path === manualSearchRunsRoot && req.method === 'POST' && url.search === '') {
+        let request;
+        try { request = await readJsonBody(req); } catch (error) {
+          status = error.message === 'body_too_large' ? 413 : 400;
+          body = { error: error.message === 'body_too_large' ? 'request_too_large' : 'invalid_json' };
+        }
+        const validRequest = request && /^vac_demo_[0-9]{3}$/.test(request.vacancyId ?? '') &&
+          /^criteria-search-demo-r[0-9]+$/.test(request.criteriaRevision ?? '') && isPlainObject(request.criteria) &&
+          Object.keys(request).sort().join(',') === 'criteria,criteriaRevision,vacancyId' &&
+          Object.keys(request.criteria).sort().join(',') === 'keywords,regions' &&
+          Array.isArray(request.criteria.keywords) && Array.isArray(request.criteria.regions) &&
+          request.criteria.keywords.length <= 8 && request.criteria.regions.length <= 8 &&
+          request.criteria.keywords.every(item => typeof item === 'string' && item.length > 0 && item.length <= 100) &&
+          request.criteria.regions.every(item => typeof item === 'string' && /^region_demo_[0-9]{3}$/.test(item));
+        const key = req.headers['idempotency-key'];
+        if (status === 200 && (!validRequest || typeof key !== 'string' || !/^[A-Za-z0-9._:-]{8,128}$/.test(key))) {
+          status = 400;
+          body = { error: 'invalid_search_run_start' };
+        } else if (status === 200 && !listProfileVacancies(context.profileId)?.some(item => item.id === request.vacancyId)) {
+          status = 404;
+          body = { error: 'vacancy_not_found' };
+        } else if (status === 200) {
+          const currentRevision = await currentSearchCriteriaRevision(context, request.vacancyId);
+          if (!currentRevision) {
+            status = 503;
+            body = { error: 'criteria_revision_unavailable' };
+          } else if (currentRevision !== request.criteriaRevision) {
+            status = 409;
+            body = { error: 'stale_search_criteria', requestedRevision: request.criteriaRevision, currentRevision };
+          } else {
+            const started = manualColdSearchRuns.start(context.profileId, key, request);
+            if (started.kind === 'conflict') { status = 409; body = { error: 'idempotency_key_reused' }; }
+            else if (started.kind === 'capacity') { status = 429; body = { error: 'search_run_capacity_reached' }; }
+            else { status = started.kind === 'created' ? 202 : 200; body = started.run; }
+          }
+        }
+      } else {
+        const route = path.match(/^\/api\/v1\/ui\/manual-search-runs\/([0-9a-f-]{36})$/i);
+        if (!route || req.method !== 'GET' || url.search !== '') {
+          status = 404;
+          body = { error: 'not_found' };
+        } else {
+          const result = manualColdSearchRuns.get(context.profileId, route[1]);
+          if (result.kind === 'found') body = result.run;
+          else if (result.kind === 'not_found') { status = 404; body = { error: 'not_found' }; }
+          else {
+            status = 410;
+            body = { domainApiVersion: 'v1', error: 'run_outcome_unknown', automaticRetryAllowed: false };
+          }
+        }
       }
     } else if (isProactivePath) {
       let context;
