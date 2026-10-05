@@ -21,9 +21,10 @@
       "additionalProperties": false
     },
     "candidate": {
-      "type": "object", "required": ["candidateRef", "title", "source", "foundAt", "wildcard", "vacancyIds", "reviewsByVacancy"],
+      "type": "object", "required": ["candidateRef", "title", "region", "evidenceSummary", "source", "foundAt", "wildcard", "vacancyIds", "reviewsByVacancy"],
       "properties": {
         "candidateRef": { "type": "string", "minLength": 1 }, "title": { "type": "string", "minLength": 1 },
+        "region": { "type": "string" }, "evidenceSummary": { "type": "string" },
         "source": { "enum": ["search", "manual"] }, "foundAt": { "type": "string" },
         "wildcard": { "type": "boolean" }, "vacancyIds": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
         "reviewsByVacancy": { "type": "object", "additionalProperties": { "$ref": "#/$defs/review" } }
@@ -33,7 +34,7 @@
       "type": "object", "required": ["stateVersion", "profileId", "vacancyId", "jobId", "searchedAt", "candidateRefs", "totalCollected", "totalAfterFilter"],
       "properties": {
         "stateVersion": { "const": "v1" }, "profileId": { "type": "string" }, "vacancyId": { "type": "string" },
-        "jobId": { "type": "string" }, "searchedAt": { "type": "string" }, "criteriaRevision": { "type": "string" }, "sourceRevision": { "type": "string" },
+        "jobId": { "type": "string" }, "searchedAt": { "type": "string" }, "criteriaRevision": { "type": "string" }, "sourceRevision": { "type": "string" }, "source": { "enum": ["manual", "scheduled"] },
         "candidateRefs": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
         "totalCollected": { "type": "integer", "minimum": 0 }, "totalAfterFilter": { "type": "integer", "minimum": 0 },
         "newCount": { "type": "integer", "minimum": 0 }, "newCandidateRefs": { "type": "array", "uniqueItems": true, "items": { "type": "string" } }

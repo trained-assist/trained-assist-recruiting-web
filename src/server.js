@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -8,6 +8,7 @@ import { createClientReportPreview, findReportSource, findReportVacancy } from '
 import { createReportDrafts } from './report-drafts.js';
 import { evaluateSyntheticResponse, getResponseScenario, makeEvaluationId, validEvaluatorOutput } from './response-evaluation.js';
 import { createCandidateSearchJobs } from './candidate-search-jobs.js';
+import { createCandidateState, createMemoryCandidateStateStore } from './candidate-state.js';
 import { createColdSearchScheduleHandler, InMemoryColdSearchScheduleRepository, validSearchContext } from './cold-search-schedules.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -143,8 +144,9 @@ function validReportAction(value) {
   return isPlainObject(value) && Object.keys(value).sort().join(',') === 'expectedReportRevision' && isReportRevision(value.expectedReportRevision);
 }
 
-export function createRecruitingServer({ resolveTrustedProfileContext = () => null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), scheduleClock = () => new Date(), maxCandidateSearchJobs = 100, publicationAdapter, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
+export function createRecruitingServer({ resolveTrustedProfileContext = () => null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), maxCandidateSearchJobs = 100, publicationAdapter, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
   const candidateSearchJobs = createCandidateSearchJobs({ provider: candidateSearchProvider, maxJobs: maxCandidateSearchJobs });
+  const candidateState = createCandidateState({ store: candidateStateStore, isVacancyOwned: (profileId, vacancyId) => listProfileVacancies(profileId)?.some(item => item.id === vacancyId) ?? false });
   const reportDrafts = createReportDrafts({ publicationAdapter });
   const currentSearchCriteriaRevision = async (context, vacancyId) => {
     try {
@@ -159,11 +161,9 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
     } catch { return null; }
   };
   const startCandidateSearch = (profileId, key, request) => candidateSearchJobs.start(profileId, key, request);
-  const manualSearches = new Map();
   const manualSearchOperations = new Map();
   const manualSearchInFlight = new Map();
-  const manualKey = (profileId, vacancyId) => JSON.stringify([profileId, vacancyId]);
-  const executeColdSearch = async ({ profileId, idempotencyKey, request }) => {
+  const executeColdSearch = async ({ profileId, idempotencyKey, request, source = 'scheduled' }) => {
     const context = { profileId, scopes: ['recruiting.candidateSearch'] };
     if (await currentSearchCriteriaRevision(context, request.vacancyId) !== request.criteriaRevision) return { status: 'failed', phase: 'pre_dispatch', providerError: { code: 'stale_search_criteria' } };
     const started = await startCandidateSearch(profileId, idempotencyKey, request);
@@ -176,8 +176,11 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
       job = resumed.job;
     }
     if (job.status !== 'completed') return { ...job, status: 'failed', providerError: job.providerError ?? { code: 'scheduled_search_incomplete' } };
-    const snapshot = candidateSearchJobs.results(profileId, job.jobId, { limit: 200, cursor: null });
-    return { ...job, ...snapshot, created: started.created };
+    const results = candidateSearchJobs.results(profileId, job.jobId, { limit: 200, cursor: null });
+    const snapshot = candidateState.recordSearch({ profileId, vacancyId: request.vacancyId, jobId: job.jobId,
+      searchedAt: scheduleClock().toISOString(), criteriaRevision: job.criteriaRevision, sourceRevision: results.sourceRevision,
+      source, candidates: results.items, totalCollected: results.items.length });
+    return { ...job, ...results, searchedAt: snapshot.searchedAt, created: started.created };
   };
   const coldSearchSchedules = createColdSearchScheduleHandler({
     repository: candidateSearchScheduleRepository,
@@ -303,12 +306,10 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
                   const joined = Boolean(operation);
                   if (!operation) {
                     const promise = (async () => {
-                      const result = await executeColdSearch({ profileId: context.profileId, idempotencyKey: `manual:${key}`, request: searchRequest });
+                      const result = await executeColdSearch({ profileId: context.profileId, idempotencyKey: `manual:${key}`, request: searchRequest, source: 'manual' });
                       if (result.status !== 'completed') return { result };
-                      const searchedAt = prior?.searchedAt ?? scheduleClock().toISOString();
+                      const searchedAt = result.searchedAt;
                       manualSearchOperations.set(operationKey, { requestFingerprint, jobId: result.jobId, searchedAt });
-                      const latest = manualSearches.get(manualKey(context.profileId, vacancyId));
-                      if (!latest || searchedAt >= latest.searchedAt) manualSearches.set(manualKey(context.profileId, vacancyId), { jobId: result.jobId, searchedAt });
                       return { result, searchedAt };
                     })();
                     operation = { requestFingerprint, promise };
@@ -330,14 +331,17 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
             }
           }
         } else if (status === 200 && path === '/api/hh/proactive/candidates' && (req.method === 'GET' || req.method === 'HEAD')) {
-          const scheduled = candidateSearchScheduleRepository.listOccurrences(context.profileId)
-            .filter(item => item.vacancyId === vacancyId && item.status === 'succeeded' && item.jobId)
-            .sort((left, right) => right.scheduledAt.localeCompare(left.scheduledAt))[0];
-          const manual = manualSearches.get(manualKey(context.profileId, vacancyId));
-          const chooseManual = manual && (!scheduled || manual.searchedAt >= scheduled.finishedAt);
-          const chosen = chooseManual ? { jobId: manual.jobId, searchedAt: manual.searchedAt, source: 'manual' } : scheduled ? { jobId: scheduled.jobId, searchedAt: scheduled.finishedAt, source: 'scheduled' } : null;
-          const result = chosen && candidateSearchJobs.results(context.profileId, chosen.jobId, { limit: 200, cursor: null });
-          body = result ? { ok: true, vacancyId, status: 'completed', source: chosen.source, searchedAt: chosen.searchedAt, total: result.items.length, candidates: result.items, resultRevision: result.resultRevision }
+          const snapshot = candidateState.latestSnapshot(context.profileId, vacancyId);
+          const latestRefs = new Set(snapshot?.candidateRefs ?? []);
+          const newRefs = new Set(snapshot?.newCandidateRefs ?? []);
+          const candidates = snapshot ? candidateState.candidates(context.profileId, vacancyId).map(item => ({
+            ...item, inLatestRun: latestRefs.has(item.candidateRef), isNew: newRefs.has(item.candidateRef)
+          })) : [];
+          const resultRevision = snapshot ? createHash('sha256').update(JSON.stringify({ snapshot, candidates })).digest('hex').slice(0, 16) : null;
+          body = snapshot ? { ok: true, vacancyId, status: 'completed', source: snapshot.source, searchedAt: snapshot.searchedAt,
+            total: candidates.length, latestRunTotal: snapshot.totalAfterFilter, newCount: snapshot.newCount,
+            jobId: snapshot.jobId, criteriaRevision: snapshot.criteriaRevision, sourceRevision: snapshot.sourceRevision,
+            candidates, resultRevision }
             : { ok: true, vacancyId, status: 'never_run', source: null, searchedAt: null, total: 0, candidates: [] };
         } else if (status === 200) {
           status = 405;

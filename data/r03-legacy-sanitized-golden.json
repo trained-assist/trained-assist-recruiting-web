@@ -4,6 +4,8 @@
   "allCandidates": {
     "candidate_demo_001": {
       "title": "Synthetic backend engineer",
+      "region": "Synthetic region alpha",
+      "evidence_summary": "Synthetic API evidence",
       "source": "search",
       "found_at": "2026-10-01T06:00:00.000Z",
       "vacancy_ids": ["vac_demo_001", "vac_demo_002"],
@@ -14,6 +16,8 @@
     },
     "candidate_demo_002": {
       "title": "Synthetic manually added specialist",
+      "region": "Synthetic region beta",
+      "evidence_summary": "Synthetic manual source evidence",
       "source": "manual",
       "found_at": "2026-10-02T07:00:00.000Z",
       "vacancy_ids": [],
