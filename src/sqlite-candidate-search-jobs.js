@@ -56,6 +56,19 @@ export class SqliteCandidateSearchJobs {
     return job;
   }
 
+  quarantineExpiredDispatches() {
+    return this.db.transaction(() => {
+      const now = this.now();
+      const rows = this.db.prepare("SELECT payload FROM candidate_search_jobs WHERE status = 'dispatching' AND dispatch_until <= ?").all(now).map(decode);
+      for (const job of rows) this.expire(job);
+      return rows.length;
+    }).immediate();
+  }
+
+  countExpiredDispatches() {
+    return this.db.prepare("SELECT COUNT(*) AS count FROM candidate_search_jobs WHERE status = 'dispatching' AND dispatch_until <= ?").get(this.now()).count;
+  }
+
   async start(profileId, key, request) {
     const input = canonicalRequest(request);
     const requestHash = digest(JSON.stringify(input));
