@@ -115,6 +115,9 @@ export class SqliteRealHhCandidateState {
       (profile_id,vacancy_id,job_id,resume_id,input_revision,assessment,assessed_at) VALUES(?,?,?,?,?,?,?)`);
     this.assessmentById = this.db.prepare(`SELECT input_revision, assessment FROM real_hh_assessment
       WHERE profile_id=? AND vacancy_id=? AND job_id=? AND resume_id=?`);
+    this.reusableAssessment = this.db.prepare(`SELECT assessment, assessed_at FROM real_hh_assessment
+      WHERE profile_id=? AND vacancy_id=? AND resume_id=? AND input_revision=?
+      ORDER BY assessed_at DESC, job_id DESC LIMIT 1`);
   }
 
   close() { this.db.close(); }
@@ -150,9 +153,16 @@ export class SqliteRealHhCandidateState {
       this.insertSnapshot.run(input.profileId, input.vacancyId, input.jobId, REAL_HH_RESULT_VERSION,
         input.searchedAt, input.criteriaRevision, input.sourceRevision, input.source, digest, revision,
         input.totalCollected, input.candidates.length, newCount);
-      input.candidates.forEach((candidate, position) => this.insertMember.run(input.profileId, input.vacancyId, input.jobId, position, candidate.id, JSON.stringify(candidate)));
+      const snapshot = this.publicSnapshot(this.getSnapshot.get(input.profileId, input.vacancyId, input.jobId));
+      input.candidates.forEach((candidate, position) => {
+        this.insertMember.run(input.profileId, input.vacancyId, input.jobId, position, candidate.id, JSON.stringify(candidate));
+        const inputRevision = this.assessmentInputRevision(snapshot, candidate);
+        const reused = this.reusableAssessment.get(input.profileId, input.vacancyId, candidate.id, inputRevision);
+        if (reused) this.insertAssessment.run(input.profileId, input.vacancyId, input.jobId, candidate.id,
+          inputRevision, reused.assessment, reused.assessed_at);
+      });
       this.onStep('snapshot');
-      return this.publicSnapshot(this.getSnapshot.get(input.profileId, input.vacancyId, input.jobId));
+      return snapshot;
     }).immediate();
   }
   latestSnapshot(profileId, vacancyId) {
