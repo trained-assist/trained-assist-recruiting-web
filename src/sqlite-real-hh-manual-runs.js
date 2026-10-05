@@ -47,6 +47,8 @@ export class SqliteRealHhManualRuns {
     )`);
     this.byKey = this.db.prepare('SELECT payload FROM real_hh_manual_run WHERE profile_id=? AND idempotency_key=?');
     this.byId = this.db.prepare('SELECT profile_id, payload FROM real_hh_manual_run WHERE run_id=?');
+    this.completedByVacancy = this.db.prepare(`SELECT payload FROM real_hh_manual_run
+      WHERE profile_id=? AND vacancy_id=? AND status='completed' ORDER BY run_id LIMIT 1001`);
     this.insert = this.db.prepare(`INSERT INTO real_hh_manual_run(run_id,profile_id,vacancy_id,idempotency_key,request_hash,status,lease_until,payload)
       VALUES (@runId,@profileId,@vacancyId,@idempotencyKey,@requestHash,@status,@leaseUntil,@payload)`);
     this.update = this.db.prepare(`UPDATE real_hh_manual_run SET status=@status,lease_until=@leaseUntil,payload=@payload
@@ -96,7 +98,7 @@ export class SqliteRealHhManualRuns {
     const row = { runId, jobId, profileId, vacancyId: request.vacancyId, idempotencyKey, requestHash,
       criteriaRevision: request.criteriaRevision, queryRevision: request.queryRevision,
       status: 'running', phase: 'search', pagesCompleted: 0, totalPages: plan.queryCache.queries.length,
-      resultCount: 0, sourceRevision: null, errorCode: null, startedAt: now, updatedAt: now,
+      resultCount: 0, sourceRevision: null, resultRevision: null, errorCode: null, startedAt: now, updatedAt: now,
       finishedAt: null, leaseUntil: new Date(Date.parse(now) + this.leaseMs).toISOString() };
     const created = this.db.transaction(() => {
       const concurrent = parse(this.byKey.get(profileId, idempotencyKey));
@@ -118,10 +120,12 @@ export class SqliteRealHhManualRuns {
       const snapshot = result?.snapshot;
       if (result?.status !== 'completed' || snapshot?.profileId !== row.profileId ||
           snapshot?.vacancyId !== row.vacancyId || snapshot?.jobId !== row.jobId ||
-          snapshot?.source !== 'manual' || snapshot?.criteriaRevision !== row.criteriaRevision)
+          snapshot?.source !== 'manual' || snapshot?.criteriaRevision !== row.criteriaRevision ||
+          !/^[a-f0-9]{24}$/.test(snapshot?.resultRevision ?? ''))
         throw new Error('invalid_manual_result');
       patch = { status: 'completed', phase: 'completed', pagesCompleted: row.totalPages,
-        resultCount: snapshot.candidateCount, sourceRevision: snapshot.sourceRevision, errorCode: null };
+        resultCount: snapshot.candidateCount, sourceRevision: snapshot.sourceRevision,
+        resultRevision: snapshot.resultRevision, errorCode: null };
     } catch (error) {
       const rejected = error?.code === 'search_plan_unavailable' || error?.code === 'search_scope_denied';
       patch = { status: rejected ? 'rejected' : 'outcome_unknown', phase: rejected ? 'pre_dispatch' : 'outcome_unknown',
@@ -149,5 +153,27 @@ export class SqliteRealHhManualRuns {
     if (!this.scope(context, selected.run.vacancyId)) return { kind: 'denied' };
     return { kind: 'found', page: this.candidateState.resultPage({ profileId: context.profileId,
       vacancyId: selected.run.vacancyId, jobId: selected.run.resultJobId, ...options }) };
+  }
+
+  // Trusted feed adapter: request data cannot assert success. A receipt exists
+  // only when the durable run and its exact committed snapshot still agree.
+  listAcceptedManualReceipts(profileId, vacancyId) {
+    if (!safeId(profileId) || !safeId(vacancyId) || !this.isVacancyOwned(profileId, vacancyId))
+      throw new Error('manual_receipt_scope_denied');
+    const rows = this.completedByVacancy.all(profileId, vacancyId).map(parse);
+    if (rows.length > 1000) throw new Error('manual_receipt_capacity_exceeded');
+    return rows.flatMap(row => {
+      if (row.status !== 'completed' || row.profileId !== profileId || row.vacancyId !== vacancyId ||
+          !safeId(row.jobId) || row.jobId !== `hh_manual_${hash(row.runId).slice(0, 32)}` ||
+          !/^[a-f0-9]{24}$/.test(row.resultRevision ?? '')) return [];
+      const snapshot = this.candidateState.resultPage({ profileId, vacancyId, jobId: row.jobId, limit: 1 })?.snapshot;
+      if (!snapshot || snapshot.source !== 'manual' || snapshot.profileId !== profileId ||
+          snapshot.vacancyId !== vacancyId || snapshot.jobId !== row.jobId ||
+          snapshot.criteriaRevision !== row.criteriaRevision || snapshot.sourceRevision !== row.sourceRevision ||
+          snapshot.resultRevision !== row.resultRevision || snapshot.candidateCount !== row.resultCount) return [];
+      return [{ status: 'succeeded', profileId, vacancyId, jobId: row.jobId,
+        sourceRevision: row.sourceRevision, resultRevision: row.resultRevision,
+        resultCount: row.resultCount }];
+    });
   }
 }

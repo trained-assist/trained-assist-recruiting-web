@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Ajv2020 from 'ajv/dist/2020.js';
 import { mapHhResumeCandidate } from '../src/hh-resume-mapping.js';
-import { SqliteRealHhCandidateState } from '../src/sqlite-real-hh-candidate-state.js';
+import { SqliteRealHhCandidateState, REAL_HH_RESULT_VERSION } from '../src/sqlite-real-hh-candidate-state.js';
 import { createOfflineHhColdSearch } from '../src/hh-cold-search-offline.js';
 import { SqliteRealHhManualRuns } from '../src/sqlite-real-hh-manual-runs.js';
 import { SqliteColdSearchScheduleRepository } from '../src/sqlite-cold-search-schedule-repository.js';
@@ -89,9 +89,20 @@ test('manual run persists start/poll, shares real candidate model with scheduled
   assert.equal((await runs.start(context, 'manual_key_001', { ...request, queryRevision: 'other' })).kind, 'conflict');
   const reopened = f.makeRuns();
   assert.equal(reopened.get(context, started.run.runId).run.status, 'completed');
+  const receipts = reopened.listAcceptedManualReceipts(profileId, vacancyId);
+  assert.equal(receipts.length, 1);
+  assert.deepEqual(receipts[0], { status: 'succeeded', profileId, vacancyId,
+    jobId: finished.run.resultJobId, sourceRevision: finished.run.search.sourceRevision,
+    resultRevision: f.state.resultPage({ profileId, vacancyId, jobId: finished.run.resultJobId }).snapshot.resultRevision,
+    resultCount: 1 });
+  assert.throws(() => reopened.listAcceptedManualReceipts('other', vacancyId), /manual_receipt_scope_denied/);
   assert.equal((await reopened.start(context, 'manual_key_001', request)).kind, 'replay');
   assert.equal(f.calls, 2);
   assert.equal(reopened.get({ profileId: 'other', scopes: context.scopes }, started.run.runId).kind, 'not_found');
+  const durable = reopened.db.prepare('SELECT payload FROM real_hh_manual_run WHERE run_id=?').get(started.run.runId);
+  const altered = { ...JSON.parse(durable.payload), resultRevision: '0'.repeat(24) };
+  reopened.db.prepare('UPDATE real_hh_manual_run SET payload=? WHERE run_id=?').run(JSON.stringify(altered), started.run.runId);
+  assert.deepEqual(reopened.listAcceptedManualReceipts(profileId, vacancyId), [], 'revision mismatch cannot produce acceptance');
 });
 
 test('restart/expired lease quarantines pending run and never repeats provider call', async t => {
@@ -103,9 +114,14 @@ test('restart/expired lease quarantines pending run and never repeats provider c
   const first = f.makeRuns({ leaseMs: 60_000 });
   const created = await first.start(context, 'manual_key_002', request);
   await until(() => calls, value => value === 1);
+  f.state.recordCompletedSearch({ version: REAL_HH_RESULT_VERSION, profileId, vacancyId,
+    jobId: created.run.resultJobId, searchedAt: f.clock().toISOString(),
+    criteriaRevision: request.criteriaRevision, sourceRevision: 'hh-search-synthetic-r1',
+    source: 'manual', totalCollected: 1, candidates: [candidate('inventedresume999')] });
   f.setNow('2026-10-06T06:02:00.000Z');
   const restarted = f.makeRuns({ leaseMs: 60_000 });
   assert.equal(restarted.get(context, created.run.runId).run.status, 'outcome_unknown');
+  assert.deepEqual(restarted.listAcceptedManualReceipts(profileId, vacancyId), [], 'a committed snapshot cannot certify an unknown run');
   assert.equal((await restarted.start(context, 'manual_key_002', request)).kind, 'replay');
   assert.equal(calls, 1);
   release();
