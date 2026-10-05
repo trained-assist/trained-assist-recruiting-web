@@ -1,0 +1,48 @@
+{
+  "invented": true,
+  "vacancyId": "vacancy_synthetic_001",
+  "atsConfig": {
+    "vacancy_id": "vacancy_synthetic_001",
+    "vacancy_title": "Инженер-конструктор",
+    "experience_min_years": 2,
+    "required_skills": [
+      { "skill": "проектирование машин", "weight": 3 },
+      { "skill": "чертежи CAD", "weight": 2 }
+    ],
+    "preferred_skills": [{ "skill": "испытания прототипов", "weight": 1 }],
+    "knockout": [{ "criterion": "нет профильного опыта" }]
+  },
+  "items": [
+    {
+      "id": "syntheticresume001",
+      "alternate_url": "https://hh.ru/resume/syntheticresume001",
+      "title": "Инженер-конструктор",
+      "first_name": "Вымышленная",
+      "last_name": "Кандидатка",
+      "age": 29,
+      "area": { "name": "Вымышленный город" },
+      "total_experience": { "months": 61 },
+      "salary": { "amount": 123000, "currency": "RUR" },
+      "experience": [
+        { "position": "Инженер-конструктор", "company": "Вымышленное бюро", "description": "проектирование машин, чертежи CAD", "start": "2020-01-01", "end": null }
+      ],
+      "certificate": [{ "title": "Испытания прототипов" }]
+    },
+    {
+      "id": "syntheticresume002",
+      "alternate_url": "https://example.invalid/resume/syntheticresume002",
+      "title": "Программист",
+      "first_name": "Вымышленный",
+      "last_name": "Кандидат",
+      "area": { "name": "Вымышленный регион" },
+      "total_experience": { "months": 48 },
+      "experience": [{ "position": "Разработчик", "company": "Вымышленная компания", "description": "опыт работы", "start": "2021-01-01", "end": null }]
+    },
+    {
+      "id": "syntheticresume003",
+      "title": "Инженер-конструктор",
+      "total_experience": { "months": 12 },
+      "experience": []
+    }
+  ]
+}
