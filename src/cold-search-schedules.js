@@ -213,7 +213,7 @@ export function createColdSearchScheduleHandler({ repository, resolveSearchReque
         });
         if (!result || result.status === 'failed' || result.providerError) {
           const errorCode = result?.providerError?.code ?? 'search_outcome_unknown';
-          const status = ['stale_search_criteria', 'criteria_context_unavailable', 'invalid_search_request'].includes(errorCode) ? 'rejected' : 'outcome_unknown';
+          const status = result?.phase === 'pre_dispatch' ? 'rejected' : 'outcome_unknown';
           repository.finishOccurrence(occurrence.occurrenceId, workerId, { status, criteriaRevision: currentRequest.criteriaRevision, errorCode, jobId: result?.jobId ?? null }, now);
           if (status === 'rejected') continue;
           unknown++;

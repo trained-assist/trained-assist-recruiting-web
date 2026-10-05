@@ -161,9 +161,9 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
     resolveSearchRequest: resolveScheduledSearchRequest,
     executeSearch: async ({ profileId, idempotencyKey, request }) => {
       const context = { profileId, scopes: ['recruiting.candidateSearch'] };
-      if (await currentSearchCriteriaRevision(context, request.vacancyId) !== request.criteriaRevision) return { status: 'failed', providerError: { code: 'stale_search_criteria' } };
+      if (await currentSearchCriteriaRevision(context, request.vacancyId) !== request.criteriaRevision) return { status: 'failed', phase: 'pre_dispatch', providerError: { code: 'stale_search_criteria' } };
       const started = await startCandidateSearch(profileId, idempotencyKey, request);
-      if (started.conflict || started.capacityExceeded) return { status: 'failed', providerError: { code: started.capacityExceeded ? 'job_capacity_reached' : 'idempotency_conflict' } };
+      if (started.conflict || started.capacityExceeded) return { status: 'failed', phase: started.capacityExceeded ? 'pre_dispatch' : 'dispatch_unknown', providerError: { code: started.capacityExceeded ? 'job_capacity_reached' : 'idempotency_conflict' } };
       let job = started.job;
       for (let page = 0; page < 4 && job.status !== 'completed'; page++) {
         if (job.status !== 'partial' || !job.canResume) break;

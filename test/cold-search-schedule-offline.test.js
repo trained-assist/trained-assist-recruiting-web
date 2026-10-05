@@ -197,7 +197,7 @@ test('resolver vacancy mismatch and known pre-dispatch stale criteria are reject
   const handler = createColdSearchScheduleHandler({
     repository, clock: () => new Date(current),
     resolveSearchRequest: async () => ({ ...request, vacancyId: resolverVacancy }),
-    executeSearch: async () => { executions++; return { status: 'failed', providerError: { code: 'stale_search_criteria' } }; }
+    executeSearch: async () => { executions++; return { status: 'failed', phase: 'pre_dispatch', providerError: { code: 'stale_search_criteria' } }; }
   });
   resolverVacancy = 'vac_demo_002';
   assert.equal((await handler.handle({ action: 'enable', vacancyId: 'vac_demo_001' }, principal('profile_demo_001'))).kind, 'search_context_unavailable');
@@ -218,7 +218,7 @@ test('resolver vacancy mismatch and known pre-dispatch stale criteria are reject
   const staleHandler = createColdSearchScheduleHandler({
     repository: staleRepo, clock: () => new Date(current),
     resolveSearchRequest: async () => ({ ...request, vacancyId: 'vac_demo_001' }),
-    executeSearch: async () => { executions++; return { status: 'failed', providerError: { code: 'stale_search_criteria' } }; }
+    executeSearch: async () => { executions++; return { status: 'failed', phase: 'pre_dispatch', providerError: { code: 'stale_search_criteria' } }; }
   });
   const staleEnabled = await staleHandler.handle({ action: 'enable', vacancyId: 'vac_demo_001', interval_hours: 1 }, principal('profile_demo_002'));
   current = new Date(staleEnabled.schedule.nextRunAt);
@@ -228,4 +228,18 @@ test('resolver vacancy mismatch and known pre-dispatch stale criteria are reject
   assert.equal(stale.errorCode, 'stale_search_criteria');
   assert.equal(staleRepo.getSchedule(staleEnabled.schedule.scheduleId).blockedByUnknownOccurrenceId, null);
   assert.equal(executions, 1, 'stale rejection is a known pre-dispatch failure');
+
+  const capacityRepo = new InMemoryColdSearchScheduleRepository();
+  const capacityHandler = createColdSearchScheduleHandler({
+    repository: capacityRepo, clock: () => new Date(current),
+    resolveSearchRequest: async (_profileId, vacancyId) => ({ ...request, vacancyId }),
+    executeSearch: async () => ({ status: 'failed', phase: 'pre_dispatch', providerError: { code: 'job_capacity_reached' } })
+  });
+  const capacitySchedule = await capacityHandler.handle({ action: 'enable', vacancyId: 'vac_demo_003', interval_hours: 1 }, principal('profile_demo_003'));
+  current = new Date(capacitySchedule.schedule.nextRunAt);
+  assert.deepEqual(await capacityHandler.tick('worker-capacity'), { claimed: 1, completed: 0, unknown: 0 });
+  const [capacity] = capacityRepo.listOccurrences('profile_demo_003');
+  assert.equal(capacity.status, 'rejected');
+  assert.equal(capacity.errorCode, 'job_capacity_reached');
+  assert.equal(capacityRepo.getSchedule(capacitySchedule.schedule.scheduleId).blockedByUnknownOccurrenceId, null);
 });
