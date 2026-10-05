@@ -6,11 +6,44 @@ import { dirname, join } from 'node:path';
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
 const vacancies = JSON.parse(await readFile(join(root, 'data/vacancies.json'), 'utf8'));
+const release = {
+  version: '0.1.0',
+  sourceRevision: process.env.SOURCE_REVISION ?? 'unversioned-local',
+  environment: 'local'
+};
+const platformContractRange = '>=1.0.0 <2.0.0';
+const readiness = {
+  status: 'ready',
+  reason: {
+    code: 'synthetic_fixture_service',
+    message: 'Ready for local synthetic-fixture use only; no production data or integrations are connected.'
+  },
+  checkedVersionTuple: {
+    releaseVersion: release.version,
+    sourceRevision: release.sourceRevision,
+    environment: release.environment,
+    platformContractRange,
+    domainApiVersion: 'v1'
+  }
+};
+const capabilities = [{
+  id: 'recruiting.vacancies.list',
+  version: '1.0.0',
+  required: true,
+  inputSchemaRef: 'contracts/v1-vacancies-query.schema.json',
+  outputSchemaRef: 'contracts/v1-vacancies.schema.json',
+  effect: 'read',
+  requiredScopes: [],
+  operationRef: 'GET /api/v1/vacancies'
+}];
 const manifest = {
-  apiVersion: 'v1',
-  service: 'recruiting',
-  capabilities: ['vacancies.read'],
-  readiness: 'ready',
+  serviceId: 'trained-assist.recruiting',
+  release,
+  platformContractRange,
+  domainApiVersion: 'v1',
+  capabilities,
+  readiness,
+  compatibility: { deprecatedCapabilities: [] },
   endpoints: {
     manifest: '/api/v1/manifest',
     capabilities: '/api/v1/capabilities',
@@ -35,12 +68,14 @@ export function createRecruitingServer() {
     } else if (path === '/') {
       type = mime.html;
       body = '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Recruiting API demo</title><main><h1>Recruiting API demo</h1><p>Read-only synthetic vacancy fixtures.</p><p><a href="/api/v1/vacancies">Browse vacancies (JSON)</a></p><p><a href="/api/v1/manifest">API v1 manifest</a></p></main></html>';
-    } else if (path === '/health/ready' || path === '/api/v1/readiness') {
-      body = { apiVersion: 'v1', status: 'ready' };
+    } else if (path === '/health/ready') {
+      body = { status: 'ready' };
+    } else if (path === '/api/v1/readiness') {
+      body = { serviceId: manifest.serviceId, domainApiVersion: manifest.domainApiVersion, ...readiness };
     } else if (path === '/api/v1/manifest') {
       body = manifest;
     } else if (path === '/api/v1/capabilities') {
-      body = { apiVersion: 'v1', capabilities: manifest.capabilities };
+      body = { serviceId: manifest.serviceId, domainApiVersion: manifest.domainApiVersion, capabilities };
     } else if (path === '/api/v1/vacancies') {
       body = { apiVersion: 'v1', items: vacancies };
     } else {

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import Ajv2020 from 'ajv/dist/2020.js';
 import { createRecruitingServer } from '../src/server.js';
 
 const root = new URL('../', import.meta.url);
@@ -14,30 +15,51 @@ test.before(async () => {
 test.after(() => new Promise(resolve => server.close(resolve)));
 
 async function get(path) { return fetch(`${base}${path}`); }
+async function loadSchema(name) {
+  return JSON.parse(await readFile(new URL(`contracts/${name}`, root), 'utf8'));
+}
 
 test('manifest, capabilities, and readiness expose a versioned read-only contract', async () => {
   const manifest = await (await get('/api/v1/manifest')).json();
-  assert.equal(manifest.apiVersion, 'v1');
-  assert.equal(manifest.service, 'recruiting');
-  assert.deepEqual(manifest.capabilities, ['vacancies.read']);
-  assert.equal((await (await get('/api/v1/capabilities')).json()).apiVersion, 'v1');
-  assert.equal((await (await get('/api/v1/readiness')).json()).status, 'ready');
+  const schema = await loadSchema('v1-manifest.schema.json');
+  const ajv = new Ajv2020({ allErrors: true });
+  const validate = ajv.compile(schema);
+  assert.equal(validate(manifest), true, JSON.stringify(validate.errors));
+  assert.equal(manifest.serviceId, 'trained-assist.recruiting');
+  assert.equal(manifest.release.environment, 'local');
+  assert.equal(manifest.readiness.status, 'ready');
+  assert.match(manifest.readiness.reason.message, /local synthetic-fixture use only/);
+  assert.deepEqual(manifest.capabilities[0], {
+    id: 'recruiting.vacancies.list',
+    version: '1.0.0',
+    required: true,
+    inputSchemaRef: 'contracts/v1-vacancies-query.schema.json',
+    outputSchemaRef: 'contracts/v1-vacancies.schema.json',
+    effect: 'read',
+    requiredScopes: [],
+    operationRef: 'GET /api/v1/vacancies'
+  });
+  assert.deepEqual(schema.properties.readiness.properties.status.enum, ['ready', 'degraded', 'blocked', 'unavailable']);
+  const capabilities = await (await get('/api/v1/capabilities')).json();
+  assert.deepEqual(capabilities.capabilities, manifest.capabilities);
+  const readiness = await (await get('/api/v1/readiness')).json();
+  assert.equal(readiness.status, 'ready');
+  assert.deepEqual(readiness.checkedVersionTuple, manifest.readiness.checkedVersionTuple);
   assert.equal((await get('/health/ready')).status, 200);
+  const invalidManifest = { ...manifest, platformContractRange: '*' };
+  assert.equal(validate(invalidManifest), false);
 });
 
 test('vacancies match the published schema and contain synthetic data only', async () => {
   const response = await get('/api/v1/vacancies');
   const payload = await response.json();
-  const schema = JSON.parse(await readFile(new URL('contracts/v1-vacancies.schema.json', root), 'utf8'));
+  const schema = await loadSchema('v1-vacancies.schema.json');
+  const ajv = new Ajv2020({ allErrors: true });
+  const validate = ajv.compile(schema);
   assert.equal(response.status, 200);
-  assert.equal(payload.apiVersion, 'v1');
+  assert.equal(validate(payload), true, JSON.stringify(validate.errors));
   assert.ok(payload.items.length > 0);
-  assert.equal(schema.properties.apiVersion.const, payload.apiVersion);
-  for (const item of payload.items) {
-    assert.match(item.id, /^vac_demo_\d{3}$/);
-    assert.equal(item.status, 'open');
-    assert.deepEqual(Object.keys(item).sort(), ['employmentType', 'id', 'location', 'status', 'summary', 'title'].sort());
-  }
+  assert.equal(validate({ ...payload, items: [{ ...payload.items[0], candidateEmail: 'person@example.com' }] }), false);
 });
 
 test('browser landing page is useful and all writes are rejected', async () => {
