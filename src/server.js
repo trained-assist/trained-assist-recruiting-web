@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { getProfile, listProfileVacancies, profileHasScope, readVacancyResponses } from './recruiting-domain.js';
 import { createClientReportPreview } from './report-preview.js';
 import { evaluateSyntheticResponse, getResponseScenario, makeEvaluationId, validEvaluatorOutput } from './response-evaluation.js';
+import { createCandidateSearchJobs } from './candidate-search-jobs.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
@@ -89,18 +90,39 @@ function parseEvaluationQuery(url) {
   return value;
 }
 
-export function createRecruitingServer({ resolveTrustedProfileContext = () => null, evaluator = evaluateSyntheticResponse } = {}) {
+async function readJsonBody(req, maxBytes = 16_384) {
+  let raw = '';
+  for await (const chunk of req) {
+    raw += chunk;
+    if (Buffer.byteLength(raw) > maxBytes) throw new Error('body_too_large');
+  }
+  return JSON.parse(raw);
+}
+
+function parseSearchResultPage(url) {
+  const keys = [...url.searchParams.keys()];
+  if (keys.some(key => !['limit', 'cursor'].includes(key)) || new Set(keys).size !== keys.length) return null;
+  const rawLimit = url.searchParams.get('limit');
+  if (rawLimit !== null && !/^(?:[1-9]|[1-4][0-9]|50)$/.test(rawLimit)) return null;
+  const cursor = url.searchParams.get('cursor');
+  if (cursor !== null && (!cursor || cursor.length > 1024 || !/^[A-Za-z0-9_-]+$/.test(cursor))) return null;
+  return { limit: rawLimit === null ? 25 : Number(rawLimit), cursor };
+}
+
+export function createRecruitingServer({ resolveTrustedProfileContext = () => null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, resolveCurrentSearchCriteriaRevision = () => null, maxCandidateSearchJobs = 100 } = {}) {
+  const candidateSearchJobs = createCandidateSearchJobs({ provider: candidateSearchProvider, maxJobs: maxCandidateSearchJobs });
   return createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const path = url.pathname;
+    const isCandidateSearchPath = path === '/api/v1/ui/candidate-searches' || /^\/api\/v1\/ui\/candidate-searches\/[^/]+(?:\/results|\/resume)?$/.test(path);
     let status = 200;
     let type = mime.json;
     let body;
 
-    if (req.method !== 'GET' && req.method !== 'HEAD') {
+    if (req.method !== 'GET' && req.method !== 'HEAD' && !(req.method === 'POST' && isCandidateSearchPath)) {
       status = 405;
       body = { error: 'method_not_allowed' };
-      res.setHeader('Allow', 'GET, HEAD');
+      res.setHeader('Allow', isCandidateSearchPath ? 'GET, HEAD, POST' : 'GET, HEAD');
     } else if (path === '/') {
       type = mime.html;
       body = landingPage;
@@ -118,6 +140,89 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
         body = { error: 'unexpected_query_parameters' };
       } else {
         body = { apiVersion: 'v1', items: vacancies };
+      }
+    } else if (isCandidateSearchPath) {
+      const context = await resolveTrustedProfileContext(req);
+      if (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes)) {
+        status = 401;
+        body = { error: 'trusted_profile_context_required' };
+      } else if (!context.scopes.includes('recruiting.candidateSearch')) {
+        status = 403;
+        body = { error: 'search_scope_required' };
+      } else if (path === '/api/v1/ui/candidate-searches' && req.method === 'POST') {
+        let request;
+        try { request = await readJsonBody(req); } catch (error) {
+          status = error.message === 'body_too_large' ? 413 : 400;
+          body = { error: error.message === 'body_too_large' ? 'request_too_large' : 'invalid_json' };
+        }
+        if (status === 200) {
+          const key = req.headers['idempotency-key'];
+          const validRequest = request && /^vac_demo_[0-9]{3}$/.test(request.vacancyId ?? '') &&
+            /^criteria-search-demo-r[0-9]+$/.test(request.criteriaRevision ?? '') && request.criteria &&
+            Array.isArray(request.criteria.keywords) && Array.isArray(request.criteria.regions) &&
+            Object.keys(request).every(field => ['vacancyId', 'criteriaRevision', 'criteria'].includes(field)) &&
+            Object.keys(request.criteria).every(field => ['keywords', 'regions'].includes(field)) &&
+            request.criteria.keywords.length <= 8 && request.criteria.regions.length <= 8 &&
+            request.criteria.keywords.every(item => typeof item === 'string' && item.length > 0 && item.length <= 100) &&
+            request.criteria.regions.every(item => typeof item === 'string' && /^region_demo_[0-9]{3}$/.test(item));
+          if (!validRequest || typeof key !== 'string' || !/^[A-Za-z0-9._:-]{8,128}$/.test(key)) {
+            status = 400;
+            body = { error: 'invalid_search_start' };
+          } else {
+            const currentRevision = await resolveCurrentSearchCriteriaRevision(context, request.vacancyId);
+            if (currentRevision && currentRevision !== request.criteriaRevision) {
+              status = 409;
+              body = { domainApiVersion: 'v1', error: 'stale_search_criteria', requestedRevision: request.criteriaRevision, currentRevision };
+            } else {
+              const started = await candidateSearchJobs.start(context.profileId, key, request);
+              if (started.conflict) {
+                status = 409;
+                body = { error: 'idempotency_key_reused' };
+              } else if (started.capacityExceeded) {
+                status = 429;
+                body = { error: 'search_job_capacity_reached' };
+              } else {
+                status = started.created ? 202 : 200;
+                body = started.job;
+              }
+            }
+          }
+        }
+      } else {
+        const route = path.match(/^\/api\/v1\/ui\/candidate-searches\/([^/]+)(\/results|\/resume)?$/);
+        const jobId = route?.[1];
+        const subpath = route?.[2] ?? '';
+        const job = candidateSearchJobs.get(context.profileId, jobId);
+        if (!job) {
+          status = 404;
+          body = { error: 'not_found' };
+        } else {
+          const currentRevision = await resolveCurrentSearchCriteriaRevision(context, job.vacancyId);
+          if (currentRevision && currentRevision !== job.criteriaRevision) {
+            status = 409;
+            body = { domainApiVersion: 'v1', error: 'stale_search_criteria', requestedRevision: job.criteriaRevision, currentRevision };
+          } else if (subpath === '/results' && (req.method === 'GET' || req.method === 'HEAD')) {
+            const page = parseSearchResultPage(url);
+            if (!page) {
+              status = 400;
+              body = { error: 'invalid_result_page' };
+            } else {
+              const results = candidateSearchJobs.results(context.profileId, jobId, page);
+              if (results.kind === 'invalid_cursor') { status = 400; body = { error: 'invalid_cursor' }; }
+              else if (results.kind === 'stale_cursor') { status = 409; body = { domainApiVersion: 'v1', error: 'stale_result_cursor', currentRevision: results.currentRevision }; }
+              else body = results;
+            }
+          } else if (subpath === '/resume' && req.method === 'POST') {
+            const resumed = await candidateSearchJobs.resume(context.profileId, jobId);
+            if (resumed.conflict) { status = 409; body = { error: 'job_not_resumable', job: resumed.job }; }
+            else body = resumed.job;
+          } else if (!subpath && (req.method === 'GET' || req.method === 'HEAD') && url.search === '') {
+            body = job;
+          } else {
+            status = 404;
+            body = { error: 'not_found' };
+          }
+        }
       }
     } else if (path === '/api/v1/ui/report-previews') {
       const query = parseReportPreviewQuery(url);

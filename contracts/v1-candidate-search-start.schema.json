@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-candidate-search-start.schema.json",
+  "title": "Synthetic bounded candidate search start request",
+  "type": "object",
+  "required": ["vacancyId", "criteriaRevision", "criteria"],
+  "properties": {
+    "vacancyId": { "type": "string", "pattern": "^vac_demo_[0-9]{3}$" },
+    "criteriaRevision": { "type": "string", "pattern": "^criteria-search-demo-r[0-9]+$" },
+    "criteria": {
+      "type": "object",
+      "required": ["keywords", "regions"],
+      "properties": {
+        "keywords": { "type": "array", "maxItems": 8, "items": { "type": "string", "minLength": 1, "maxLength": 100 } },
+        "regions": { "type": "array", "maxItems": 8, "items": { "type": "string", "pattern": "^region_demo_[0-9]{3}$" } }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

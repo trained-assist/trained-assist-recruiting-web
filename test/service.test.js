@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import Ajv2020 from 'ajv/dist/2020.js';
 import { createRecruitingServer } from '../src/server.js';
 import { evaluateSyntheticResponse } from '../src/response-evaluation.js';
+import { syntheticColdSearchProvider } from '../src/candidate-search-jobs.js';
 
 const root = new URL('../', import.meta.url);
 let server;
@@ -273,6 +274,145 @@ test('R-02 synthetic evaluation is profile scoped, revision pinned, typed, deter
     assert.equal((await (await fetch(`${base}/api/v1/capabilities`)).json()).capabilities.some(item => item.id.includes('response')), false);
     assert.deepEqual(await readFile(fixturePath), before, 'evaluation does not mutate source fixtures');
   } finally { await new Promise(resolve => trustedServer.close(resolve)); }
+});
+
+test('R-03 synthetic search jobs are idempotent, profile bound, resumable, revision checked, and paginated', async () => {
+  const inputSchema = await loadSchema('v1-candidate-search-start.schema.json');
+  const jobSchema = await loadSchema('v1-candidate-search-job.schema.json');
+  const resultsSchema = await loadSchema('v1-candidate-search-results.schema.json');
+  const fixtureBefore = await readFile(new URL('data/cold-search-results.json', root));
+  const ajv = new Ajv2020({ allErrors: true });
+  const validateInput = ajv.compile(inputSchema);
+  const validateJob = ajv.compile(jobSchema);
+  const validateResults = ajv.compile(resultsSchema);
+  const requestBody = { vacancyId: 'vac_demo_001', criteriaRevision: 'criteria-search-demo-r1', criteria: { keywords: ['Node.js'], regions: ['region_demo_001'] } };
+  assert.equal(validateInput(requestBody), true);
+  assert.equal(validateInput({ ...requestBody, profileId: 'profile_demo_001' }), false, 'profile is not model supplied');
+  assert.equal(validateInput({ ...requestBody, criteria: { ...requestBody.criteria, unsafe: true } }), false);
+
+  let currentCriteriaRevision = requestBody.criteriaRevision;
+  let providerCalls = 0;
+  const searchServer = createRecruitingServer({
+    resolveTrustedProfileContext: req => ['profile_demo_001', 'profile_demo_002', 'profile_demo_003'].includes(req.headers['x-test-principal']) ? { profileId: req.headers['x-test-principal'], scopes: req.headers['x-test-principal'] === 'profile_demo_003' ? [] : ['recruiting.candidateSearch'] } : null,
+    resolveCurrentSearchCriteriaRevision: () => currentCriteriaRevision,
+    candidateSearchProvider: async args => { providerCalls++; return syntheticColdSearchProvider(args); }
+  });
+  await new Promise(resolve => searchServer.listen(0, '127.0.0.1', resolve));
+  const searchBase = `http://127.0.0.1:${searchServer.address().port}`;
+  const auth = principal => ({ 'X-Test-Principal': principal });
+  const create = (body, key = 'r03-idempotency-1', principal = 'profile_demo_001') => fetch(`${searchBase}/api/v1/ui/candidate-searches`, { method: 'POST', headers: { ...auth(principal), 'Content-Type': 'application/json', 'Idempotency-Key': key }, body: JSON.stringify(body) });
+  try {
+    assert.equal((await fetch(`${searchBase}/api/v1/ui/candidate-searches`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'no-principal-key' }, body: JSON.stringify(requestBody) })).status, 401);
+    assert.equal((await create(requestBody, 'no-search-scope', 'profile_demo_003')).status, 403);
+
+    const started = await create(requestBody);
+    const initialJob = await started.json();
+    assert.equal(started.status, 202);
+    assert.equal(validateJob(initialJob), true, JSON.stringify(validateJob.errors));
+    assert.equal(initialJob.status, 'partial');
+    assert.equal(initialJob.resultCount, 2);
+    assert.equal(initialJob.canResume, true);
+    assert.equal(initialJob.ranking, 'provider_order_unranked');
+    const duplicate = await create(requestBody);
+    assert.equal(duplicate.status, 200);
+    assert.equal((await duplicate.json()).jobId, initialJob.jobId);
+    assert.equal(providerCalls, 1, 'idempotent retry does not execute provider again');
+    assert.equal((await create({ ...requestBody, criteriaRevision: 'criteria-search-demo-r2' })).status, 409, 'same key with changed query conflicts');
+
+    const jobUrl = `/api/v1/ui/candidate-searches/${initialJob.jobId}`;
+    assert.equal((await fetch(`${searchBase}${jobUrl}`, { headers: auth('profile_demo_002') })).status, 404, 'cross-profile job access denied');
+    const firstPageResponse = await fetch(`${searchBase}${jobUrl}/results?limit=1`, { headers: auth('profile_demo_001') });
+    const firstPage = await firstPageResponse.json();
+    assert.equal(firstPageResponse.status, 200);
+    assert.equal(validateResults(firstPage), true, JSON.stringify(validateResults.errors));
+    assert.equal(firstPage.items.length, 1);
+    assert.ok(firstPage.nextCursor);
+    assert.equal(firstPage.items[0].candidateRef, 'candidate_search_demo_001');
+
+    const resumed = await fetch(`${searchBase}${jobUrl}/resume`, { method: 'POST', headers: auth('profile_demo_001') });
+    const completedJob = await resumed.json();
+    assert.equal(resumed.status, 200);
+    assert.equal(completedJob.status, 'completed');
+    assert.equal(completedJob.resultCount, 3);
+    assert.equal(completedJob.canResume, false);
+    const staleCursor = await fetch(`${searchBase}${jobUrl}/results?limit=1&cursor=${encodeURIComponent(firstPage.nextCursor)}`, { headers: auth('profile_demo_001') });
+    assert.equal(staleCursor.status, 409, 'appending resumed results invalidates prior page cursor');
+    assert.equal((await staleCursor.json()).error, 'stale_result_cursor');
+    const completePage = await fetch(`${searchBase}${jobUrl}/results?limit=2`, { headers: auth('profile_demo_001') });
+    const resultPage = await completePage.json();
+    assert.equal(validateResults(resultPage), true, JSON.stringify(validateResults.errors));
+    assert.equal(resultPage.items.length, 2);
+    assert.ok(resultPage.nextCursor);
+    const lastPage = await fetch(`${searchBase}${jobUrl}/results?limit=2&cursor=${encodeURIComponent(resultPage.nextCursor)}`, { headers: auth('profile_demo_001') });
+    assert.equal((await (await lastPage.json()).items).length, 1);
+
+    currentCriteriaRevision = 'criteria-search-demo-r2';
+    const staleJob = await fetch(`${searchBase}${jobUrl}`, { headers: auth('profile_demo_001') });
+    assert.equal(staleJob.status, 409);
+    assert.equal((await staleJob.json()).error, 'stale_search_criteria');
+    const staleResume = await fetch(`${searchBase}${jobUrl}/resume`, { method: 'POST', headers: auth('profile_demo_001') });
+    assert.equal(staleResume.status, 409);
+    assert.equal((await staleResume.json()).error, 'stale_search_criteria');
+    const staleStart = await create(requestBody, 'r03-stale-start-key');
+    assert.equal(staleStart.status, 409);
+  } finally {
+    await new Promise(resolve => searchServer.close(resolve));
+    assert.deepEqual(await readFile(new URL('data/cold-search-results.json', root)), fixtureBefore);
+  }
+
+  const partialCalls = [];
+  let transientFailures = 0;
+  const partialErrorServer = createRecruitingServer({
+    resolveTrustedProfileContext: () => ({ profileId: 'profile_demo_001', scopes: ['recruiting.candidateSearch'] }),
+    candidateSearchProvider: async ({ cursor }) => {
+      partialCalls.push(cursor);
+      if (cursor === null) return { kind: 'page', sourceRevision: 'cold-search-provider-demo-r1', items: [{ candidateRef: 'candidate_search_demo_009', vacancyId: 'vac_demo_001', title: 'Synthetic engineer', region: 'Synthetic region', evidenceSummary: 'Synthetic evidence' }], nextCursor: 'after-one', complete: false };
+      if (cursor === 'after-one' && transientFailures++ === 0) throw Object.assign(new Error('private provider detail'), { status: 503 });
+      return { kind: 'page', sourceRevision: 'cold-search-provider-demo-r1', items: [], nextCursor: null, complete: true };
+    }
+  });
+  await new Promise(resolve => partialErrorServer.listen(0, '127.0.0.1', resolve));
+  const failureBase = `http://127.0.0.1:${partialErrorServer.address().port}`;
+  try {
+    const headers = { 'X-Test-Principal': 'profile_demo_001', 'Content-Type': 'application/json', 'Idempotency-Key': 'r03-partial-error-key' };
+    const first = await fetch(`${failureBase}/api/v1/ui/candidate-searches`, { method: 'POST', headers, body: JSON.stringify(requestBody) });
+    const firstJob = await first.json();
+    assert.equal(firstJob.status, 'partial');
+    const second = await fetch(`${failureBase}/api/v1/ui/candidate-searches/${firstJob.jobId}/resume`, { method: 'POST', headers: { 'X-Test-Principal': 'profile_demo_001' } });
+    const erroredJob = await second.json();
+    assert.equal(validateJob(erroredJob), true, JSON.stringify(validateJob.errors));
+    assert.equal(erroredJob.status, 'partial');
+    assert.equal(erroredJob.canResume, true);
+    assert.deepEqual(erroredJob.providerError, { code: 'provider_unavailable', retryable: true });
+    const recovered = await fetch(`${failureBase}/api/v1/ui/candidate-searches/${firstJob.jobId}/resume`, { method: 'POST', headers: { 'X-Test-Principal': 'profile_demo_001' } });
+    assert.equal((await recovered.json()).status, 'completed');
+    assert.deepEqual(partialCalls, [null, 'after-one', 'after-one']);
+  } finally { await new Promise(resolve => partialErrorServer.close(resolve)); }
+
+  const forbiddenServer = createRecruitingServer({ resolveTrustedProfileContext: () => ({ profileId: 'profile_demo_001', scopes: ['recruiting.candidateSearch'] }), candidateSearchProvider: async () => ({ kind: 'error', code: 'provider_forbidden', retryable: false }) });
+  await new Promise(resolve => forbiddenServer.listen(0, '127.0.0.1', resolve));
+  try {
+    const failed = await fetch(`http://127.0.0.1:${forbiddenServer.address().port}/api/v1/ui/candidate-searches`, { method: 'POST', headers: { 'X-Test-Principal': 'profile_demo_001', 'Content-Type': 'application/json', 'Idempotency-Key': 'r03-forbidden-key' }, body: JSON.stringify(requestBody) });
+    const failedJob = await failed.json();
+    assert.equal(validateJob(failedJob), true, JSON.stringify(validateJob.errors));
+    assert.equal(failedJob.status, 'failed');
+    assert.equal(failedJob.resultCount, 0);
+    assert.equal(failedJob.canResume, false);
+    assert.deepEqual(failedJob.providerError, { code: 'provider_forbidden', retryable: false });
+  } finally { await new Promise(resolve => forbiddenServer.close(resolve)); }
+
+  const boundedServer = createRecruitingServer({ resolveTrustedProfileContext: () => ({ profileId: 'profile_demo_001', scopes: ['recruiting.candidateSearch'] }), candidateSearchProvider: async () => ({ kind: 'error', code: 'provider_unavailable', retryable: true }), maxCandidateSearchJobs: 1 });
+  await new Promise(resolve => boundedServer.listen(0, '127.0.0.1', resolve));
+  try {
+    const boundedBase = `http://127.0.0.1:${boundedServer.address().port}/api/v1/ui/candidate-searches`;
+    const headers = { 'X-Test-Principal': 'profile_demo_001', 'Content-Type': 'application/json', 'Idempotency-Key': 'r03-capacity-key' };
+    assert.equal((await fetch(boundedBase, { method: 'POST', headers, body: JSON.stringify(requestBody) })).status, 202);
+    assert.equal((await fetch(boundedBase, { method: 'POST', headers: { ...headers, 'Idempotency-Key': 'r03-capacity-key-2' }, body: JSON.stringify(requestBody) })).status, 429);
+  } finally { await new Promise(resolve => boundedServer.close(resolve)); }
+
+  const advertised = (await (await get('/api/v1/capabilities')).json()).capabilities;
+  assert.equal(advertised.some(item => item.id.includes('candidateSearch')), false, 'cold-search routes stay outside C14 capability discovery');
+  assert.equal((await fetch(`${base}/api/v1/ui/candidate-searches`, { method: 'DELETE' })).status, 405);
 });
 
 test('browser landing page is useful and all writes are rejected', async () => {
