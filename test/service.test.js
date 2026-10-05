@@ -60,6 +60,9 @@ test('vacancies match the published schema and contain synthetic data only', asy
   assert.equal(validate(payload), true, JSON.stringify(validate.errors));
   assert.ok(payload.items.length > 0);
   assert.equal(validate({ ...payload, items: [{ ...payload.items[0], candidateEmail: 'person@example.com' }] }), false);
+  const queryResponse = await get('/api/v1/vacancies?unexpected=value');
+  assert.equal(queryResponse.status, 400);
+  assert.deepEqual(await queryResponse.json(), { error: 'unexpected_query_parameters' });
 });
 
 test('browser landing page is useful and all writes are rejected', async () => {

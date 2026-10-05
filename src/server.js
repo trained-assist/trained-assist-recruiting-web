@@ -77,7 +77,12 @@ export function createRecruitingServer() {
     } else if (path === '/api/v1/capabilities') {
       body = { serviceId: manifest.serviceId, domainApiVersion: manifest.domainApiVersion, capabilities };
     } else if (path === '/api/v1/vacancies') {
-      body = { apiVersion: 'v1', items: vacancies };
+      if (url.search !== '') {
+        status = 400;
+        body = { error: 'unexpected_query_parameters' };
+      } else {
+        body = { apiVersion: 'v1', items: vacancies };
+      }
     } else {
       status = 404;
       body = { error: 'not_found' };
