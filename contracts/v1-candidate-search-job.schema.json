@@ -10,14 +10,14 @@
     "vacancyId": { "type": "string", "pattern": "^vac_demo_[0-9]{3}$" },
     "criteriaRevision": { "type": "string", "minLength": 1 },
     "sourceRevision": { "type": "string", "pattern": "^(cold-search-provider-demo-r[0-9]+|pending)$" },
-    "status": { "type": "string", "enum": ["running", "partial", "completed", "failed"] },
+    "status": { "type": "string", "enum": ["running", "partial", "completed", "failed", "outcome_unknown"] },
     "resultCount": { "type": "integer", "minimum": 0 },
     "canResume": { "type": "boolean" },
     "ranking": { "const": "provider_order_unranked" },
     "providerError": {
       "oneOf": [
         { "type": "null" },
-        { "type": "object", "required": ["code", "retryable"], "properties": { "code": { "type": "string", "enum": ["provider_forbidden", "provider_unavailable", "provider_invalid_response"] }, "retryable": { "type": "boolean" } }, "additionalProperties": false }
+        { "type": "object", "required": ["code", "retryable"], "properties": { "code": { "type": "string", "enum": ["provider_forbidden", "provider_unavailable", "provider_invalid_response", "search_outcome_unknown"] }, "retryable": { "type": "boolean" } }, "additionalProperties": false }
       ]
     }
   },

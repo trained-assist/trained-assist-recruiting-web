@@ -143,8 +143,8 @@ function validReportAction(value) {
   return isPlainObject(value) && Object.keys(value).sort().join(',') === 'expectedReportRevision' && isReportRevision(value.expectedReportRevision);
 }
 
-export function createRecruitingServer({ resolveTrustedProfileContext = () => null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), scheduleClock = () => new Date(), maxCandidateSearchJobs = 100, publicationAdapter, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
-  const candidateSearchJobs = createCandidateSearchJobs({ provider: candidateSearchProvider, maxJobs: maxCandidateSearchJobs });
+export function createRecruitingServer({ resolveTrustedProfileContext = () => null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, candidateSearchJobStore = null, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), scheduleClock = () => new Date(), maxCandidateSearchJobs = 100, publicationAdapter, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
+  const candidateSearchJobs = candidateSearchJobStore ?? createCandidateSearchJobs({ provider: candidateSearchProvider, maxJobs: maxCandidateSearchJobs });
   const reportDrafts = createReportDrafts({ publicationAdapter });
   const currentSearchCriteriaRevision = async (context, vacancyId) => {
     try {
