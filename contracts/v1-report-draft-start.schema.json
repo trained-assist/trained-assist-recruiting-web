@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-report-draft-start.schema.json",
+  "title": "Synthetic report draft creation request",
+  "type": "object",
+  "required": ["candidateId", "vacancyId", "expectedSourceRevision"],
+  "properties": {
+    "candidateId": { "type": "string", "pattern": "^candidate_demo_[0-9]{3}$" },
+    "vacancyId": { "type": "string", "pattern": "^vac_demo_[0-9]{3}$" },
+    "expectedSourceRevision": { "type": "string", "pattern": "^synthetic-[a-z0-9-]+-r[0-9]+$" }
+  },
+  "additionalProperties": false
+}

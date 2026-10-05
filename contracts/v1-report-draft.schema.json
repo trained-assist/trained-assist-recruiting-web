@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-report-draft.schema.json",
+  "title": "Profile-scoped synthetic client report draft state",
+  "type": "object",
+  "required": ["domainApiVersion", "reportRef", "candidateId", "vacancyId", "sourceRevision", "reportRevision", "status", "reviewState", "publicationReceipt", "clientFields"],
+  "properties": {
+    "domainApiVersion": { "const": "v1" },
+    "reportRef": { "type": "string", "pattern": "^report_demo_[a-f0-9]{12}$" },
+    "candidateId": { "type": "string", "pattern": "^candidate_demo_[0-9]{3}$" },
+    "vacancyId": { "type": "string", "pattern": "^vac_demo_[0-9]{3}$" },
+    "sourceRevision": { "type": "string", "pattern": "^synthetic-[a-z0-9-]+-r[0-9]+$" },
+    "reportRevision": { "type": "string", "pattern": "^report-demo-r[0-9]+$" },
+    "status": { "type": "string", "enum": ["draft", "published", "revoked"] },
+    "reviewState": { "type": "string", "enum": ["unreviewed", "approved", "changes_requested"] },
+    "publicationReceipt": { "type": ["string", "null"], "pattern": "^publication_demo_[a-f0-9]{12}$" },
+    "clientFields": { "$ref": "v1-client-report-preview.schema.json#/properties/clientView" }
+  },
+  "additionalProperties": false
+}

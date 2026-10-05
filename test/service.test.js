@@ -187,6 +187,191 @@ test('client report preview is synthetic, audience-scoped, escaped, pair-checked
   assert.deepEqual(await readFile(new URL('data/report-scenarios.json', root)), fixtureBefore);
 });
 
+test('R-04 synthetic report draft lifecycle enforces client fields, review, publication policy, source revision, and revoke', async () => {
+  const startSchema = await loadSchema('v1-report-draft-start.schema.json');
+  const editSchema = await loadSchema('v1-report-client-edit.schema.json');
+  const reviewSchema = await loadSchema('v1-report-review.schema.json');
+  const actionSchema = await loadSchema('v1-report-action.schema.json');
+  const draftSchema = await loadSchema('v1-report-draft.schema.json');
+  const previewSchema = await loadSchema('v1-report-lifecycle-preview.schema.json');
+  const clientPreviewSchema = await loadSchema('v1-client-report-preview.schema.json');
+  const source = JSON.parse(await readFile(new URL('data/report-scenarios.json', root), 'utf8'))[0];
+  const sourceBefore = await readFile(new URL('data/report-scenarios.json', root));
+  const ajv = new Ajv2020({ allErrors: true });
+  ajv.addSchema(clientPreviewSchema);
+  const validateStart = ajv.compile(startSchema);
+  const validateEdit = ajv.compile(editSchema);
+  const validateReview = ajv.compile(reviewSchema);
+  const validateAction = ajv.compile(actionSchema);
+  const validateDraft = ajv.compile(draftSchema);
+  const validatePreview = ajv.compile(previewSchema);
+  const startRequest = { candidateId: source.candidateId, vacancyId: source.vacancyId, expectedSourceRevision: source.sourceRevision };
+  const editRequest = { expectedReportRevision: 'report-demo-r1', clientFields: { summary: '<img src=x onerror="synthetic"> & safe text', conclusion: 'Synthetic edited conclusion.' } };
+  assert.equal(validateStart(startRequest), true);
+  assert.equal(validateStart({ ...startRequest, profileId: 'profile_demo_001' }), false);
+  assert.equal(validateEdit(editRequest), true);
+  assert.equal(validateEdit({ ...editRequest, clientFields: { ...editRequest.clientFields, internalScore: 10 } }), false);
+  assert.equal(validateReview({ expectedReportRevision: 'report-demo-r1', decision: 'approved' }), true);
+  assert.equal(validateReview({ expectedReportRevision: 'report-demo-r1', decision: 'publish' }), false);
+  assert.equal(validateAction({ expectedReportRevision: 'report-demo-r1' }), true);
+
+  const scopes = {
+    profile_demo_001: ['recruiting.reports.create', 'recruiting.reports.read', 'recruiting.reports.edit', 'recruiting.reports.review', 'recruiting.reports.publish', 'recruiting.reports.revoke'],
+    profile_demo_002: ['recruiting.reports.create', 'recruiting.reports.read', 'recruiting.reports.edit', 'recruiting.reports.review', 'recruiting.reports.publish', 'recruiting.reports.revoke'],
+    profile_demo_003: ['recruiting.reports.create', 'recruiting.reports.read', 'recruiting.reports.edit', 'recruiting.reports.revoke']
+  };
+  const resolveReportTestContext = req => {
+    const principal = req.headers['x-test-principal'];
+    if (principal === 'profile_demo_001_no_review') return { profileId: 'profile_demo_001', scopes: scopes.profile_demo_003 };
+    if (principal === 'profile_demo_001_no_revoke') return { profileId: 'profile_demo_001', scopes: scopes.profile_demo_003.filter(scope => scope !== 'recruiting.reports.revoke') };
+    return scopes[principal] ? { profileId: principal, scopes: scopes[principal] } : null;
+  };
+  let currentSourceRevision = source.sourceRevision;
+  const noPolicyServer = createRecruitingServer({
+    resolveTrustedProfileContext: resolveReportTestContext,
+    resolveCurrentReportSourceRevision: () => currentSourceRevision
+  });
+  await new Promise(resolve => noPolicyServer.listen(0, '127.0.0.1', resolve));
+  const noPolicyBase = `http://127.0.0.1:${noPolicyServer.address().port}/api/v1/ui/report-drafts`;
+  const jsonHeaders = principal => ({ 'X-Test-Principal': principal, 'Content-Type': 'application/json' });
+  const createDraft = (base, body = startRequest, key = 'r04-report-draft-1', principal = 'profile_demo_001') => fetch(base, { method: 'POST', headers: { ...jsonHeaders(principal), 'Idempotency-Key': key }, body: JSON.stringify(body) });
+  try {
+    assert.equal((await fetch(noPolicyBase, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'r04-no-principal' }, body: JSON.stringify(startRequest) })).status, 401);
+    assert.equal((await createDraft(noPolicyBase, { ...startRequest, vacancyId: 'vac_demo_002' }, 'r04-wrong-pair')).status, 409);
+    assert.equal((await createDraft(noPolicyBase, { ...startRequest, candidateId: 'candidate_demo_999' }, 'r04-missing-candidate')).status, 404);
+    assert.equal((await createDraft(noPolicyBase, { ...startRequest, expectedSourceRevision: 'synthetic-candidate-demo-001-r0' }, 'r04-stale-source')).status, 409);
+
+    const createdResponse = await createDraft(noPolicyBase);
+    const created = await createdResponse.json();
+    assert.equal(createdResponse.status, 201);
+    assert.equal(validateDraft(created), true, JSON.stringify(validateDraft.errors));
+    assert.equal(created.status, 'draft');
+    assert.equal(created.reviewState, 'unreviewed');
+    assert.equal(created.publicationReceipt, null);
+    assert.equal((await (await createDraft(noPolicyBase)).json()).reportRef, created.reportRef, 'repeated create returns the stable report reference');
+
+    const reportUrl = `${noPolicyBase}/${created.reportRef}`;
+    assert.equal((await fetch(reportUrl, { headers: { 'X-Test-Principal': 'profile_demo_002' } })).status, 404, 'report refs are profile scoped');
+    const otherScope = await fetch(`${reportUrl}/review`, { method: 'POST', headers: jsonHeaders('profile_demo_003'), body: JSON.stringify({ expectedReportRevision: created.reportRevision, decision: 'approved' }) });
+    assert.equal(otherScope.status, 404);
+    const noReviewScope = await fetch(`${reportUrl}/review`, { method: 'POST', headers: jsonHeaders('profile_demo_001_no_review'), body: JSON.stringify({ expectedReportRevision: created.reportRevision, decision: 'approved' }) });
+    assert.equal(noReviewScope.status, 403);
+
+    const invalidEdit = await fetch(reportUrl, { method: 'PATCH', headers: jsonHeaders('profile_demo_001'), body: JSON.stringify({ expectedReportRevision: created.reportRevision, clientFields: { internalScore: 99 } }) });
+    assert.equal(invalidEdit.status, 400);
+    const editedResponse = await fetch(reportUrl, { method: 'PATCH', headers: jsonHeaders('profile_demo_001'), body: JSON.stringify(editRequest) });
+    const edited = await editedResponse.json();
+    assert.equal(editedResponse.status, 200);
+    assert.equal(validateDraft(edited), true, JSON.stringify(validateDraft.errors));
+    assert.equal(edited.reportRevision, 'report-demo-r2');
+    assert.equal(edited.reviewState, 'unreviewed');
+    assert.equal(edited.clientFields.summary, editRequest.clientFields.summary);
+    for (const marker of Object.values(source.internal).flatMap(value => typeof value === 'string' ? [value] : Array.isArray(value) ? value : [])) {
+      assert.equal(JSON.stringify(edited).includes(marker), false, `internal source leaked in draft state: ${marker}`);
+    }
+    const staleEdit = await fetch(reportUrl, { method: 'PATCH', headers: jsonHeaders('profile_demo_001'), body: JSON.stringify({ ...editRequest, expectedReportRevision: created.reportRevision }) });
+    assert.equal(staleEdit.status, 409);
+    const previewResponse = await fetch(`${reportUrl}/preview`, { headers: { 'X-Test-Principal': 'profile_demo_001' } });
+    const preview = await previewResponse.json();
+    assert.equal(previewResponse.status, 200);
+    assert.equal(validatePreview(preview), true, JSON.stringify(validatePreview.errors));
+    assert.equal(preview.reportRef, created.reportRef);
+    assert.equal(preview.reportRevision, edited.reportRevision);
+    assert.equal(preview.publication, 'not_shared');
+    assert.match(preview.html, /&lt;img src=x onerror=&quot;synthetic&quot;&gt; &amp; safe text/);
+    assert.equal(preview.html.includes('<img src=x onerror="synthetic">'), false);
+    for (const marker of Object.values(source.internal).flatMap(value => typeof value === 'string' ? [value] : Array.isArray(value) ? value : [])) {
+      assert.equal(JSON.stringify(preview).includes(marker), false, `internal source leaked in preview: ${marker}`);
+    }
+
+    currentSourceRevision = 'synthetic-candidate-demo-001-r2';
+    assert.equal((await fetch(`${reportUrl}/preview`, { headers: { 'X-Test-Principal': 'profile_demo_001' } })).status, 409, 'preview rejects changed source revision');
+    currentSourceRevision = source.sourceRevision;
+    const unreviewedPublish = await fetch(`${reportUrl}/publish`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: JSON.stringify({ expectedReportRevision: edited.reportRevision }) });
+    assert.equal(unreviewedPublish.status, 409);
+    assert.equal((await unreviewedPublish.json()).error, 'report_review_required');
+
+    const reviewedResponse = await fetch(`${reportUrl}/review`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: JSON.stringify({ expectedReportRevision: edited.reportRevision, decision: 'approved' }) });
+    const reviewed = await reviewedResponse.json();
+    assert.equal(reviewedResponse.status, 200);
+    assert.equal(reviewed.reviewState, 'approved');
+    assert.equal(reviewed.reportRevision, 'report-demo-r3');
+    const deniedPublish = await fetch(`${reportUrl}/publish`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: JSON.stringify({ expectedReportRevision: reviewed.reportRevision }) });
+    assert.equal(deniedPublish.status, 403, 'missing policy adapter denies publication');
+    const stillDraft = await (await fetch(reportUrl, { headers: { 'X-Test-Principal': 'profile_demo_001' } })).json();
+    assert.equal(stillDraft.status, 'draft');
+    assert.equal(stillDraft.reviewState, 'approved');
+    assert.equal(stillDraft.reportRevision, reviewed.reportRevision, 'denied publication does not mutate draft state');
+  } finally { await new Promise(resolve => noPolicyServer.close(resolve)); }
+
+  let publishAttempts = 0;
+  let adapterPublishCalls = 0;
+  let adapterRevokeCalls = 0;
+  const publicationAdapter = {
+    async publish(input) {
+      adapterPublishCalls++;
+      assert.equal(input.audience, 'client');
+      assert.equal(Object.hasOwn(input, 'internal'), false);
+      for (const marker of Object.values(source.internal).flatMap(value => typeof value === 'string' ? [value] : Array.isArray(value) ? value : [])) {
+        assert.equal(JSON.stringify(input).includes(marker), false, `internal source leaked to publication adapter: ${marker}`);
+      }
+      publishAttempts++;
+      if (publishAttempts === 1) throw new Error('private policy/provider diagnostic');
+      return { allowed: true, receiptId: 'publication_demo_abcdef123456' };
+    },
+    async revoke(input) { adapterRevokeCalls++; assert.equal(input.receiptId, 'publication_demo_abcdef123456'); return { allowed: true }; }
+  };
+  const authorizedServer = createRecruitingServer({
+    resolveTrustedProfileContext: resolveReportTestContext,
+    resolveCurrentReportSourceRevision: () => source.sourceRevision,
+    publicationAdapter
+  });
+  await new Promise(resolve => authorizedServer.listen(0, '127.0.0.1', resolve));
+  try {
+    const base = `http://127.0.0.1:${authorizedServer.address().port}/api/v1/ui/report-drafts`;
+    const createdResponse = await createDraft(base, startRequest, 'r04-authorized-publish');
+    const created = await createdResponse.json();
+    assert.equal(createdResponse.status, 201);
+    const reportUrl = `${base}/${created.reportRef}`;
+    const unreviewedPublish = await fetch(`${reportUrl}/publish`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: JSON.stringify({ expectedReportRevision: created.reportRevision }) });
+    assert.equal(unreviewedPublish.status, 409);
+    assert.equal(adapterPublishCalls, 0, 'unreviewed drafts never invoke publication policy/adapter');
+    const reviewedResponse = await fetch(`${reportUrl}/review`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: JSON.stringify({ expectedReportRevision: created.reportRevision, decision: 'approved' }) });
+    const reviewed = await reviewedResponse.json();
+    const publishAction = { expectedReportRevision: reviewed.reportRevision };
+    const failedPublish = await fetch(`${reportUrl}/publish`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: JSON.stringify(publishAction) });
+    assert.equal(failedPublish.status, 503);
+    assert.deepEqual((await failedPublish.json()).error, 'publication_unavailable');
+    const keptDraft = await (await fetch(reportUrl, { headers: { 'X-Test-Principal': 'profile_demo_001' } })).json();
+    assert.equal(keptDraft.status, 'draft');
+    assert.equal(keptDraft.reviewState, 'approved');
+    assert.equal(keptDraft.reportRevision, reviewed.reportRevision, 'publication failure keeps approved draft intact');
+
+    const successResponse = await fetch(`${reportUrl}/publish`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: JSON.stringify(publishAction) });
+    const published = await successResponse.json();
+    assert.equal(successResponse.status, 200);
+    assert.equal(validateDraft(published), true, JSON.stringify(validateDraft.errors));
+    assert.equal(published.status, 'published');
+    assert.equal(published.reportRef, created.reportRef);
+    assert.equal(published.publicationReceipt, 'publication_demo_abcdef123456');
+    assert.equal(adapterPublishCalls, 2);
+    assert.equal((await fetch(reportUrl, { headers: { 'X-Test-Principal': 'profile_demo_002' } })).status, 404);
+    assert.equal((await fetch(`http://127.0.0.1:${authorizedServer.address().port}/api/v1/reports/${created.reportRef}`)).status, 404, 'there is no public sharing endpoint');
+    const noRevokeScope = await fetch(`${reportUrl}/revoke`, { method: 'POST', headers: jsonHeaders('profile_demo_001_no_revoke'), body: JSON.stringify({ expectedReportRevision: published.reportRevision }) });
+    assert.equal(noRevokeScope.status, 403);
+    const revokedResponse = await fetch(`${reportUrl}/revoke`, { method: 'POST', headers: jsonHeaders('profile_demo_001'), body: JSON.stringify({ expectedReportRevision: published.reportRevision }) });
+    const revoked = await revokedResponse.json();
+    assert.equal(revokedResponse.status, 200);
+    assert.equal(revoked.status, 'revoked');
+    assert.equal(revoked.reportRef, created.reportRef);
+    assert.equal(adapterRevokeCalls, 1);
+    assert.equal((await fetch(`${reportUrl}/preview`, { headers: { 'X-Test-Principal': 'profile_demo_001' } })).status, 410, 'revoked report access is denied');
+  } finally { await new Promise(resolve => authorizedServer.close(resolve)); }
+
+  assert.equal((await (await get('/api/v1/capabilities')).json()).capabilities.some(item => item.id.includes('report')), false, 'report lifecycle is not advertised as a platform capability');
+  assert.deepEqual(await readFile(new URL('data/report-scenarios.json', root)), sourceBefore, 'draft lifecycle never mutates source fixture');
+});
+
 test('R-02 synthetic evaluation is profile scoped, revision pinned, typed, deterministic, and side-effect free', async () => {
   const inputSchema = await loadSchema('v1-response-evaluation-input.schema.json');
   const evaluatorSchema = await loadSchema('v1-evaluator-result.schema.json');

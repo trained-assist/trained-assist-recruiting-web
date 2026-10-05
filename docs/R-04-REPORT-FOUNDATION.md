@@ -29,4 +29,4 @@ The inspection was limited to source and tests. The checkout was behind upstream
 - The intended client fields, consent/approval process, and meaning of “fit” and “recruiter conclusion” need domain-owner review before using real data.
 - There is no trusted user/profile context on the preview route. It remains local and unadvertised; real candidate data must not be connected until that boundary and the source owner are agreed.
 
-This PR is an R-04 renderer/schema proof only. It is not a client report workflow or a publishable report.
+The original renderer/schema PR was not a client report workflow or publishable report. The follow-on [`R-04 draft lifecycle foundation`](R-04-DRAFT-LIFECYCLE-FOUNDATION.md) adds a synthetic profile-scoped lifecycle while preserving the same client-field projection and escaped renderer. It still is not production publishing or approval policy.
