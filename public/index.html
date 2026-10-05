@@ -15,13 +15,14 @@
 <body>
   <main>
     <h1>Recruiting API demo</h1>
-    <p class="notice">Local synthetic-data demonstration. The selected profile is a fixture principal, not production authentication.</p>
+    <p class="notice">Local UI fixture only; profile routes are not agent capabilities. The selected profile is a fixture principal, not production authentication.</p>
     <label for="profile">Synthetic profile</label>
     <select id="profile"><option value="profile_demo_001">Synthetic recruiter north</option><option value="profile_demo_002">Synthetic recruiter south</option></select>
     <label for="vacancy">Select a vacancy</label>
     <select id="vacancy"></select>
     <h2>Read-only responses</h2>
     <ul id="responses"></ul>
+    <button id="more" type="button" hidden>Load more responses</button>
     <p id="message" role="status"></p>
     <p><a href="/api/v1/manifest">API manifest</a> · <a href="/api/v1/vacancies">All synthetic vacancies</a></p>
   </main>
@@ -30,6 +31,8 @@
     const vacancy = document.querySelector('#vacancy');
     const responses = document.querySelector('#responses');
     const message = document.querySelector('#message');
+    const more = document.querySelector('#more');
+    let nextCursor = null;
     async function refreshVacancies() {
       const profileId = profile.value;
       const response = await fetch(`/api/v1/profiles/${profileId}/vacancies`, { headers: { 'X-Demo-Profile-Id': profileId } });
@@ -37,21 +40,28 @@
       vacancy.replaceChildren(...payload.items.map(item => new Option(`${item.title} — ${item.location}`, item.id)));
       await refreshResponses();
     }
-    async function refreshResponses() {
+    async function refreshResponses(reset = true) {
       const profileId = profile.value;
-      if (!vacancy.value) { responses.replaceChildren(); message.textContent = 'No vacancies are assigned to this profile.'; return; }
-      const response = await fetch(`/api/v1/profiles/${profileId}/vacancies/${vacancy.value}/responses`, { headers: { 'X-Demo-Profile-Id': profileId } });
+      if (!vacancy.value) { responses.replaceChildren(); more.hidden = true; message.textContent = 'No vacancies are assigned to this profile.'; return; }
+      if (reset) { nextCursor = null; responses.replaceChildren(); }
+      const params = new URLSearchParams({ limit: '1' });
+      if (!reset && nextCursor) params.set('cursor', nextCursor);
+      const response = await fetch(`/api/v1/profiles/${profileId}/vacancies/${vacancy.value}/responses?${params}`, { headers: { 'X-Demo-Profile-Id': profileId } });
       const payload = await response.json();
-      if (!response.ok) { responses.replaceChildren(); message.textContent = 'This synthetic profile is not granted response-read scope.'; return; }
-      responses.replaceChildren(...payload.items.map(item => {
+      if (response.status === 409) { nextCursor = null; more.hidden = true; responses.replaceChildren(); message.textContent = 'Response data changed; reload the selected vacancy.'; return; }
+      if (!response.ok) { more.hidden = true; responses.replaceChildren(); message.textContent = 'This synthetic profile is not granted response-read scope.'; return; }
+      responses.append(...payload.items.map(item => {
         const li = document.createElement('li');
         li.textContent = `${item.id} — ${item.status} — ${item.receivedAt}`;
         return li;
       }));
-      message.textContent = `${payload.items.length} synthetic response(s)`;
+      nextCursor = payload.nextCursor;
+      more.hidden = !nextCursor;
+      message.textContent = `${responses.children.length} synthetic response(s) · ${payload.freshness} · ${payload.revision}`;
     }
     profile.addEventListener('change', refreshVacancies);
     vacancy.addEventListener('change', refreshResponses);
+    more.addEventListener('click', () => refreshResponses(false));
     refreshVacancies().catch(() => { message.textContent = 'Could not load local fixture data.'; });
   </script>
 </body>

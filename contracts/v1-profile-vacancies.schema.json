@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-profile-vacancies.schema.json",
-  "title": "Profile-scoped vacancies response",
+  "title": "Local UI fixture-only profile-scoped vacancies response",
   "type": "object",
   "required": ["domainApiVersion", "profileId", "items"],
   "properties": {

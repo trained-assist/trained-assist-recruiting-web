@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { getProfile, listProfileVacancies, listVacancyResponses, profileHasScope } from './recruiting-domain.js';
+import { getProfile, listProfileVacancies, profileHasScope, readVacancyResponses } from './recruiting-domain.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
@@ -28,38 +28,16 @@ const readiness = {
     domainApiVersion: 'v1'
   }
 };
-const capabilities = [
-  {
-    id: 'recruiting.vacancies.list',
-    version: '1.0.0',
-    required: true,
-    inputSchemaRef: 'contracts/v1-vacancies-query.schema.json',
-    outputSchemaRef: 'contracts/v1-vacancies.schema.json',
-    effect: 'read',
-    requiredScopes: [],
-    operationRef: 'GET /api/v1/vacancies'
-  },
-  {
-    id: 'recruiting.profile.vacancies.list',
-    version: '1.0.0',
-    required: true,
-    inputSchemaRef: 'contracts/v1-profile-vacancies-input.schema.json',
-    outputSchemaRef: 'contracts/v1-profile-vacancies.schema.json',
-    effect: 'read',
-    requiredScopes: ['recruiting.profile.read'],
-    operationRef: 'GET /api/v1/profiles/{profileId}/vacancies'
-  },
-  {
-    id: 'recruiting.profile.vacancy-responses.list',
-    version: '1.0.0',
-    required: true,
-    inputSchemaRef: 'contracts/v1-vacancy-responses-input.schema.json',
-    outputSchemaRef: 'contracts/v1-vacancy-responses.schema.json',
-    effect: 'read',
-    requiredScopes: ['recruiting.responses.read'],
-    operationRef: 'GET /api/v1/profiles/{profileId}/vacancies/{vacancyId}/responses'
-  }
-];
+const capabilities = [{
+  id: 'recruiting.vacancies.list',
+  version: '1.0.0',
+  required: true,
+  inputSchemaRef: 'contracts/v1-vacancies-query.schema.json',
+  outputSchemaRef: 'contracts/v1-vacancies.schema.json',
+  effect: 'read',
+  requiredScopes: [],
+  operationRef: 'GET /api/v1/vacancies'
+}];
 const manifest = {
   serviceId: 'trained-assist.recruiting',
   release,
@@ -72,12 +50,21 @@ const manifest = {
     manifest: '/api/v1/manifest',
     capabilities: '/api/v1/capabilities',
     readiness: '/api/v1/readiness',
-    vacancies: '/api/v1/vacancies',
-    profileVacancies: '/api/v1/profiles/{profileId}/vacancies',
-    vacancyResponses: '/api/v1/profiles/{profileId}/vacancies/{vacancyId}/responses'
+    vacancies: '/api/v1/vacancies'
   }
 };
 const mime = { json: 'application/json; charset=utf-8', html: 'text/html; charset=utf-8' };
+
+function parseResponsePageOptions(url) {
+  const params = url.searchParams;
+  const keys = [...params.keys()];
+  if (keys.some(key => !['limit', 'cursor'].includes(key)) || new Set(keys).size !== keys.length) {
+    return { error: 'unexpected_query_parameters' };
+  }
+  const rawLimit = params.get('limit');
+  if (rawLimit !== null && !/^(?:[1-9]|[1-4][0-9]|50)$/.test(rawLimit)) return { error: 'invalid_page_request' };
+  return { limit: rawLimit === null ? 25 : Number(rawLimit), cursor: params.get('cursor') };
+}
 
 export function createRecruitingServer() {
   return createServer((req, res) => {
@@ -122,9 +109,6 @@ export function createRecruitingServer() {
         } else if (demoProfileId !== profileId) {
           status = 403;
           body = { error: 'demo_profile_mismatch' };
-        } else if (url.search !== '') {
-          status = 400;
-          body = { error: 'unexpected_query_parameters' };
         } else if (!getProfile(profileId)) {
           status = 404;
           body = { error: 'not_found' };
@@ -133,15 +117,52 @@ export function createRecruitingServer() {
           body = { error: 'demo_scope_required' };
         } else if (responseRoute) {
           const [, , vacancyId] = responseRoute;
-          const items = listVacancyResponses(profileId, vacancyId);
+          const pageOptions = parseResponsePageOptions(url);
+          if (pageOptions.error) {
+            status = 400;
+            body = { error: pageOptions.error };
+          } else {
+            const page = readVacancyResponses(profileId, vacancyId, pageOptions);
+            if (page === null) {
+              status = 404;
+              body = { error: 'not_found' };
+            } else if (page.kind === 'invalid_cursor') {
+              status = 400;
+              body = { error: 'invalid_cursor' };
+            } else if (page.kind === 'stale_cursor') {
+              status = 409;
+              body = {
+                domainApiVersion: 'v1',
+                profileId,
+                vacancyId,
+                freshness: 'stale',
+                error: 'stale_cursor',
+                requestedRevision: page.requestedRevision,
+                currentRevision: page.currentRevision
+              };
+            } else {
+              body = {
+                domainApiVersion: 'v1',
+                profileId,
+                vacancyId,
+                revision: page.revision,
+                freshness: page.freshness,
+                items: page.items,
+                nextCursor: page.nextCursor
+              };
+            }
+          }
+        } else if (url.search !== '') {
+          status = 400;
+          body = { error: 'unexpected_query_parameters' };
+        } else {
+          const items = listProfileVacancies(profileId);
           if (items === null) {
             status = 404;
             body = { error: 'not_found' };
           } else {
-            body = { domainApiVersion: 'v1', profileId, vacancyId, items };
+            body = { domainApiVersion: 'v1', profileId, items };
           }
-        } else {
-          body = { domainApiVersion: 'v1', profileId, items: listProfileVacancies(profileId) };
         }
       } else {
         status = 404;

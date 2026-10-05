@@ -40,15 +40,8 @@ test('manifest, capabilities, and readiness expose a versioned read-only contrac
     operationRef: 'GET /api/v1/vacancies'
   });
   assert.deepEqual(schema.properties.readiness.properties.status.enum, ['ready', 'degraded', 'blocked', 'unavailable']);
-  const profileCapabilities = manifest.capabilities.filter(capability => capability.id.startsWith('recruiting.profile.'));
-  assert.deepEqual(profileCapabilities.map(({ id, requiredScopes }) => [id, requiredScopes]), [
-    ['recruiting.profile.vacancies.list', ['recruiting.profile.read']],
-    ['recruiting.profile.vacancy-responses.list', ['recruiting.responses.read']]
-  ]);
-  for (const capability of profileCapabilities) {
-    ajv.compile(await loadSchema(capability.inputSchemaRef.replace(/^contracts\//, '')));
-    ajv.compile(await loadSchema(capability.outputSchemaRef.replace(/^contracts\//, '')));
-  }
+  assert.deepEqual(manifest.capabilities.map(({ id }) => id), ['recruiting.vacancies.list']);
+  assert.deepEqual(Object.keys(manifest.endpoints), ['manifest', 'capabilities', 'readiness', 'vacancies']);
   const capabilities = await (await get('/api/v1/capabilities')).json();
   assert.deepEqual(capabilities.capabilities, manifest.capabilities);
   const readiness = await (await get('/api/v1/readiness')).json();
@@ -74,7 +67,7 @@ test('vacancies match the published schema and contain synthetic data only', asy
   assert.deepEqual(await queryResponse.json(), { error: 'unexpected_query_parameters' });
 });
 
-test('profile-scoped vacancy selection and response reads enforce the synthetic principal and declared scopes', async () => {
+test('local UI fixture routes enforce synthetic profile checks and paginate revision-bound response reads', async () => {
   const profileId = 'profile_demo_001';
   const vacancyId = 'vac_demo_001';
   const vacanciesInput = await loadSchema('v1-profile-vacancies-input.schema.json');
@@ -89,6 +82,7 @@ test('profile-scoped vacancy selection and response reads enforce the synthetic 
 
   assert.equal(validateVacanciesInput({ profileId }), true);
   assert.equal(validateResponsesInput({ profileId, vacancyId }), true);
+  assert.equal(validateResponsesInput({ profileId, vacancyId, limit: 1 }), true);
   assert.equal(validateResponsesInput({ profileId, vacancyId, applicantEmail: 'person@example.com' }), false);
 
   const url = `/api/v1/profiles/${profileId}/vacancies`;
@@ -101,13 +95,39 @@ test('profile-scoped vacancy selection and response reads enforce the synthetic 
   assert.equal(validateVacanciesOutput(vacanciesPayload), true, JSON.stringify(validateVacanciesOutput.errors));
   assert.deepEqual(vacanciesPayload.items.map(item => item.id), [vacancyId]);
 
-  const responsesUrl = `/api/v1/profiles/${profileId}/vacancies/${vacancyId}/responses`;
+  const responsesUrl = `/api/v1/profiles/${profileId}/vacancies/${vacancyId}/responses?limit=1`;
   const responsesResponse = await fetch(`${base}${responsesUrl}`, { headers: { 'X-Demo-Profile-Id': profileId } });
   const responsesPayload = await responsesResponse.json();
   assert.equal(responsesResponse.status, 200);
   assert.equal(validateResponsesOutput(responsesPayload), true, JSON.stringify(validateResponsesOutput.errors));
-  assert.equal(responsesPayload.items.length, 2);
-  assert.equal((await fetch(`${base}${responsesUrl}`, { method: 'POST', headers: { 'X-Demo-Profile-Id': profileId } })).status, 405);
+  assert.equal(responsesPayload.freshness, 'current');
+  assert.equal(responsesPayload.revision, 'responses-demo-001-r1');
+  assert.equal(responsesPayload.items.length, 1);
+  assert.ok(responsesPayload.nextCursor);
+  assert.equal(validateResponsesInput({ profileId, vacancyId, limit: 1, cursor: responsesPayload.nextCursor }), true);
+
+  const nextPageUrl = `/api/v1/profiles/${profileId}/vacancies/${vacancyId}/responses?limit=1&cursor=${encodeURIComponent(responsesPayload.nextCursor)}`;
+  const nextPageResponse = await fetch(`${base}${nextPageUrl}`, { headers: { 'X-Demo-Profile-Id': profileId } });
+  const nextPagePayload = await nextPageResponse.json();
+  assert.equal(nextPageResponse.status, 200);
+  assert.equal(validateResponsesOutput(nextPagePayload), true, JSON.stringify(validateResponsesOutput.errors));
+  assert.equal(nextPagePayload.revision, responsesPayload.revision);
+  assert.equal(nextPagePayload.freshness, 'current');
+  assert.equal(nextPagePayload.items[0].id, 'response_demo_002');
+  assert.equal(nextPagePayload.nextCursor, null);
+
+  const staleCursor = Buffer.from(JSON.stringify({ profileId, vacancyId, revision: 'responses-demo-001-r0', offset: 1 })).toString('base64url');
+  const staleResponse = await fetch(`${base}/api/v1/profiles/${profileId}/vacancies/${vacancyId}/responses?cursor=${staleCursor}`, { headers: { 'X-Demo-Profile-Id': profileId } });
+  const stalePayload = await staleResponse.json();
+  assert.equal(staleResponse.status, 409);
+  assert.equal(validateResponsesOutput(stalePayload), true, JSON.stringify(validateResponsesOutput.errors));
+  assert.equal(stalePayload.freshness, 'stale');
+  assert.equal(stalePayload.currentRevision, responsesPayload.revision);
+  assert.equal((await fetch(`${base}/api/v1/profiles/${profileId}/vacancies/${vacancyId}/responses?limit=0`, { headers: { 'X-Demo-Profile-Id': profileId } })).status, 400);
+  assert.equal((await fetch(`${base}/api/v1/profiles/${profileId}/vacancies/${vacancyId}/responses?cursor=`, { headers: { 'X-Demo-Profile-Id': profileId } })).status, 400);
+  assert.equal((await fetch(`${base}/api/v1/profiles/${profileId}/vacancies/${vacancyId}/responses?cursor=%%%`, { headers: { 'X-Demo-Profile-Id': profileId } })).status, 400);
+  assert.equal((await fetch(`${base}/api/v1/profiles/${profileId}/vacancies/${vacancyId}/responses?unexpected=x`, { headers: { 'X-Demo-Profile-Id': profileId } })).status, 400);
+  assert.equal((await fetch(`${base}/api/v1/profiles/${profileId}/vacancies/${vacancyId}/responses`, { method: 'POST', headers: { 'X-Demo-Profile-Id': profileId } })).status, 405);
   assert.equal((await fetch(`${base}/api/v1/profiles/${profileId}/vacancies/vac_demo_002/responses`, { headers: { 'X-Demo-Profile-Id': profileId } })).status, 404);
   const insufficientScope = await fetch(`${base}/api/v1/profiles/profile_demo_002/vacancies/vac_demo_002/responses`, { headers: { 'X-Demo-Profile-Id': 'profile_demo_002' } });
   assert.equal(insufficientScope.status, 403);
@@ -120,6 +140,8 @@ test('browser landing page is useful and all writes are rejected', async () => {
   assert.match(html, /Recruiting API demo/);
   assert.match(html, /Select a vacancy/);
   assert.match(html, /Read-only responses/);
+  assert.match(html, /not agent capabilities/);
+  assert.match(html, /Load more responses/);
   assert.match(html, /not production authentication/);
   assert.equal((await fetch(`${base}/api/v1/vacancies`, { method: 'POST' })).status, 405);
 });

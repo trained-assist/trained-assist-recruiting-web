@@ -1,26 +1,47 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-vacancy-responses.schema.json",
-  "title": "Profile-scoped vacancy responses",
-  "type": "object",
-  "required": ["domainApiVersion", "profileId", "vacancyId", "items"],
-  "properties": {
-    "domainApiVersion": { "const": "v1" },
-    "profileId": { "type": "string", "pattern": "^profile_demo_[0-9]{3}$" },
-    "vacancyId": { "type": "string", "pattern": "^vac_demo_[0-9]{3}$" },
-    "items": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["id", "status", "receivedAt"],
-        "properties": {
-          "id": { "type": "string", "pattern": "^response_demo_[0-9]{3}$" },
-          "status": { "type": "string", "enum": ["received", "reviewing"] },
-          "receivedAt": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$" }
+  "title": "Local UI profile-scoped vacancy response page or stale-cursor result",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["domainApiVersion", "profileId", "vacancyId", "revision", "freshness", "items", "nextCursor"],
+      "properties": {
+        "domainApiVersion": { "const": "v1" },
+        "profileId": { "type": "string", "pattern": "^profile_demo_[0-9]{3}$" },
+        "vacancyId": { "type": "string", "pattern": "^vac_demo_[0-9]{3}$" },
+        "revision": { "type": "string", "minLength": 1 },
+        "freshness": { "const": "current" },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "status", "receivedAt"],
+            "properties": {
+              "id": { "type": "string", "pattern": "^response_demo_[0-9]{3}$" },
+              "status": { "type": "string", "enum": ["received", "reviewing"] },
+              "receivedAt": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$" }
+            },
+            "additionalProperties": false
+          }
         },
-        "additionalProperties": false
-      }
+        "nextCursor": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9_-]+$" }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": ["domainApiVersion", "profileId", "vacancyId", "freshness", "error", "requestedRevision", "currentRevision"],
+      "properties": {
+        "domainApiVersion": { "const": "v1" },
+        "profileId": { "type": "string", "pattern": "^profile_demo_[0-9]{3}$" },
+        "vacancyId": { "type": "string", "pattern": "^vac_demo_[0-9]{3}$" },
+        "freshness": { "const": "stale" },
+        "error": { "const": "stale_cursor" },
+        "requestedRevision": { "type": "string", "minLength": 1 },
+        "currentRevision": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
     }
-  },
-  "additionalProperties": false
+  ]
 }

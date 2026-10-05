@@ -1,12 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-vacancy-responses-input.schema.json",
-  "title": "Vacancy responses path input",
+  "title": "Local UI vacancy responses path and page input",
   "type": "object",
   "required": ["profileId", "vacancyId"],
   "properties": {
     "profileId": { "type": "string", "pattern": "^profile_demo_[0-9]{3}$" },
-    "vacancyId": { "type": "string", "pattern": "^vac_demo_[0-9]{3}$" }
+    "vacancyId": { "type": "string", "pattern": "^vac_demo_[0-9]{3}$" },
+    "limit": { "type": "integer", "minimum": 1, "maximum": 50 },
+    "cursor": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" }
   },
   "additionalProperties": false
 }
