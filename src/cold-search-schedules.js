@@ -67,7 +67,7 @@ function scheduleId(profileId, vacancyId) { return `schedule_demo_${digest(JSON.
 function occurrenceKey(legacyJobId, scheduledAt) { return JSON.stringify([legacyJobId, scheduledAt]); }
 function occurrenceId(legacyJobId, scheduledAt) { return `occurrence_demo_${digest(occurrenceKey(legacyJobId, scheduledAt)).slice(0, 16)}`; }
 const clone = value => structuredClone(value);
-function validSearchContext(value, vacancyId) {
+export function validSearchContext(value, vacancyId) {
   const criteria = value?.criteria;
   return value?.vacancyId === vacancyId && /^criteria-search-demo-r[0-9]+$/.test(value?.criteriaRevision ?? '') && criteria && typeof criteria === 'object' && !Array.isArray(criteria) &&
     Object.keys(criteria).every(key => ['keywords', 'regions'].includes(key)) && Array.isArray(criteria.keywords) && Array.isArray(criteria.regions) &&

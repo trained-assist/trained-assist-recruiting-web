@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -7,12 +8,14 @@ import { createClientReportPreview, findReportSource, findReportVacancy } from '
 import { createReportDrafts } from './report-drafts.js';
 import { evaluateSyntheticResponse, getResponseScenario, makeEvaluationId, validEvaluatorOutput } from './response-evaluation.js';
 import { createCandidateSearchJobs } from './candidate-search-jobs.js';
-import { createColdSearchScheduleHandler, InMemoryColdSearchScheduleRepository } from './cold-search-schedules.js';
+import { createColdSearchScheduleHandler, InMemoryColdSearchScheduleRepository, validSearchContext } from './cold-search-schedules.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
 const vacancies = JSON.parse(await readFile(join(root, 'data/vacancies.json'), 'utf8'));
 const landingPage = await readFile(join(root, 'public/index.html'), 'utf8');
+const proactivePage = await readFile(join(root, 'public/proactive.html'), 'utf8');
+const proactiveScript = await readFile(join(root, 'public/proactive.js'), 'utf8');
 const release = {
   version: '0.1.0',
   sourceRevision: process.env.SOURCE_REVISION ?? 'unversioned-local',
@@ -58,7 +61,7 @@ const manifest = {
     vacancies: '/api/v1/vacancies'
   }
 };
-const mime = { json: 'application/json; charset=utf-8', html: 'text/html; charset=utf-8' };
+const mime = { json: 'application/json; charset=utf-8', html: 'text/html; charset=utf-8', js: 'text/javascript; charset=utf-8' };
 
 function parseResponsePageOptions(url) {
   const params = url.searchParams;
@@ -112,6 +115,7 @@ function parseSearchResultPage(url) {
 }
 
 const isPlainObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const isProactiveVacancy = value => typeof value === 'string' && /^vac_demo_[0-9]{3}$/.test(value);
 const isReportRevision = value => typeof value === 'string' && /^report-demo-r[0-9]+$/.test(value);
 
 function validReportDraftStart(value) {
@@ -155,38 +159,44 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
     } catch { return null; }
   };
   const startCandidateSearch = (profileId, key, request) => candidateSearchJobs.start(profileId, key, request);
+  const manualSearches = new Map();
+  const manualSearchOperations = new Map();
+  const manualSearchInFlight = new Map();
+  const manualKey = (profileId, vacancyId) => JSON.stringify([profileId, vacancyId]);
+  const executeColdSearch = async ({ profileId, idempotencyKey, request }) => {
+    const context = { profileId, scopes: ['recruiting.candidateSearch'] };
+    if (await currentSearchCriteriaRevision(context, request.vacancyId) !== request.criteriaRevision) return { status: 'failed', phase: 'pre_dispatch', providerError: { code: 'stale_search_criteria' } };
+    const started = await startCandidateSearch(profileId, idempotencyKey, request);
+    if (started.conflict || started.capacityExceeded) return { status: 'failed', phase: started.capacityExceeded ? 'pre_dispatch' : 'dispatch_unknown', providerError: { code: started.capacityExceeded ? 'job_capacity_reached' : 'idempotency_conflict' } };
+    let job = started.job;
+    for (let page = 0; page < 4 && job.status !== 'completed'; page++) {
+      if (job.status !== 'partial' || !job.canResume) break;
+      const resumed = await candidateSearchJobs.resume(profileId, job.jobId);
+      if (resumed.conflict) break;
+      job = resumed.job;
+    }
+    if (job.status !== 'completed') return { ...job, status: 'failed', providerError: job.providerError ?? { code: 'scheduled_search_incomplete' } };
+    const snapshot = candidateSearchJobs.results(profileId, job.jobId, { limit: 200, cursor: null });
+    return { ...job, ...snapshot, created: started.created };
+  };
   const coldSearchSchedules = createColdSearchScheduleHandler({
     repository: candidateSearchScheduleRepository,
     clock: scheduleClock,
     resolveSearchRequest: resolveScheduledSearchRequest,
-    executeSearch: async ({ profileId, idempotencyKey, request }) => {
-      const context = { profileId, scopes: ['recruiting.candidateSearch'] };
-      if (await currentSearchCriteriaRevision(context, request.vacancyId) !== request.criteriaRevision) return { status: 'failed', phase: 'pre_dispatch', providerError: { code: 'stale_search_criteria' } };
-      const started = await startCandidateSearch(profileId, idempotencyKey, request);
-      if (started.conflict || started.capacityExceeded) return { status: 'failed', phase: started.capacityExceeded ? 'pre_dispatch' : 'dispatch_unknown', providerError: { code: started.capacityExceeded ? 'job_capacity_reached' : 'idempotency_conflict' } };
-      let job = started.job;
-      for (let page = 0; page < 4 && job.status !== 'completed'; page++) {
-        if (job.status !== 'partial' || !job.canResume) break;
-        const resumed = await candidateSearchJobs.resume(profileId, job.jobId);
-        if (resumed.conflict) break;
-        job = resumed.job;
-      }
-      if (job.status !== 'completed') return { ...job, status: 'failed', providerError: job.providerError ?? { code: 'scheduled_search_incomplete' } };
-      const snapshot = candidateSearchJobs.results(profileId, job.jobId, { limit: 200, cursor: null });
-      return { ...job, ...snapshot };
-    }
+    executeSearch: executeColdSearch
   });
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const path = url.pathname;
     const isCandidateSearchPath = path === '/api/v1/ui/candidate-searches' || /^\/api\/v1\/ui\/candidate-searches\/[^/]+(?:\/results|\/resume)?$/.test(path);
+    const isProactivePath = path === '/hh/proactive' || path === '/hh/proactive/app.js' || /^\/api\/hh\/proactive\/(?:candidates|schedule|occurrences|vacancy-state|search)$/.test(path);
     const reportDraftRoot = '/api/v1/ui/report-drafts';
     const isReportDraftPath = path === reportDraftRoot || new RegExp(`^${reportDraftRoot}/report_demo_[a-f0-9]{12}(?:/preview|/review|/publish|/revoke)?$`).test(path);
     let status = 200;
     let type = mime.json;
     let body;
 
-    if (req.method !== 'GET' && req.method !== 'HEAD' && !(req.method === 'POST' && (isCandidateSearchPath || isReportDraftPath)) && !(req.method === 'PATCH' && isReportDraftPath)) {
+    if (req.method !== 'GET' && req.method !== 'HEAD' && !(req.method === 'POST' && (isCandidateSearchPath || isReportDraftPath || path === '/api/hh/proactive/vacancy-state' || path === '/api/hh/proactive/search')) && !(req.method === 'PATCH' && isReportDraftPath)) {
       status = 405;
       body = { error: 'method_not_allowed' };
       res.setHeader('Allow', isCandidateSearchPath || isReportDraftPath ? 'GET, HEAD, POST, PATCH' : 'GET, HEAD');
@@ -207,6 +217,123 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
         body = { error: 'unexpected_query_parameters' };
       } else {
         body = { apiVersion: 'v1', items: vacancies };
+      }
+    } else if (isProactivePath) {
+      const context = await resolveTrustedProfileContext(req);
+      if (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes)) {
+        status = 401;
+        body = { error: 'trusted_profile_context_required' };
+      } else if (!context.scopes.includes('recruiting.candidateSearch')) {
+        status = 403;
+        body = { error: 'search_scope_required' };
+      } else if (path === '/hh/proactive/app.js' && url.search === '' && (req.method === 'GET' || req.method === 'HEAD')) {
+        type = mime.js;
+        body = proactiveScript;
+        res.setHeader('Cache-Control', 'no-store');
+      } else if (path === '/hh/proactive' && (req.method === 'GET' || req.method === 'HEAD')) {
+        if ([...url.searchParams.keys()].some(key => key !== 'vacancy_id') || !isProactiveVacancy(url.searchParams.get('vacancy_id')) || url.searchParams.getAll('vacancy_id').length !== 1) {
+          status = 400;
+          body = { error: 'vacancy_id_required' };
+        } else if (!listProfileVacancies(context.profileId)?.some(item => item.id === url.searchParams.get('vacancy_id'))) {
+          status = 404;
+          body = { error: 'vacancy_not_found' };
+        } else {
+          type = mime.html;
+          body = proactivePage;
+          res.setHeader('Cache-Control', 'no-store');
+          res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'");
+        }
+      } else {
+        let request = null;
+        if (req.method === 'POST') {
+          try { request = await readJsonBody(req); }
+          catch (error) { status = error.message === 'body_too_large' ? 413 : 400; body = { error: error.message === 'body_too_large' ? 'request_too_large' : 'invalid_json' }; }
+        }
+        const vacancyId = req.method === 'POST' ? request?.vacancy_id : url.searchParams.get('vacancy_id');
+        if (status === 200 && (!isProactiveVacancy(vacancyId) ||
+            (req.method === 'GET' && ([...url.searchParams.keys()].some(key => key !== 'vacancy_id') || url.searchParams.getAll('vacancy_id').length !== 1)) ||
+            !listProfileVacancies(context.profileId)?.some(item => item.id === vacancyId))) {
+          status = 404;
+          body = { error: 'vacancy_not_found' };
+        }
+        if (status === 200 && path === '/api/hh/proactive/schedule' && (req.method === 'GET' || req.method === 'HEAD')) {
+          body = await coldSearchSchedules.handle({ action: 'status', vacancyId }, context);
+        } else if (status === 200 && path === '/api/hh/proactive/occurrences' && (req.method === 'GET' || req.method === 'HEAD')) {
+          body = coldSearchSchedules.listOccurrences(context, vacancyId);
+        } else if (status === 200 && path === '/api/hh/proactive/vacancy-state' && req.method === 'POST') {
+          if (!isPlainObject(request) || Object.keys(request).some(key => !['vacancy_id', 'action', 'interval_hours'].includes(key)) || !['enable', 'disable'].includes(request.action) ||
+              (request.action === 'disable' && 'interval_hours' in request)) {
+            status = 400;
+            body = { error: 'invalid_schedule_action' };
+          } else {
+            const result = await coldSearchSchedules.handle({ action: request.action, vacancyId, ...(request.action === 'enable' && 'interval_hours' in request ? { interval_hours: request.interval_hours } : {}) }, context);
+            status = result.kind === 'not_found' ? 404 : result.kind === 'outcome_unknown' ? 409 : result.kind === 'search_context_unavailable' ? 503 : result.kind === 'updated' ? 200 : 400;
+            body = result;
+          }
+        } else if (status === 200 && path === '/api/hh/proactive/search' && req.method === 'POST') {
+          if (!isPlainObject(request) || Object.keys(request).some(key => key !== 'vacancy_id')) {
+            status = 400;
+            body = { error: 'invalid_search_request' };
+          } else {
+            let searchRequest;
+            try { searchRequest = await resolveScheduledSearchRequest(context.profileId, vacancyId); } catch { searchRequest = null; }
+            if (!validSearchContext(searchRequest, vacancyId)) {
+              status = 503;
+              body = { error: 'search_context_unavailable' };
+            } else {
+              const headerKey = req.headers['idempotency-key'];
+              if (headerKey !== undefined && (typeof headerKey !== 'string' || !/^[A-Za-z0-9._:-]{8,128}$/.test(headerKey))) {
+                status = 400;
+                body = { error: 'invalid_idempotency_key' };
+              } else {
+                const key = headerKey ?? `manual:${randomUUID()}`;
+                const operationKey = JSON.stringify([context.profileId, key]);
+                const requestFingerprint = JSON.stringify([vacancyId, searchRequest.criteriaRevision, searchRequest.criteria]);
+                const prior = manualSearchOperations.get(operationKey);
+                const inFlight = manualSearchInFlight.get(operationKey);
+                if ((prior && prior.requestFingerprint !== requestFingerprint) || (inFlight && inFlight.requestFingerprint !== requestFingerprint)) {
+                  status = 409;
+                  body = { error: 'idempotency_key_reused' };
+                } else {
+                  let operation = inFlight;
+                  if (!operation) {
+                    const promise = executeColdSearch({ profileId: context.profileId, idempotencyKey: key, request: searchRequest });
+                    operation = { requestFingerprint, promise };
+                    manualSearchInFlight.set(operationKey, operation);
+                  }
+                  let result;
+                  try { result = await operation.promise; }
+                  catch { result = { status: 'failed', providerError: { code: 'search_outcome_unknown' } }; }
+                  finally { if (manualSearchInFlight.get(operationKey) === operation) manualSearchInFlight.delete(operationKey); }
+                  if (result.status !== 'completed') {
+                    status = result.providerError?.code === 'idempotency_conflict' || result.providerError?.code === 'stale_search_criteria' ? 409 : result.phase === 'pre_dispatch' && result.providerError?.code === 'job_capacity_reached' ? 429 : 503;
+                    body = { error: result.providerError?.code ?? 'search_incomplete', jobId: result.jobId ?? null };
+                  } else {
+                    const searchedAt = prior?.searchedAt ?? scheduleClock().toISOString();
+                    manualSearchOperations.set(operationKey, { requestFingerprint, jobId: result.jobId, searchedAt });
+                    const latest = manualSearches.get(manualKey(context.profileId, vacancyId));
+                    if (!latest || searchedAt >= latest.searchedAt) manualSearches.set(manualKey(context.profileId, vacancyId), { jobId: result.jobId, searchedAt });
+                    body = { ok: true, jobId: result.jobId, resultCount: result.resultCount, sourceRevision: result.sourceRevision, searchedAt, replayed: !result.created };
+                  }
+                }
+              }
+            }
+          }
+        } else if (status === 200 && path === '/api/hh/proactive/candidates' && (req.method === 'GET' || req.method === 'HEAD')) {
+          const scheduled = candidateSearchScheduleRepository.listOccurrences(context.profileId)
+            .filter(item => item.vacancyId === vacancyId && item.status === 'succeeded' && item.jobId)
+            .sort((left, right) => right.scheduledAt.localeCompare(left.scheduledAt))[0];
+          const manual = manualSearches.get(manualKey(context.profileId, vacancyId));
+          const chooseManual = manual && (!scheduled || manual.searchedAt >= scheduled.finishedAt);
+          const chosen = chooseManual ? { jobId: manual.jobId, searchedAt: manual.searchedAt, source: 'manual' } : scheduled ? { jobId: scheduled.jobId, searchedAt: scheduled.finishedAt, source: 'scheduled' } : null;
+          const result = chosen && candidateSearchJobs.results(context.profileId, chosen.jobId, { limit: 200, cursor: null });
+          body = result ? { ok: true, vacancyId, status: 'completed', source: chosen.source, searchedAt: chosen.searchedAt, total: result.items.length, candidates: result.items, resultRevision: result.resultRevision }
+            : { ok: true, vacancyId, status: 'never_run', source: null, searchedAt: null, total: 0, candidates: [] };
+        } else if (status === 200) {
+          status = 405;
+          body = { error: 'method_not_allowed' };
+          res.setHeader('Allow', path === '/api/hh/proactive/vacancy-state' || path === '/api/hh/proactive/search' ? 'POST' : 'GET, HEAD');
+        }
       }
     } else if (isReportDraftPath) {
       const context = await resolveTrustedProfileContext(req);
