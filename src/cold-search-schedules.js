@@ -239,7 +239,7 @@ export function createColdSearchScheduleHandler({ repository, resolveSearchReque
     if (vacancyId !== undefined && !/^vac_demo_[0-9]{3}$/.test(vacancyId)) return { kind: 'invalid_vacancy' };
     const rows = repository.listOccurrences(trustedContext.profileId)
       .filter(row => vacancyId === undefined || row.vacancyId === vacancyId)
-      .map(({ leaseOwner, leaseUntil, ...row }) => row);
+      .map(({ leaseOwner, leaseUntil, scheduleId: _scheduleId, profileId: _profileId, ...row }) => row);
     return { kind: 'occurrences', occurrences: rows };
   }
 
