@@ -11,6 +11,7 @@ import { createCandidateSearchJobs } from './candidate-search-jobs.js';
 import { createCandidateState, createMemoryCandidateStateStore } from './candidate-state.js';
 import { createColdSearchScheduleHandler, InMemoryColdSearchScheduleRepository, validSearchContext } from './cold-search-schedules.js';
 import { renderRealProactivePage } from './r03-real-proactive-page.js';
+import { createRealProactiveRead } from './r03-real-proactive-read.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
@@ -149,6 +150,8 @@ function validReportAction(value) {
 export function createRecruitingServer({ resolveTrustedProfileContext = () => null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, candidateSearchJobStore = null, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), scheduleLeaseMs = 5 * 60_000, maxCandidateSearchJobs = 100, publicationAdapter, realProactiveFeed = null, resolveRealVacancyOwnership = null, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
   if (realProactiveFeed !== null && (typeof realProactiveFeed.read !== 'function' || typeof resolveRealVacancyOwnership !== 'function'))
     throw new TypeError('real proactive feed and trusted vacancy ownership ports required');
+  const realProactiveRead = realProactiveFeed === null ? null : createRealProactiveRead({
+    feed: realProactiveFeed, resolveVacancyOwnership: resolveRealVacancyOwnership });
   const candidateSearchJobs = candidateSearchJobStore ?? createCandidateSearchJobs({ provider: candidateSearchProvider, maxJobs: maxCandidateSearchJobs });
   const candidateState = createCandidateState({ store: candidateStateStore, isVacancyOwned: (profileId, vacancyId) => listProfileVacancies(profileId)?.some(item => item.id === vacancyId) ?? false });
   const reportDrafts = createReportDrafts({ publicationAdapter });
@@ -248,22 +251,15 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
           body = { error: 'vacancy_id_required' };
         } else {
           const realVacancyId = url.searchParams.get('vacancy_id');
-          let owned;
-          try { owned = await resolveRealVacancyOwnership(context, realVacancyId); }
-          catch { status = 503; body = { error: 'vacancy_ownership_unavailable' }; }
-          if (status === 200 && owned !== true) { status = 404; body = { error: 'vacancy_not_found' }; }
-          if (status === 200) {
-            let feed;
-            try { feed = await realProactiveFeed.read(context, realVacancyId); }
-            catch { status = 503; body = { error: 'candidate_feed_unavailable' }; }
-            if (status === 200 && path === '/hh/proactive') {
+          const result = await realProactiveRead(context, realVacancyId);
+          if (result.kind === 'not_found') { status = 404; body = { error: 'vacancy_not_found' }; }
+          else if (result.kind !== 'found') { status = 503; body = { error: 'candidate_feed_unavailable' }; }
+          else {
+            if (path === '/hh/proactive') {
               type = mime.html;
-              body = renderRealProactivePage({ vacancyId: realVacancyId, feed });
+              body = renderRealProactivePage({ vacancyId: realVacancyId, feed: result.feed });
               res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'");
-            } else if (status === 200) {
-              body = { ok: true, vacancyId: realVacancyId, status: feed.status, freshness: feed.freshness,
-                total: feed.total, candidates: feed.items, resultRevision: feed.resultRevision };
-            }
+            } else body = result.value;
           }
         }
       } else if (path === '/hh/proactive/app.js' && url.search === '' && (req.method === 'GET' || req.method === 'HEAD')) {

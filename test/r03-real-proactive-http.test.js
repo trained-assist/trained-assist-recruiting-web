@@ -1,7 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createRecruitingServer } from '../src/server.js';
+import { mapHhResumeCandidate } from '../src/hh-resume-mapping.js';
+import { REAL_HH_RESULT_VERSION, SqliteRealHhCandidateState } from '../src/sqlite-real-hh-candidate-state.js';
+import { SqliteRealHhManualRuns } from '../src/sqlite-real-hh-manual-runs.js';
+import { createR03AccumulatedRealFeedFromStores } from '../src/r03-accumulated-real-feed.js';
+import { createRealProactiveRead } from '../src/r03-real-proactive-read.js';
 
 const vacancyId = 'vacancy_synthetic_real_001';
 const profileId = 'profile_synthetic_real_001';
@@ -57,4 +65,62 @@ test('default server keeps the existing synthetic page and API behavior', async 
   assert.match(await page.text(), /proactive\/app\.js|proactive\.js/);
   const api = await (await fetch(base + '/api/hh/proactive/candidates?vacancy_id=vac_demo_001')).json();
   assert.equal(api.status, 'never_run');
+});
+
+test('durable manual receipt, assessment, HTTP page/API and MCP domain read share accepted real data', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'r03-real-http-'));
+  const filename = join(directory, 'private.sqlite');
+  const owned = (profile, vacancy) => profile === profileId && vacancy === vacancyId;
+  const state = new SqliteRealHhCandidateState({ filename, isVacancyOwned: owned });
+  const ats = { filters: { min_experience_years: 0 }, required: [{ name: 'вымышленный критерий', weight: 1 }], knockout: [] };
+  const mapped = n => mapHhResumeCandidate({ id: `syntheticresume${n}`, title: 'Вымышленный инженер',
+    first_name: 'Вымышленное', last_name: 'Имя', total_experience: { months: 24 },
+    area: { name: 'Вымышленный регион' }, salary: null,
+    experience: [{ position: 'Вымышленный инженер', company: 'Вымышленная компания', start: '2021-01-01', end: null }]
+  }, ats, vacancyId).candidate;
+  let attempt = 0;
+  const search = { run: async ({ jobId }) => {
+    attempt++;
+    const snapshot = state.recordCompletedSearch({ version: REAL_HH_RESULT_VERSION, profileId, vacancyId,
+      jobId, source: 'manual', searchedAt: `2026-10-06T0${attempt + 5}:00:00.000Z`,
+      criteriaRevision: 'criteria_synthetic_r1', sourceRevision: 'source_synthetic_r1',
+      totalCollected: 1, candidates: [mapped(attempt)] });
+    if (attempt === 2) throw new Error('invented failure after commit');
+    return { status: 'completed', snapshot };
+  } };
+  const manualRuns = new SqliteRealHhManualRuns({ filename, isVacancyOwned: owned,
+    loadSearchPlan: async () => ({ profileId, vacancyId, criteriaRevision: 'criteria_synthetic_r1',
+      queryCache: { revision: 'query_synthetic_r1', queries: ['invented query'] } }), search, candidateState: state });
+  t.after(() => { manualRuns.close(); state.close(); rmSync(directory, { recursive: true, force: true }); });
+  const trusted = { profileId, scopes: ['recruiting.candidateSearch'] };
+  const request = { vacancyId, criteriaRevision: 'criteria_synthetic_r1', queryRevision: 'query_synthetic_r1' };
+  const first = await manualRuns.start(trusted, 'manual_key_synthetic_1', request);
+  for (let i = 0; i < 30 && manualRuns.get(trusted, first.run.runId).run.status === 'running'; i++)
+    await new Promise(resolve => setImmediate(resolve));
+  assert.equal(manualRuns.get(trusted, first.run.runId).run.status, 'completed');
+  const pending = state.unassessedLatest({ profileId, vacancyId })[0];
+  assert.equal(state.recordAssessment({ profileId, vacancyId, jobId: pending.snapshot.jobId,
+    candidateId: pending.candidate.id, inputRevision: pending.inputRevision,
+    assessment: { atsScore: 8, atsTag: 'PASS', knockout: { status: 'passed', criteria: [] } },
+    assessedAt: '2026-10-06T06:05:00.000Z' }).kind, 'written');
+  const feed = createR03AccumulatedRealFeedFromStores({ scheduleRepository: { listOccurrences: () => [] },
+    candidateState: state, manualRuns });
+  const base = await started(t, { realProactiveFeed: feed,
+    resolveTrustedProfileContext: req => req.headers['x-test-principal'] === profileId ? trusted : null,
+    resolveRealVacancyOwnership: (context, vacancy) => owned(context.profileId, vacancy) });
+  const apiPath = `/api/hh/proactive/candidates?vacancy_id=${vacancyId}`;
+  const api = await (await fetch(base + apiPath, { headers })).json();
+  assert.equal(api.total, 1);
+  assert.equal(api.candidates[0].atsScore, 8);
+  const mcpRead = createRealProactiveRead({ feed, resolveVacancyOwnership: (context, vacancy) => owned(context.profileId, vacancy) });
+  assert.deepEqual((await mcpRead(trusted, vacancyId)).value, api, 'MCP-facing domain operation and HTTP share one projection');
+  assert.equal((await mcpRead({ profileId, scopes: [] }, vacancyId)).kind, 'denied');
+  assert.match(await (await fetch(base + `/hh/proactive?vacancy_id=${vacancyId}`, { headers })).text(), /ATS: 8/);
+  const second = await manualRuns.start(trusted, 'manual_key_synthetic_2', request);
+  for (let i = 0; i < 30 && manualRuns.get(trusted, second.run.runId).run.status === 'running'; i++)
+    await new Promise(resolve => setImmediate(resolve));
+  assert.equal(manualRuns.get(trusted, second.run.runId).run.status, 'outcome_unknown');
+  const afterUnknown = await (await fetch(base + apiPath, { headers })).json();
+  assert.equal(afterUnknown.total, 1);
+  assert.equal(afterUnknown.candidates[0].id, mapped(1).id);
 });

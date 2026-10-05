@@ -50,3 +50,10 @@ export function createR03AccumulatedRealFeed({ scheduleRepository, candidateStat
   }
   return { read, update };
 }
+
+export function createR03AccumulatedRealFeedFromStores({ scheduleRepository, candidateState, manualRuns }) {
+  if (typeof manualRuns?.listAcceptedManualReceipts !== 'function' || manualRuns.candidateState !== candidateState)
+    throw new TypeError('shared durable manual receipt store required');
+  return createR03AccumulatedRealFeed({ scheduleRepository, candidateState,
+    loadAcceptedManualReceipts: (profileId, vacancyId) => manualRuns.listAcceptedManualReceipts(profileId, vacancyId) });
+}
