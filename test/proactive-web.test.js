@@ -54,6 +54,13 @@ test('morning page, schedule API and manual search share profile-owned synthetic
     assert.equal((await fetch(`${base}/api/hh/proactive/candidates?vacancy_id=${vacancyId}`, { headers: { 'X-Test-Principal': 'profile_demo_002' } })).status, 404);
 
     current = new Date(current.getTime() + 60_000);
+    const scheduledJobId = occurrences.occurrences[0].jobId;
+    const callsBeforeCollision = providerCalls;
+    const collision = await (await post('/api/hh/proactive/search', { vacancy_id: vacancyId }, { 'Idempotency-Key': `schedule:${occurrences.occurrences[0].occurrenceId}` })).json();
+    assert.notEqual(collision.jobId, scheduledJobId, 'manual key cannot replay a scheduled job');
+    assert.equal(collision.replayed, false);
+    assert.equal(providerCalls, callsBeforeCollision + 2, 'manual collision still runs both provider pages');
+    current = new Date(current.getTime() + 60_000);
     const key = 'manual-key-001';
     const manualResponse = await post('/api/hh/proactive/search', { vacancy_id: vacancyId }, { 'Idempotency-Key': key });
     assert.equal(manualResponse.status, 200);
@@ -81,5 +88,20 @@ test('morning page, schedule API and manual search share profile-owned synthetic
     assert.equal((await post('/api/hh/proactive/search', { vacancy_id: vacancyId }, { 'Idempotency-Key': 'bad key' })).status, 400);
     assert.equal((await post('/api/hh/proactive/vacancy-state', { vacancy_id: vacancyId, action: 'star' })).status, 400);
     assert.equal((await post('/api/hh/proactive/vacancy-state', { vacancy_id: vacancyId, action: 'disable' })).status, 200);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('proactive page and API return a typed error when trusted profile lookup fails', async () => {
+  const server = createRecruitingServer({
+    resolveTrustedProfileContext: async () => { throw new Error('synthetic identity dependency unavailable'); }
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    for (const path of [`/hh/proactive?vacancy_id=${vacancyId}`, `/api/hh/proactive/candidates?vacancy_id=${vacancyId}`]) {
+      const response = await fetch(`${base}${path}`);
+      assert.equal(response.status, 503);
+      assert.deepEqual(await response.json(), { error: 'trusted_profile_unavailable' });
+    }
   } finally { await new Promise(resolve => server.close(resolve)); }
 });

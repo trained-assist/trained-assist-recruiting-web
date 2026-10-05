@@ -219,8 +219,12 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
         body = { apiVersion: 'v1', items: vacancies };
       }
     } else if (isProactivePath) {
-      const context = await resolveTrustedProfileContext(req);
-      if (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes)) {
+      let context;
+      try { context = await resolveTrustedProfileContext(req); }
+      catch { status = 503; body = { error: 'trusted_profile_unavailable' }; }
+      if (status !== 200) {
+        // A failing trusted resolver must not enter a profile-scoped handler.
+      } else if (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes)) {
         status = 401;
         body = { error: 'trusted_profile_context_required' };
       } else if (!context.scopes.includes('recruiting.candidateSearch')) {
@@ -286,7 +290,7 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
                 status = 400;
                 body = { error: 'invalid_idempotency_key' };
               } else {
-                const key = headerKey ?? `manual:${randomUUID()}`;
+                const key = headerKey ?? randomUUID();
                 const operationKey = JSON.stringify([context.profileId, key]);
                 const requestFingerprint = JSON.stringify([vacancyId, searchRequest.criteriaRevision, searchRequest.criteria]);
                 const prior = manualSearchOperations.get(operationKey);
@@ -297,7 +301,7 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
                 } else {
                   let operation = inFlight;
                   if (!operation) {
-                    const promise = executeColdSearch({ profileId: context.profileId, idempotencyKey: key, request: searchRequest });
+                    const promise = executeColdSearch({ profileId: context.profileId, idempotencyKey: `manual:${key}`, request: searchRequest });
                     operation = { requestFingerprint, promise };
                     manualSearchInFlight.set(operationKey, operation);
                   }
