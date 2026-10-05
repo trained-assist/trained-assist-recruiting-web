@@ -56,6 +56,7 @@ test('feed accumulates accepted scheduled and manual candidates across two vacan
   const feed = createR03AccumulatedRealFeed({ scheduleRepository: f.scheduleRepository, candidateState: state });
   const items = feed.read(context(profileA), vacancyA).items;
   assert.equal(items.length, 3);
+  assert.equal(items[0].id, toScore.candidate.id, 'assessed candidates rank ahead of pending ATS evaluations');
   assert.equal(items.find(item => item.id === toScore.candidate.id).atsScore, 9);
   assert.equal(items.find(item => item.id === candidate(2, vacancyA).id).title, 'Вымышленный старший инженер');
   assert.equal(feed.read(context(profileA), vacancyB).total, 1);

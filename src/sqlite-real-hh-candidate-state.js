@@ -272,7 +272,8 @@ export class SqliteRealHhCandidateState {
         review: { status: overlay?.status ?? 'active', revision: overlay?.revision ?? 0 },
         comment: overlay?.comment ?? null, excludeFromSearch: Boolean(overlay?.exclude_from_search) });
     }
-    return [...byResume.values()].sort((a, b) => (b.atsScore ?? b.preScore) - (a.atsScore ?? a.preScore) || a.id.localeCompare(b.id));
+    return [...byResume.values()].sort((a, b) => (b.atsScore ?? -1) - (a.atsScore ?? -1) ||
+      b.preScore - a.preScore || a.id.localeCompare(b.id));
   }
   updateCandidateOverlay({ profileId, vacancyId, candidateId, expectedRevision, status, comment, excludeFromSearch }) {
     this.assertScope(profileId, vacancyId);
