@@ -1,11 +1,13 @@
 // One bounded pass intended for an external five-minute timer. The evaluator is
 // injected; importing this module cannot call HH, an LLM, or a credential store.
-export async function runHhBackgroundScoringTick({ state, profileId, vacancyId, evaluate, currentCriteriaRevision, now = () => new Date(), limit = 10 }) {
+export async function runHhBackgroundScoringTick({ state, profileId, vacancyId, evaluate, currentCriteriaRevision, now = () => new Date(), limit = 10, expectedJobId = null }) {
   if (!state || typeof state.unassessedLatest !== 'function' || typeof state.recordAssessment !== 'function' ||
       typeof evaluate !== 'function' || typeof currentCriteriaRevision !== 'function' || typeof now !== 'function') {
     throw new TypeError('scoring ports required');
   }
   const pending = state.unassessedLatest({ profileId, vacancyId, limit });
+  if (expectedJobId !== null && pending.some(item => item.snapshot.jobId !== expectedJobId))
+    return { pending: 0, written: 0, stale: pending.length, alreadyScored: 0, failed: 0 };
   const summary = { pending: pending.length, written: 0, stale: 0, alreadyScored: 0, failed: 0 };
   for (const item of pending) {
     // Criteria are checked on both sides of the await. The production resolver

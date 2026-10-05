@@ -10,7 +10,7 @@ const jobIdFor = occurrenceId => `hh_occurrence_${createHash('sha256').update(oc
 export function createDurableHhOccurrenceWorker({ scheduleRepository, loadSearchPlan, search, candidateState, clock = () => new Date(), leaseMs = 5 * 60_000 } = {}) {
   if (typeof scheduleRepository?.claimDueOccurrences !== 'function' || typeof scheduleRepository?.finishOccurrence !== 'function' ||
       typeof loadSearchPlan !== 'function' || typeof search?.run !== 'function' ||
-      typeof candidateState?.resultPage !== 'function' || typeof clock !== 'function' ||
+      typeof candidateState?.assessedResultPage !== 'function' || typeof clock !== 'function' ||
       !Number.isSafeInteger(leaseMs) || leaseMs < 1) throw new TypeError('durable HH worker ports required');
 
   async function tick(workerId) {
@@ -66,7 +66,7 @@ export function createDurableHhOccurrenceWorker({ scheduleRepository, loadSearch
     const rows = ownedRows.filter(row => row.status === 'succeeded' && safeId(row.jobId))
       .sort((a, b) => b.scheduledAt.localeCompare(a.scheduledAt));
     for (const row of rows) {
-      const page = candidateState.resultPage({ profileId: trustedContext.profileId, vacancyId, jobId: row.jobId, cursor, limit });
+      const page = candidateState.assessedResultPage({ profileId: trustedContext.profileId, vacancyId, jobId: row.jobId, cursor, limit });
       if (page?.snapshot?.source === 'scheduled' && page.snapshot.jobId === row.jobId)
         return { status: 'completed', freshness: latestRunAt > row.scheduledAt ? 'latest_run_incomplete' : 'latest_completed',
           occurrenceId: row.occurrenceId, scheduledAt: row.scheduledAt, ...page };
