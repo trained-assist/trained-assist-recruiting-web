@@ -254,6 +254,20 @@ test('R-02 synthetic evaluation is profile scoped, revision pinned, typed, deter
         assert.deepEqual(await invalid.json(), { error: 'invalid_evaluator_output' });
       } finally { await new Promise(resolve => invalidServer.close(resolve)); }
     }
+    for (const failingAdapter of [
+      () => { throw new Error('synthetic private diagnostic'); },
+      async () => { throw new Error('synthetic private diagnostic'); }
+    ]) {
+      const failingServer = createRecruitingServer({ resolveTrustedProfileContext: () => ({ profileId: fixture.profileId, scopes: ['recruiting.responses.evaluate'] }), evaluator: failingAdapter });
+      await new Promise(resolve => failingServer.listen(0, '127.0.0.1', resolve));
+      try {
+        const failure = await fetch(`http://127.0.0.1:${failingServer.address().port}${urlFor(input)}`);
+        assert.equal(failure.status, 503);
+        const failureBody = await failure.json();
+        assert.deepEqual(failureBody, { error: 'evaluator_unavailable' });
+        assert.equal(JSON.stringify(failureBody).includes('synthetic private diagnostic'), false);
+      } finally { await new Promise(resolve => failingServer.close(resolve)); }
+    }
 
     assert.equal((await fetch(`${trustedBase}${urlFor(input)}`, { method: 'POST' })).status, 405);
     assert.equal((await (await fetch(`${base}/api/v1/capabilities`)).json()).capabilities.some(item => item.id.includes('response')), false);

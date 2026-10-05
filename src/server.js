@@ -90,7 +90,7 @@ function parseEvaluationQuery(url) {
 }
 
 export function createRecruitingServer({ resolveTrustedProfileContext = () => null, evaluator = evaluateSyntheticResponse } = {}) {
-  return createServer((req, res) => {
+  return createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const path = url.pathname;
     let status = 200;
@@ -165,11 +165,17 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
               status = 409;
               body = { domainApiVersion: 'v1', error: 'stale_evaluation_inputs', staleRevisions, currentSourceRevisions };
             } else {
-              const evaluated = evaluator({ resume: scenario.resume, criteria: scenario.criteria });
-              if (!validEvaluatorOutput(evaluated, scenario.criteria)) {
+              let evaluated;
+              try {
+                evaluated = await evaluator({ resume: scenario.resume, criteria: scenario.criteria });
+              } catch {
+                status = 503;
+                body = { error: 'evaluator_unavailable' };
+              }
+              if (status !== 503 && !validEvaluatorOutput(evaluated, scenario.criteria)) {
                 status = 502;
                 body = { error: 'invalid_evaluator_output' };
-              } else {
+              } else if (status !== 503) {
                 body = { domainApiVersion: 'v1', evaluationId: makeEvaluationId(scenario), responseId: scenario.responseId, vacancyId: scenario.vacancyId, sourceRevisions: currentSourceRevisions, ...evaluated };
               }
             }
