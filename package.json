@@ -14,5 +14,8 @@
   },
   "devDependencies": {
     "ajv": "^8.20.0"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.11.1"
   }
 }

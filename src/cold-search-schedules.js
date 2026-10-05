@@ -48,7 +48,7 @@ export function nextOccurrenceAfter(plan, after, maxSearchDays = 40) {
   throw new Error('No schedule occurrence found within bounded search horizon');
 }
 
-function latestDueSlot(plan, firstDue, now) {
+export function latestDueSlot(plan, firstDue, now) {
   const limit = new Date(now).getTime();
   let scheduledAt = firstDue;
   let missedCount = 0;
@@ -65,7 +65,7 @@ function latestDueSlot(plan, firstDue, now) {
 
 function scheduleId(profileId, vacancyId) { return `schedule_demo_${digest(JSON.stringify([profileId, vacancyId])).slice(0, 12)}`; }
 function occurrenceKey(legacyJobId, scheduledAt) { return JSON.stringify([legacyJobId, scheduledAt]); }
-function occurrenceId(legacyJobId, scheduledAt) { return `occurrence_demo_${digest(occurrenceKey(legacyJobId, scheduledAt)).slice(0, 16)}`; }
+export function occurrenceId(legacyJobId, scheduledAt) { return `occurrence_demo_${digest(occurrenceKey(legacyJobId, scheduledAt)).slice(0, 16)}`; }
 const clone = value => structuredClone(value);
 export function validSearchContext(value, vacancyId) {
   const criteria = value?.criteria;
@@ -165,8 +165,7 @@ export function createColdSearchScheduleHandler({ repository, resolveSearchReque
     if (command.action === 'disable') {
       if (!existing) return { kind: 'not_found' };
       const updated = { ...existing, enabled: false, updatedAt: clock().toISOString() };
-      repository.upsertSchedule(updated);
-      return { kind: 'updated', schedule: updated };
+      return { kind: 'updated', schedule: repository.upsertSchedule(updated, existing.nextRunAt) };
     }
     if (existing?.blockedByUnknownOccurrenceId) return { kind: 'outcome_unknown', schedule: existing, occurrenceId: existing.blockedByUnknownOccurrenceId };
     let searchRequest;
@@ -188,7 +187,7 @@ export function createColdSearchScheduleHandler({ repository, resolveSearchReque
       blockedByUnknownOccurrenceId: existing?.blockedByUnknownOccurrenceId ?? null,
       createdAt: existing?.createdAt ?? at, updatedAt: at
     };
-    return { kind: 'updated', schedule: repository.upsertSchedule(schedule) };
+    return { kind: 'updated', schedule: repository.upsertSchedule(schedule, existing?.nextRunAt ?? null) };
   }
 
   async function tick(workerId = 'synthetic-worker') {
