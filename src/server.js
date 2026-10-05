@@ -10,6 +10,7 @@ import { evaluateSyntheticResponse, getResponseScenario, makeEvaluationId, valid
 import { createCandidateSearchJobs } from './candidate-search-jobs.js';
 import { createCandidateState, createMemoryCandidateStateStore } from './candidate-state.js';
 import { createColdSearchScheduleHandler, InMemoryColdSearchScheduleRepository, validSearchContext } from './cold-search-schedules.js';
+import { renderRealProactivePage } from './r03-real-proactive-page.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
@@ -117,6 +118,7 @@ function parseSearchResultPage(url) {
 
 const isPlainObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const isProactiveVacancy = value => typeof value === 'string' && /^vac_demo_[0-9]{3}$/.test(value);
+const isRealProactiveVacancy = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 const isReportRevision = value => typeof value === 'string' && /^report-demo-r[0-9]+$/.test(value);
 
 function validReportDraftStart(value) {
@@ -144,7 +146,9 @@ function validReportAction(value) {
   return isPlainObject(value) && Object.keys(value).sort().join(',') === 'expectedReportRevision' && isReportRevision(value.expectedReportRevision);
 }
 
-export function createRecruitingServer({ resolveTrustedProfileContext = () => null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, candidateSearchJobStore = null, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), scheduleLeaseMs = 5 * 60_000, maxCandidateSearchJobs = 100, publicationAdapter, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
+export function createRecruitingServer({ resolveTrustedProfileContext = () => null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, candidateSearchJobStore = null, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), scheduleLeaseMs = 5 * 60_000, maxCandidateSearchJobs = 100, publicationAdapter, realProactiveFeed = null, resolveRealVacancyOwnership = null, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
+  if (realProactiveFeed !== null && (typeof realProactiveFeed.read !== 'function' || typeof resolveRealVacancyOwnership !== 'function'))
+    throw new TypeError('real proactive feed and trusted vacancy ownership ports required');
   const candidateSearchJobs = candidateSearchJobStore ?? createCandidateSearchJobs({ provider: candidateSearchProvider, maxJobs: maxCandidateSearchJobs });
   const candidateState = createCandidateState({ store: candidateStateStore, isVacancyOwned: (profileId, vacancyId) => listProfileVacancies(profileId)?.some(item => item.id === vacancyId) ?? false });
   const reportDrafts = createReportDrafts({ publicationAdapter });
@@ -234,6 +238,34 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
       } else if (!context.scopes.includes('recruiting.candidateSearch')) {
         status = 403;
         body = { error: 'search_scope_required' };
+      } else if (realProactiveFeed !== null) {
+        if ((path !== '/hh/proactive' && path !== '/api/hh/proactive/candidates') || (req.method !== 'GET' && req.method !== 'HEAD')) {
+          status = 501;
+          body = { error: 'real_proactive_route_unavailable' };
+        } else if ([...url.searchParams.keys()].some(key => key !== 'vacancy_id') ||
+            url.searchParams.getAll('vacancy_id').length !== 1 || !isRealProactiveVacancy(url.searchParams.get('vacancy_id'))) {
+          status = 400;
+          body = { error: 'vacancy_id_required' };
+        } else {
+          const realVacancyId = url.searchParams.get('vacancy_id');
+          let owned;
+          try { owned = await resolveRealVacancyOwnership(context, realVacancyId); }
+          catch { status = 503; body = { error: 'vacancy_ownership_unavailable' }; }
+          if (status === 200 && owned !== true) { status = 404; body = { error: 'vacancy_not_found' }; }
+          if (status === 200) {
+            let feed;
+            try { feed = await realProactiveFeed.read(context, realVacancyId); }
+            catch { status = 503; body = { error: 'candidate_feed_unavailable' }; }
+            if (status === 200 && path === '/hh/proactive') {
+              type = mime.html;
+              body = renderRealProactivePage({ vacancyId: realVacancyId, feed });
+              res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'");
+            } else if (status === 200) {
+              body = { ok: true, vacancyId: realVacancyId, status: feed.status, freshness: feed.freshness,
+                total: feed.total, candidates: feed.items, resultRevision: feed.resultRevision };
+            }
+          }
+        }
       } else if (path === '/hh/proactive/app.js' && url.search === '' && (req.method === 'GET' || req.method === 'HEAD')) {
         type = mime.js;
         body = proactiveScript;
