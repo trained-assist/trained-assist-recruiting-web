@@ -26,7 +26,8 @@ function publicJob(job) {
 
 function normalizeProviderError(code, retryable = false) {
   const allowed = ['provider_forbidden', 'provider_unavailable', 'provider_invalid_response'];
-  return { code: allowed.includes(code) ? code : 'provider_unavailable', retryable: Boolean(retryable) };
+  const normalizedCode = allowed.includes(code) ? code : 'provider_unavailable';
+  return { code: normalizedCode, retryable: normalizedCode === 'provider_forbidden' ? false : Boolean(retryable) };
 }
 
 export function createCandidateSearchJobs({ provider = syntheticColdSearchProvider, maxJobs = 100, maxResultsPerJob = 200 } = {}) {

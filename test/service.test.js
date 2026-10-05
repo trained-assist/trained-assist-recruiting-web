@@ -442,7 +442,7 @@ test('R-03 synthetic search jobs are idempotent, profile bound, resumable, revis
     candidateSearchProvider: async () => {
       forbiddenAfterPageCalls++;
       if (forbiddenAfterPageCalls === 1) return { kind: 'page', sourceRevision: 'cold-search-provider-demo-r1', items: [{ candidateRef: 'candidate_search_demo_008', vacancyId: 'vac_demo_001', title: 'Synthetic engineer', region: 'Synthetic region', evidenceSummary: 'Synthetic evidence' }], nextCursor: 'next-page', complete: false };
-      return { kind: 'error', code: 'provider_forbidden', retryable: false };
+      return { kind: 'error', code: 'provider_forbidden', retryable: true };
     }
   });
   await new Promise(resolve => forbiddenAfterPageServer.listen(0, '127.0.0.1', resolve));
