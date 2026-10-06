@@ -75,6 +75,9 @@ test('one scheduled slot runs bounded HH and assessment only in disposable copy'
   assert.equal(result.candidateCount, 1);
   assert.equal(result.newCount, 1);
   assert.equal(result.assessmentWritten, 1);
+  assert.equal(result.assessmentFailed, 0);
+  assert.equal(result.acceptedForMorning, false);
+  assert.equal(result.disposition, 'partial_rehearsal');
   assert.equal(result.freshness, 'not_accepted_partial');
   assert.equal(calls.length, 2);
   assert.equal(new URL(calls[0].url).searchParams.get('per_page'), '1');
@@ -98,7 +101,8 @@ test('one scheduled slot runs bounded HH and assessment only in disposable copy'
   const replay = await runPrivateScheduledRehearsal({ ...f,
     fetchImpl: async () => { throw new Error('must not redispatch'); } });
   assert.deepEqual(replay, { status: 'replayed', originalStatus: 'succeeded',
-    providerRequests: 0, assessmentRequests: 0, disposableOnly: true });
+    providerRequests: 0, assessmentRequests: 0, assessmentFailed: 0,
+    acceptedForMorning: false, disposition: 'partial_rehearsal', disposableOnly: true });
   unlinkSync(join(f.outputDirectory, 'receipt.json'));
   await assert.rejects(runPrivateScheduledRehearsal({ ...f,
     fetchImpl: async () => { throw new Error('must not redispatch'); } }),

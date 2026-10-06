@@ -62,7 +62,9 @@ export async function runPrivateScheduledRehearsal({ hostConfigFile, stageReceip
       }
     } finally { db.close(); }
     return { status: 'replayed', originalStatus: prior.occurrenceStatus,
-      providerRequests: 0, assessmentRequests: 0, disposableOnly: true };
+      providerRequests: 0, assessmentRequests: 0,
+      assessmentFailed: prior.assessmentFailed, acceptedForMorning: false,
+      disposition: 'partial_rehearsal', disposableOnly: true };
   }
   const sourceBefore = await digestPrivateFile(host.dbPath, 1024 * 1024 * 1024);
   const stagedBefore = await digestPrivateFile(stage.stagedDbPath, 1024 * 1024 * 1024);
@@ -179,7 +181,10 @@ export async function runPrivateScheduledRehearsal({ hostConfigFile, stageReceip
     writeFileSync(receiptFile, JSON.stringify(receipt) + '\n', { flag: 'wx', mode: 0o600 });
     return { status: occurrence[0].status, providerRequests, assessmentRequests,
       candidateCount: receipt.candidateCount, newCount: receipt.newCount,
-      assessmentWritten: receipt.assessmentWritten, freshness: receipt.freshness,
+      assessmentWritten: receipt.assessmentWritten,
+      assessmentFailed: receipt.assessmentFailed,
+      acceptedForMorning: false, disposition: 'partial_rehearsal',
+      freshness: receipt.freshness,
       disposableOnly: true };
   } finally { candidates.close(); schedules.close(); }
 }
