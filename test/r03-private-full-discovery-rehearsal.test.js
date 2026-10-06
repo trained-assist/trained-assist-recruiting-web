@@ -111,6 +111,16 @@ test('all queries and pages produce one disposable discovery snapshot with pendi
   assert.equal(receipt.morningFreshness, 'latest_completed');
   assert.equal(receipt.morningFeedCount, receipt.candidateCount);
   assert.match(receipt.morningFeedRevision, /^[a-f0-9]{24}$/);
+  const legacyReceipt = { ...receipt };
+  delete legacyReceipt.morningFreshness;
+  delete legacyReceipt.morningFeedRevision;
+  delete legacyReceipt.morningFeedCount;
+  writeFileSync(join(f.outputDirectory, 'receipt.json'), JSON.stringify(legacyReceipt) + '\n');
+  const legacyReplay = await runPrivateFullDiscoveryRehearsal({ ...f,
+    fetchImpl: async () => { throw new Error('legacy receipt replay dispatched HH'); } });
+  assert.equal(legacyReplay.status, 'replayed');
+  assert.equal(legacyReplay.providerRequests, 0);
+  assert.equal(legacyReplay.disposableDiscoveryComplete, true);
 });
 
 test('later HH 429 is typed unknown with no full snapshot', async t => {

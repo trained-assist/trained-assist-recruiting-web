@@ -72,12 +72,20 @@ export async function runPrivateFullDiscoveryRehearsal({ hostConfigFile, stageRe
           candidateState: replayCandidates }).read({ profileId, scopes: ['recruiting.candidateSearch'] }, vacancyId);
         const scheduledItems = feed.items.filter(item => item.jobId === prior.jobId);
         const persisted = replayCandidates.resultPage({ profileId, vacancyId, jobId: prior.jobId, limit: 1 })?.snapshot;
-        if (prior.morningFreshness !== 'latest_completed' || !safeId(prior.morningFeedRevision) ||
-            feed.resultRevision !== prior.morningFeedRevision || feed.total !== prior.morningFeedCount ||
+        const hasFeedReceipt = ['morningFreshness', 'morningFeedRevision', 'morningFeedCount']
+          .some(key => Object.hasOwn(prior, key));
+        const feedReceiptComplete = ['morningFreshness', 'morningFeedRevision', 'morningFeedCount']
+          .every(key => Object.hasOwn(prior, key));
+        const expectedFeedCount = hasFeedReceipt ? prior.morningFeedCount : prior.candidateCount;
+        if (feed.freshness !== 'latest_completed' ||
+            hasFeedReceipt && (!feedReceiptComplete || prior.morningFreshness !== 'latest_completed' ||
+              !safeId(prior.morningFeedRevision) || feed.resultRevision !== prior.morningFeedRevision ||
+              !Number.isSafeInteger(prior.morningFeedCount)) ||
+            feed.total !== expectedFeedCount ||
             scheduledItems.length !== persisted?.candidateCount || persisted?.candidateCount !== prior.candidateCount ||
             persisted?.resultRevision !== occurrence?.snapshot?.resultRevision ||
             persisted?.sourceRevision !== occurrence?.snapshot?.sourceRevision ||
-            persisted?.candidateCount !== occurrence?.snapshot?.resultCount || feed.freshness !== 'latest_completed') fail();
+            persisted?.candidateCount !== occurrence?.snapshot?.resultCount) fail();
       } finally { replayCandidates.close(); replaySchedules.close(); }
     }
     return { status: 'replayed', originalStatus: prior.occurrenceStatus,
