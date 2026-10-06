@@ -14,6 +14,8 @@ test('browser page uses profile cookie API, exact review revisions, idempotent m
   const elements = new Map([
     ['action-status', element('action-status')], ['manual-status', element('manual-status')],
     ['schedule-status', element('schedule-status')], ['interval-hours', element('interval-hours', { value: '24' })],
+    ['prompt-status', element('prompt-status')], ['prompt-queries', element('prompt-queries')],
+    ['prompt-save', element('prompt-save')], ['prompt-reset', element('prompt-reset')],
     ['schedule-enable', element('schedule-enable')], ['schedule-disable', element('schedule-disable')],
     ['manual-search', element('manual-search')]
   ]);
@@ -34,6 +36,8 @@ test('browser page uses profile cookie API, exact review revisions, idempotent m
     calls.push({ path, options });
     let body = { ok: true };
     if (path.startsWith('/api/hh/proactive/schedule?')) body = { ok: true, schedules: [] };
+    if (path.startsWith('/api/hh/proactive/prompt?')) body = { ok: true, queries: ['invented query'],
+      query_revision: `queries-${'a'.repeat(24)}`, override_revision: 0 };
     if (path === '/api/hh/proactive/search') body = { ok: true, run: { runId: 'invented_run' } };
     if (path.endsWith('/manual-runs/invented_run')) body = { ok: true,
       run: { status: polls++ ? 'completed' : 'running' } };
@@ -78,13 +82,15 @@ test('switching signed profile on the same vacancy does not resume or reuse the 
   const session = new Map([[previousRunKey, 'run_A']]);
   const handlers = new Map();
   const elements = new Map(['action-status', 'manual-status', 'schedule-status', 'interval-hours',
-    'schedule-enable', 'schedule-disable', 'manual-search'].map(id => [id, { id,
+    'schedule-enable', 'schedule-disable', 'manual-search', 'prompt-status', 'prompt-queries',
+    'prompt-save', 'prompt-reset'].map(id => [id, { id,
     value: id === 'interval-hours' ? '24' : '', textContent: '', disabled: false,
     addEventListener: (_name, handler) => handlers.set(id, handler) }]));
   const calls = [];
   const fetch = async (path, options = {}) => {
     calls.push({ path, options });
     return { ok: true, status: 200, json: async () => path.includes('/schedule?') ? { schedules: [] } :
+      path.includes('/prompt?') ? { queries: ['invented query'], query_revision: `queries-${'a'.repeat(24)}`, override_revision: 0 } :
       path.endsWith('/search') ? { run: { runId: 'run_B' } } : { run: { status: 'completed' } } };
   };
   runInNewContext(script, {
@@ -102,4 +108,49 @@ test('switching signed profile on the same vacancy does not resume or reuse the 
   assert.ok(calls.every(call => !call.path.endsWith('/run_A')));
   assert.equal(session.get(previousRunKey), 'run_A', 'other profile state remains isolated');
   assert.equal(session.has(`r03:manual-run:invented_profile_B:${vacancyId}`), false);
+});
+
+test('browser prompt editor sends target revision and uses reset tombstone without legacy token', async () => {
+  const handlers = new Map();
+  const elements = new Map(['action-status', 'manual-status', 'schedule-status', 'interval-hours',
+    'schedule-enable', 'schedule-disable', 'manual-search', 'prompt-status', 'prompt-queries',
+    'prompt-save', 'prompt-reset'].map(id => [id, { id, value: '', textContent: '', disabled: false,
+    addEventListener: (_name, handler) => handlers.set(id, handler) }]));
+  const calls = [];
+  let promptReads = 0;
+  const firstRevision = `queries-${'a'.repeat(24)}`;
+  const secondRevision = `queries-${'b'.repeat(24)}`;
+  const fetch = async (path, options = {}) => {
+    calls.push({ path, options });
+    const body = path.includes('/schedule?') ? { schedules: [] } :
+      path.includes('/prompt?') ? (promptReads++ ? { queries: ['regenerated'],
+        query_revision: `queries-${'c'.repeat(24)}`, override_revision: 2 } :
+        { queries: ['source query'], query_revision: firstRevision, override_revision: 0 }) :
+      path.endsWith('/prompt') ? (calls.filter(call => call.path.endsWith('/prompt')).length === 1 ?
+        { ok: true, queries: ['manual query'], query_revision: secondRevision,
+          override_revision: 1, queries_manual: true } :
+        { ok: true, queries_state: 'reset', pending_regeneration: true, override_revision: 2 }) : {};
+    return { ok: true, status: 200, json: async () => body };
+  };
+  runInNewContext(script, {
+    document: { querySelector: () => ({ dataset: { profileId: 'target_profile', vacancyId } }),
+      getElementById: id => elements.get(id), querySelectorAll: () => [] },
+    location: { href: `https://recruiter-assistant.ru/hh/proactive?vacancy_id=${vacancyId}`, reload: () => {} },
+    history: { replaceState: () => {} }, crypto: { randomUUID: () => 'invented-key' },
+    sessionStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+    fetch, URL, setTimeout: callback => { callback(); return 1; }
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(elements.get('prompt-queries').value, 'source query');
+  elements.get('prompt-queries').value = 'manual query';
+  await handlers.get('prompt-save')({ currentTarget: elements.get('prompt-save') });
+  await handlers.get('prompt-reset')({ currentTarget: elements.get('prompt-reset') });
+  const writes = calls.filter(call => call.path === '/api/hh/proactive/prompt');
+  assert.equal(writes.length, 2);
+  assert.deepEqual(JSON.parse(writes[0].options.body), { vacancy_id: vacancyId, queries: 'manual query',
+    expected_revision: firstRevision, expected_override_revision: 0 });
+  assert.deepEqual(JSON.parse(writes[1].options.body), { vacancy_id: vacancyId, queries: '',
+    expected_revision: secondRevision, expected_override_revision: 1 });
+  assert.ok(writes.every(call => !('token' in JSON.parse(call.options.body))));
+  assert.equal(elements.get('prompt-queries').value, 'regenerated');
 });

@@ -67,7 +67,7 @@ test('private web runtime accepts only exact old signed link then scopes session
   assert.equal((await results.json()).total, 0);
   assert.equal((await fetch(`${base}/api/hh/proactive/candidates?vacancy_id=other`, { headers: auth })).status, 404);
   assert.equal((await fetch(`${base}/api/v1/vacancies`, { headers: auth })).status, 404);
-  assert.equal((await fetch(`${base}/api/hh/proactive/prompt`, { headers: auth })).status, 501);
+  assert.equal((await fetch(`${base}/api/hh/proactive/prompt`, { headers: auth })).status, 400);
   assert.equal((await fetch(`${base}/api/hh/proactive/search`, { method: 'POST', headers: auth,
     body: JSON.stringify({ vacancy_id: vacancyId }) })).status, 401, 'POST requires same public origin');
   assert.equal((await fetch(`${base}/api/hh/proactive/search`, { method: 'POST', headers: {
