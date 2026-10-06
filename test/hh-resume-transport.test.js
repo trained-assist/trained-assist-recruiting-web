@@ -14,7 +14,9 @@ const fixture = (overrides = {}) => {
     loadVacancyContext: overrides.loadVacancyContext ?? (async (profileId, id) => ({ profileId, vacancyId: id, config: { vacancy_id: id, filters: { area: [{ id: 1 }, { id: 2 }, { id: 1 }] } }, vacancy: { area: { id: 9 } } })),
     loadCredential: overrides.loadCredential ?? (async profileId => ({ profileId, accessToken: 'fake-access-token' })),
     refreshCredential: overrides.refreshCredential,
-    fetchImpl, sleep: overrides.sleep ?? (async () => {})
+    fetchImpl, sleep: overrides.sleep ?? (async () => {}),
+    pageLimit: overrides.pageLimit, perPage: overrides.perPage,
+    maxAttempts: overrides.maxAttempts, allowPartialWindow: overrides.allowPartialWindow
   });
   return { transport, calls };
 };
@@ -95,6 +97,25 @@ test('reads every HH page, with page-local retry and no partial return', async (
   await rejectsCode(search(fixture({ fetchImpl: async () => response(200, {
     items: [], pages: 41
   }) }).transport), 'provider_result_window_exceeded');
+});
+
+test('explicit one-page rehearsal budget never follows or retries a wider provider window', async () => {
+  const calls = [];
+  const bounded = fixture({ pageLimit: 1, perPage: 1, maxAttempts: 1,
+    allowPartialWindow: true, fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      return response(200, { items: [{ id: 'invented_resume' }], found: 106, pages: 106 });
+    } });
+  const result = await search(bounded.transport);
+  assert.equal(calls.length, 1);
+  assert.equal(new URL(calls[0].url).searchParams.get('per_page'), '1');
+  assert.equal(result.items.length, 1);
+  assert.equal(result.partial, true);
+  let attempts = 0;
+  const rejected = fixture({ pageLimit: 1, perPage: 1, maxAttempts: 1,
+    allowPartialWindow: true, fetchImpl: async () => { attempts++; return response(429); } });
+  await rejectsCode(search(rejected.transport), 'provider_unavailable');
+  assert.equal(attempts, 1);
 });
 
 test('401/403 refresh once and retry; missing or wrong-profile refresh fails closed', async () => {
