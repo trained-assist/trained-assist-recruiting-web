@@ -115,7 +115,8 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
       resolveRealDefaultVacancy: context => {
         const ids = config.vacancyIdsForProfile(context.profileId);
         return ids.length === 1 ? ids[0] : null;
-      }, privateProactiveOnly: true });
+      }, listRealVacancies: context => config.vacancyIdsForProfile(context.profileId),
+      privateProactiveOnly: true });
     server.on('close', () => { manualRuns.close(); candidates.close(); schedules.close(); bffStore?.close(); });
     return server;
   } catch (error) {

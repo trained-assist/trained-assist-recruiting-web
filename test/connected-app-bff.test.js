@@ -65,7 +65,7 @@ test('BFF exchanges one code and stores token only on the server', async t => {
   const { authorize, pendingCookie } = await start(f.base);
   const response = await callback(f.base, authorize.searchParams.get('state'), pendingCookie);
   assert.equal(response.status, 303);
-  assert.equal(response.headers.get('location'), publicOrigin);
+  assert.equal(response.headers.get('location'), `${publicOrigin}/hh/proactive`);
   assert.equal(f.exchangeCalls, 1);
   const appCookie = getCookie(response, '__Host-recruiting-app-session');
   assert.ok(appCookie);
@@ -103,6 +103,8 @@ test('callback rejects state and issuer mismatch before token exchange', async t
     { state: 'attacker-state' })).status, 401);
   assert.equal(f.exchangeCalls, 0);
   assert.equal((await fetch(`${f.base}/auth/connected/start?returnTo=https://evil.example.invalid`,
+    { redirect: 'manual' })).status, 400);
+  assert.equal((await fetch(`${f.base}/auth/connected/start?from=proactive&vacancy_id=../../evil`,
     { redirect: 'manual' })).status, 400);
   started = await start(f.base);
   const target = new URL(`${f.base}/auth/connected/callback`);

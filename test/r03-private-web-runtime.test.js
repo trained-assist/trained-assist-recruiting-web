@@ -89,22 +89,39 @@ test('private BFF persists browser session across web restart, rejects replay, C
     }
     throw new Error('unexpected outbound call');
   };
-  const f = fixture(t, [vacancyId], { connectedBffConfig: { issuer, publicOrigin: origin }, fetchImpl });
+  const f = fixture(t, [vacancyId, 'second_vacancy'], { connectedBffConfig: { issuer, publicOrigin: origin }, fetchImpl });
   await once(f.server, 'listening');
   const base = `http://127.0.0.1:${f.server.address().port}`;
-  assert.equal((await fetch(`${base}/hh/proactive?vacancy_id=${vacancyId}`)).status, 401);
-  const start = await fetch(`${base}/auth/connected/start`, { redirect: 'manual' });
+  const direct = await fetch(`${base}/hh/proactive?vacancy_id=${vacancyId}`, { redirect: 'manual' });
+  assert.equal(direct.status, 303);
+  assert.equal(direct.headers.get('location'), `/auth/connected/start?from=proactive&vacancy_id=${vacancyId}`);
+  const start = await fetch(`${base}${direct.headers.get('location')}`, { redirect: 'manual' });
   assert.equal(start.status, 303);
   const pending = start.headers.getSetCookie().find(x => x.startsWith('__Host-recruiting-oauth-pending=')).split(';')[0];
   const state = new URL(start.headers.get('location')).searchParams.get('state');
   const callback = `${base}/auth/connected/callback?code=${'c'.repeat(64)}&state=${state}&iss=${encodeURIComponent(issuer)}`;
   const accepted = await fetch(callback, { redirect: 'manual', headers: { cookie: pending } });
   assert.equal(accepted.status, 303);
+  assert.equal(accepted.headers.get('location'), `${origin}/hh/proactive?vacancy_id=${vacancyId}`);
   assert.equal(exchanges, 1);
   const session = accepted.headers.getSetCookie().find(x => x.startsWith('__Host-recruiting-app-session=')).split(';')[0];
   assert.equal((await fetch(callback, { redirect: 'manual', headers: { cookie: pending } })).status, 401);
   assert.equal(exchanges, 1);
   assert.equal((await fetch(`${base}/hh/proactive?vacancy_id=${vacancyId}`, { headers: { cookie: session } })).status, 200);
+  const picker = await fetch(`${base}/hh/proactive`, { headers: { cookie: session } });
+  assert.equal(picker.status, 200);
+  const pickerHtml = await picker.text();
+  assert.match(pickerHtml, /vacancy_id=invented_vacancy/);
+  assert.match(pickerHtml, /vacancy_id=second_vacancy/);
+  assert.doesNotMatch(pickerHtml, /candidate|token-secret|other_profile/);
+  assert.equal((await fetch(`${base}/hh/proactive?vacancy_id=foreign_vacancy`,
+    { headers: { cookie: session } })).status, 404);
+  const chooser = await fetch(`${base}/auth/connected/start`, { redirect: 'manual' });
+  const chooserPending = chooser.headers.getSetCookie().find(x => x.startsWith('__Host-recruiting-oauth-pending=')).split(';')[0];
+  const chooserState = new URL(chooser.headers.get('location')).searchParams.get('state');
+  const chooserCallback = await fetch(`${base}/auth/connected/callback?code=${'d'.repeat(64)}&state=${chooserState}&iss=${encodeURIComponent(issuer)}`,
+    { redirect: 'manual', headers: { cookie: chooserPending } });
+  assert.equal(chooserCallback.headers.get('location'), `${origin}/hh/proactive`);
   const sessionInfo = await (await fetch(`${base}/auth/connected/session`, { headers: { cookie: session } })).json();
   const command = () => fetch(`${base}/api/hh/proactive/vacancy-state`, { method: 'POST',
     headers: { cookie: session, origin, 'content-type': 'application/json' },
@@ -133,7 +150,16 @@ test('private BFF persists browser session across web restart, rejects replay, C
     profileId: 'other_profile', sessionId: 'invented_session', nbf: now / 1000 - 1,
     exp: now / 1000 + 300, scopes: ['recruiting.candidateSearch'] };
   assert.equal((await fetch(`${restartedBase}/hh/proactive?vacancy_id=${vacancyId}`,
-    { headers: { cookie: session } })).status, 401);
+    { headers: { cookie: session }, redirect: 'manual' })).status, 303);
+  const wrongStart = await fetch(`${restartedBase}/auth/connected/start`, { redirect: 'manual' });
+  const wrongPending = wrongStart.headers.getSetCookie().find(x => x.startsWith('__Host-recruiting-oauth-pending=')).split(';')[0];
+  const wrongState = new URL(wrongStart.headers.get('location')).searchParams.get('state');
+  const wrongCallback = await fetch(`${restartedBase}/auth/connected/callback?code=${'e'.repeat(64)}&state=${wrongState}&iss=${encodeURIComponent(issuer)}`,
+    { redirect: 'manual', headers: { cookie: wrongPending } });
+  const wrongSession = wrongCallback.headers.getSetCookie().find(x => x.startsWith('__Host-recruiting-app-session=')).split(';')[0];
+  assert.equal((await fetch(`${restartedBase}/hh/proactive`, { headers: { cookie: wrongSession } })).status, 404);
+  assert.equal((await fetch(`${restartedBase}/hh/proactive?vacancy_id=${vacancyId}`,
+    { headers: { cookie: wrongSession } })).status, 404);
   assert.ok(sessionInfo.csrfToken);
 });
 
