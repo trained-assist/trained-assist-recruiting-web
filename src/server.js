@@ -36,7 +36,12 @@ function renderLiveResponsePage(data) {
 }
 function renderLiveResponseDetailPage(data) {
   const back = `/hh/responses?vacancy_id=${encodeURIComponent(data.vacancyId)}`;
-  return `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Статус отклика HH</title><main><h1>Отклик ${escapeResponseHtml(data.negotiationId)}</h1><p><a href="${back}">К откликам</a></p><p>Текущий статус HH: ${escapeResponseHtml(data.state)}. Получено: ${escapeResponseHtml(data.fetchedAt)}.</p><p>Переписка здесь не открывается: HH может отметить отклик прочитанным при запросе сообщений.</p></main></html>`;
+  const conversation = `/hh/conversation?vacancy_id=${encodeURIComponent(data.vacancyId)}&negotiation_id=${encodeURIComponent(data.negotiationId)}`;
+  return `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Статус отклика HH</title><main><h1>Отклик ${escapeResponseHtml(data.negotiationId)}</h1><p><a href="${back}">К откликам</a></p><p>Текущий статус HH: ${escapeResponseHtml(data.state)}. Получено: ${escapeResponseHtml(data.fetchedAt)}.</p><p>Открытие переписки может отметить отклик прочитанным в HH.</p><p><a href="${conversation}">Я понимаю, открыть переписку</a></p></main></html>`;
+}
+function renderLiveConversationPage(data) {
+  const items = data.messages.map(message => `<li><strong>${message.role === 'APPLICANT' ? 'Кандидат' : 'Работодатель'}</strong> · ${escapeResponseHtml(message.createdAt)}<pre>${escapeResponseHtml(message.text)}</pre></li>`).join('');
+  return `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Переписка HH</title><main><h1>Переписка по отклику ${escapeResponseHtml(data.negotiationId)}</h1><p>Открыто: ${escapeResponseHtml(data.fetchedAt)}. HH может отметить отклик прочитанным.</p><ol>${items}</ol><p><a href="/hh/response-detail?vacancy_id=${encodeURIComponent(data.vacancyId)}&negotiation_id=${encodeURIComponent(data.negotiationId)}">Назад к статусу</a></p></main></html>`;
 }
 function renderAssignmentPage(data) {
   const items = data.materials.map(item => `<section><h2>${escapeResponseHtml(item.title)}</h2><pre>${escapeResponseHtml(item.material)}</pre><p>SHA-256: ${item.sha256}</p></section>`).join('');
@@ -179,7 +184,7 @@ function validReportAction(value) {
   return isPlainObject(value) && Object.keys(value).sort().join(',') === 'expectedReportRevision' && isReportRevision(value.expectedReportRevision);
 }
 
-export function createRecruitingServer({ resolveTrustedProfileContext = () => null, connectedAppBff = null, resolveLegacyOpenTab = null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, candidateSearchJobStore = null, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), scheduleLeaseMs = 5 * 60_000, maxCandidateSearchJobs = 100, publicationAdapter, realProactiveFeed = null, realProactiveHistoricalRead = null, realProactiveActions = null, realProactivePrompt = null, realProactiveSeenImport = null, realProactiveAiScore = null, realProactiveManualCandidate = null, liveResponseRead = null, liveResponseDetailRead = null, liveAssignmentRead = null, liveAssignmentSave = null, acceptedReportSourceRead = null, resolveRealVacancyOwnership = null, resolveRealDefaultVacancy = () => null, listRealVacancies = () => [], privateProactiveOnly = false, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
+export function createRecruitingServer({ resolveTrustedProfileContext = () => null, connectedAppBff = null, resolveLegacyOpenTab = null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, candidateSearchJobStore = null, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), scheduleLeaseMs = 5 * 60_000, maxCandidateSearchJobs = 100, publicationAdapter, realProactiveFeed = null, realProactiveHistoricalRead = null, realProactiveActions = null, realProactivePrompt = null, realProactiveSeenImport = null, realProactiveAiScore = null, realProactiveManualCandidate = null, liveResponseRead = null, liveResponseDetailRead = null, liveConversationRead = null, liveAssignmentRead = null, liveAssignmentSave = null, acceptedReportSourceRead = null, resolveRealVacancyOwnership = null, resolveRealDefaultVacancy = () => null, listRealVacancies = () => [], privateProactiveOnly = false, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
   if (realProactiveFeed !== null && (typeof realProactiveFeed.read !== 'function' || typeof resolveRealVacancyOwnership !== 'function'))
     throw new TypeError('real proactive feed and trusted vacancy ownership ports required');
   if (realProactiveActions !== null && realProactiveFeed === null) throw new TypeError('real actions require real feed mode');
@@ -278,6 +283,7 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
         !(connectedAppBff !== null && (liveResponseRead !== null &&
           (path === '/hh/responses' || path === '/api/v1/ui/hh-responses') ||
           liveResponseDetailRead !== null && (path === '/hh/response-detail' || path === '/api/v1/ui/hh-response-detail') ||
+          liveConversationRead !== null && (path === '/hh/conversation' || path === '/api/v1/ui/hh-conversation') ||
           liveAssignmentRead !== null &&
           (path === '/hh/assignment' || path === '/hh/assignment/app.js' || path === '/api/v1/ui/vacancy-assignment')))) {
       status = 404;
@@ -372,6 +378,39 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
           res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'");
           res.setHeader('Referrer-Policy', 'no-referrer');
         }
+      }
+    } else if ((path === '/hh/conversation' || path === '/api/v1/ui/hh-conversation') &&
+        liveConversationRead !== null && connectedAppBff !== null) {
+      let context;
+      try { context = await trustedReadResolver(req, url, res); }
+      catch (error) { status = 503; body = { error: error instanceof ConnectedAppIntrospectionUnavailable
+        ? 'connected_app_introspection_unavailable' : 'trusted_profile_unavailable' }; }
+      const pageRoute = path === '/hh/conversation';
+      const vacancyId = url.searchParams.get(pageRoute ? 'vacancy_id' : 'vacancyId');
+      const negotiationId = url.searchParams.get(pageRoute ? 'negotiation_id' : 'negotiationId');
+      const fields = pageRoute ? ['vacancy_id', 'negotiation_id'] : ['vacancyId', 'negotiationId'];
+      const keys = [...url.searchParams.keys()];
+      const valid = keys.length === 2 && new Set(keys).size === 2 && keys.every(key => fields.includes(key)) &&
+        /^[A-Za-z0-9_-]{1,128}$/.test(vacancyId ?? '') && /^[A-Za-z0-9_-]{1,128}$/.test(negotiationId ?? '');
+      if (status === 200 && (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes))) {
+        if (pageRoute && valid) {
+          const start = new URL('/auth/connected/start', 'http://localhost');
+          start.searchParams.set('from', 'conversation'); start.searchParams.set('vacancy_id', vacancyId);
+          start.searchParams.set('negotiation_id', negotiationId);
+          res.writeHead(303, { Location: start.pathname + start.search, 'Cache-Control': 'no-store',
+            'Referrer-Policy': 'no-referrer' }); res.end(); return;
+        }
+        status = 401; body = { error: 'trusted_profile_context_required' };
+      } else if (status === 200 && !context.scopes.includes('recruiting.responses.conversation.open')) {
+        status = 403; body = { error: 'conversation_open_scope_required' };
+      } else if (status === 200 && !valid) {
+        status = 400; body = { error: 'invalid_conversation_request' };
+      } else if (status === 200) {
+        try {
+          const result = await liveConversationRead(context, { vacancyId, negotiationId });
+          status = result.status; body = result.body;
+          if (status === 200 && pageRoute) { type = mime.html; body = renderLiveConversationPage(body); }
+        } catch { status = 503; body = { error: 'conversation_unavailable' }; }
       }
     } else if ((path === '/hh/response-detail' || path === '/api/v1/ui/hh-response-detail') &&
         liveResponseDetailRead !== null && connectedAppBff !== null) {

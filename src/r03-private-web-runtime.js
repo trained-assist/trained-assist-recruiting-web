@@ -23,6 +23,7 @@ import { SqliteConnectedAppBffStore } from './sqlite-connected-app-bff-store.js'
 import { createHhResponseRead } from './r01-live-responses.js';
 import { createHhResponseDetailRead } from './r01-live-response-detail.js';
 import { createPrivateVacancyAssignmentRead, createPrivateVacancyAssignmentSave } from './r01-private-vacancy-assignment.js';
+import { createHhConversationRead } from './r01-live-conversation.js';
 
 // Constructing the server makes no provider request or public bind. The owner
 // explicitly supplies private config/credentials; the HTTP process owns its
@@ -90,6 +91,9 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
     const liveResponseDetailRead = connectedAppBff !== null || connectedBffConfig !== null
       ? createHhResponseDetailRead({ ...stack.credentialBroker, fetchImpl,
         isVacancyOwned: config.isVacancyOwned, userAgent, clock }) : null;
+    const liveConversationRead = connectedAppBff !== null || connectedBffConfig !== null
+      ? createHhConversationRead({ ...stack.credentialBroker, fetchImpl,
+        isVacancyOwned: config.isVacancyOwned, userAgent, clock }) : null;
     const liveAssignmentRead = connectedAppBff !== null || connectedBffConfig !== null
       ? createPrivateVacancyAssignmentRead({ resolveProfileBinding: config.resolveProfileBinding,
         isVacancyOwned: config.isVacancyOwned }) : null;
@@ -128,6 +132,7 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
       realProactiveManualCandidate: manualCandidate,
       liveResponseRead,
       liveResponseDetailRead,
+      liveConversationRead,
       liveAssignmentRead,
       liveAssignmentSave,
       resolveTrustedProfileContext: auth ?? (() => null), connectedAppBff,

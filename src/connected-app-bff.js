@@ -260,19 +260,25 @@ export function createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins, 
         const fromResponses = from === 'responses';
         const fromAssignment = from === 'assignment';
         const fromAssignmentSend = from === 'assignment-send';
+        const fromConversation = from === 'conversation';
         const vacancyId = url.searchParams.get('vacancy_id');
         const negotiationId = url.searchParams.get('negotiation_id');
         if (new Set(entries).size !== entries.length ||
-            (entries.length !== 0 && (!(fromProactive || fromResponses || fromAssignment || fromAssignmentSend) ||
+            (entries.length !== 0 && (!(fromProactive || fromResponses || fromAssignment || fromAssignmentSend || fromConversation) ||
               entries.some(key => !['from', 'vacancy_id', 'negotiation_id'].includes(key)) ||
               vacancyId !== null && !safeId(vacancyId) || negotiationId !== null && !safeId(negotiationId) ||
-              fromAssignmentSend && (!vacancyId || !negotiationId) || !fromAssignmentSend && negotiationId !== null))) {
+              (fromAssignmentSend || fromConversation) && (!vacancyId || !negotiationId) ||
+              !fromAssignmentSend && !fromConversation && negotiationId !== null))) {
           respond(res, 400, { error: 'invalid_auth_request' }); return true;
         }
-        const returnPath = fromAssignmentSend
+        const returnPath = fromConversation
+          ? `/hh/conversation?vacancy_id=${encodeURIComponent(vacancyId)}&negotiation_id=${encodeURIComponent(negotiationId)}`
+          : fromAssignmentSend
           ? `/hh/assignment/send?vacancy_id=${encodeURIComponent(vacancyId)}&negotiation_id=${encodeURIComponent(negotiationId)}`
           : `${fromAssignment ? '/hh/assignment' : fromResponses ? '/hh/responses' : '/hh/proactive'}${vacancyId ? `?vacancy_id=${encodeURIComponent(vacancyId)}` : ''}`;
-        const requestedScopes = fromAssignmentSend
+        const requestedScopes = fromConversation
+          ? ['recruiting.responses.conversation.open']
+          : fromAssignmentSend
           ? ['recruiting.assignment.material.send', 'recruiting.responses.conversation.open']
           : fromAssignment ? ['recruiting.assignment.review'] : fromResponses ? ['recruiting.responses.read'] : ['recruiting.candidateSearch'];
         const pendingHandle = random(); const state = random(); const verifier = random();
@@ -296,7 +302,7 @@ export function createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins, 
         const returnPath = transaction?.returnPath ?? '/hh/proactive';
         if (!transaction || clock() < transaction.createdAt || clock() - transaction.createdAt > 300_000 ||
             !/^\/hh\/(?:proactive|responses|assignment)(?:\?vacancy_id=[A-Za-z0-9_-]{1,128})?$/.test(returnPath) &&
-              !/^\/hh\/assignment\/send\?vacancy_id=[A-Za-z0-9_-]{1,128}&negotiation_id=[A-Za-z0-9_-]{1,128}$/.test(returnPath) ||
+              !/^\/hh\/(?:assignment\/send|conversation)\?vacancy_id=[A-Za-z0-9_-]{1,128}&negotiation_id=[A-Za-z0-9_-]{1,128}$/.test(returnPath) ||
             !Array.isArray(transaction?.requestedScopes) || transaction.requestedScopes.length < 1 ||
             transaction.requestedScopes.some(scope => !allowedScopes.has(scope)) ||
             entries.length !== 3 || new Set(entries).size !== 3 || !entries.every(key => ['code', 'state', 'iss'].includes(key)) ||
