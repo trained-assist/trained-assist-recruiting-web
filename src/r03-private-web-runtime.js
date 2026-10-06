@@ -21,6 +21,8 @@ import { createRecruitingServer } from './server.js';
 import { createControlPlaneConnectedAppClient, createRecruitingConnectedAppBff } from './connected-app-bff.js';
 import { SqliteConnectedAppBffStore } from './sqlite-connected-app-bff-store.js';
 import { createHhResponseRead } from './r01-live-responses.js';
+import { createHhResponseDetailRead } from './r01-live-response-detail.js';
+import { createPrivateVacancyAssignmentRead, createPrivateVacancyAssignmentSave } from './r01-private-vacancy-assignment.js';
 
 // Constructing the server makes no provider request or public bind. The owner
 // explicitly supplies private config/credentials; the HTTP process owns its
@@ -85,6 +87,15 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
     const liveResponseRead = connectedAppBff !== null || connectedBffConfig !== null
       ? createHhResponseRead({ ...stack.credentialBroker, fetchImpl,
         isVacancyOwned: config.isVacancyOwned, userAgent, clock }) : null;
+    const liveResponseDetailRead = connectedAppBff !== null || connectedBffConfig !== null
+      ? createHhResponseDetailRead({ ...stack.credentialBroker, fetchImpl,
+        isVacancyOwned: config.isVacancyOwned, userAgent, clock }) : null;
+    const liveAssignmentRead = connectedAppBff !== null || connectedBffConfig !== null
+      ? createPrivateVacancyAssignmentRead({ resolveProfileBinding: config.resolveProfileBinding,
+        isVacancyOwned: config.isVacancyOwned }) : null;
+    const liveAssignmentSave = connectedAppBff !== null || connectedBffConfig !== null
+      ? createPrivateVacancyAssignmentSave({ resolveProfileBinding: config.resolveProfileBinding,
+        isVacancyOwned: config.isVacancyOwned }) : null;
     if (connectedBffConfig !== null) {
       if (typeof connectedBffConfig !== 'object' ||
           typeof connectedBffConfig.dbPath !== 'string' ||
@@ -114,6 +125,9 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
       realProactiveAiScore: aiScore,
       realProactiveManualCandidate: manualCandidate,
       liveResponseRead,
+      liveResponseDetailRead,
+      liveAssignmentRead,
+      liveAssignmentSave,
       resolveTrustedProfileContext: auth ?? (() => null), connectedAppBff,
       resolveLegacyOpenTab: auth?.resolveLegacyOpenTab ?? null,
       resolveRealVacancyOwnership: (context, vacancyId) => config.isVacancyOwned(context.profileId, vacancyId),

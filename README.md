@@ -96,6 +96,8 @@ Disabled [systemd unit and timer templates](docs/R-03-SYSTEMD-TIMERS.md) now def
 
 The [private legacy content importer](docs/R-03-LEGACY-CONTENT-IMPORT.md) atomically stages all-candidates, seen IDs, snapshots and comments with exact profile/vacancy binding, replay checks and wildcard quarantine. It does not create accepted search receipts or surface imported content on the live page.
 
+The [R-03 release workflow](docs/R-03-RELEASE-CD.md) builds a commit-pinned, checksummed source artifact after tests and provides a receipt-backed RU promotion/rollback command for the disabled staging unit. It does not activate the web service, HH timers or public routing.
+
 The [private proactive web runtime](docs/R-03-PRIVATE-WEB-RUNTIME.md) now composes the private HH/SQLite stack with real page and action routes behind the old signed page-link HMAC, a short profile session and exact vacancy ownership. It is loopback-only and opt-in; legacy API and UI gaps still block nginx cutover.
 
 The [morning page controls](docs/R-03-PRIVATE-WEB-CONTROLS.md) add schedule, manual search/polling and candidate review actions to the private page with browser-session authentication and revision checks. Remaining legacy features and live canaries still block cutover.
