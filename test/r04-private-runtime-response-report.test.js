@@ -59,18 +59,28 @@ test('private runtime composes accepted HH response source, encrypted draft, BFF
 
   let currentResume = structuredClone(rawResume);
   let messageCalls = 0; let responseReads = 0; let resumeReads = 0;
+  let activeScopes = [...scopes];
   const claims = { active: true, iss: issuer, aud: 'recruiting-web', sub: 'synthetic_actor',
-    profileId, sessionId: 'synthetic_session', nbf: now / 1000 - 10, exp: now / 1000 + 600, scopes };
+    profileId, sessionId: 'synthetic_session', nbf: now / 1000 - 10, exp: now / 1000 + 600 };
   const fetchImpl = async url => {
     if (url === issuer + '/v1/connected-app-sessions/exchange') return response({ token, expiresAt: now / 1000 + 600 });
-    if (url === issuer + '/v1/connected-app-sessions/introspect') return response(claims);
+    if (url === issuer + '/v1/connected-app-sessions/introspect') return response({ ...claims, scopes: activeScopes });
     if (url === 'https://api.hh.ru/negotiations/' + negotiationId) {
       responseReads++;
       return response({ id: negotiationId, vacancy: { id: vacancyId }, resume: { id: resumeId },
-        state: { id: 'response' }, updated_at: '2026-10-06T08:00:00Z' });
+        chat_id: 'chatSynthetic001', state: { id: 'response' }, updated_at: '2026-10-06T08:00:00Z' });
     }
     if (url === 'https://api.hh.ru/resumes/' + resumeId) { resumeReads++; return response(currentResume); }
-    if (/\/messages(?:\?|$)/.test(url)) { messageCalls++; throw new Error('message_reads_forbidden'); }
+    if (new URL(String(url)).pathname === '/common/chats/chatSynthetic001/messages') {
+      const chatUrl = new URL(String(url));
+      assert.equal(chatUrl.searchParams.get('order'), 'prev');
+      assert.equal(chatUrl.searchParams.get('limit'), '50');
+      messageCalls++;
+      return response({ id: 'chatSynthetic001', vacancy_id: vacancyId, has_more: false,
+        messages: [{ id: 'messageSynthetic001', creation_time: '2026-10-06T08:30:00Z', type: 'SIMPLE',
+          payload: { text: 'synthetic private conversation' }, viewed_by_opponent: false }] });
+    }
+    if (/\/messages(?:\?|$)/.test(url)) { messageCalls++; throw new Error('unexpected_message_endpoint'); }
     throw new Error('unexpected_provider_url:' + new URL(url).pathname);
   };
   const runtimeOptions = { configFile, secretsDirectory: secrets, fetchImpl, clock: () => new Date(now),
@@ -153,9 +163,47 @@ test('private runtime composes accepted HH response source, encrypted draft, BFF
   assert.equal(preview.status, 200);
   assert.match((await preview.json()).html, /Синтетический Кандидат/);
   assert.equal(statSync(reportDb).mode & 0o777, 0o600);
-  assert.equal(messageCalls, 0);
+  assert.equal(messageCalls, 0, 'report creation and preview do not read the conversation');
   assert.ok(responseReads >= 2 && resumeReads >= 2);
 
+  const conversationStart = await fetch(base + '/auth/connected/start?from=conversation&vacancy_id=' +
+    vacancyId + '&negotiation_id=' + negotiationId, { redirect: 'manual' });
+  assert.equal(conversationStart.status, 303);
+  const conversationAuthorize = new URL(conversationStart.headers.get('location'));
+  assert.equal(conversationAuthorize.searchParams.get('scope'),
+    'recruiting.responses.read recruiting.responses.conversation.open');
+  activeScopes = conversationAuthorize.searchParams.get('scope').split(' ');
+  const conversationPending = cookie(conversationStart, '__Host-recruiting-oauth-pending');
+  const conversationCallbackUrl = new URL('/auth/connected/callback', base);
+  conversationCallbackUrl.searchParams.set('code', 'd'.repeat(64));
+  conversationCallbackUrl.searchParams.set('state', conversationAuthorize.searchParams.get('state'));
+  conversationCallbackUrl.searchParams.set('iss', issuer);
+  const conversationCallback = await fetch(conversationCallbackUrl, { redirect: 'manual',
+    headers: { cookie: conversationPending } });
+  assert.equal(conversationCallback.status, 303);
+  assert.equal(new URL(conversationCallback.headers.get('location')).pathname +
+    new URL(conversationCallback.headers.get('location')).search,
+    '/hh/response-conversation?vacancy_id=' + vacancyId + '&negotiation_id=' + negotiationId);
+  const conversationSessionCookie = cookie(conversationCallback, '__Host-recruiting-app-session');
+  const conversationSession = await (await fetch(base + '/auth/connected/session',
+    { headers: { cookie: conversationSessionCookie } })).json();
+  const conversationUrl = base + '/hh/response-conversation?vacancy_id=' + vacancyId +
+    '&negotiation_id=' + negotiationId;
+  const confirmation = await fetch(conversationUrl, { headers: { cookie: conversationSessionCookie } });
+  assert.equal(confirmation.status, 200);
+  assert.match(await confirmation.text(), /может отметить отклик просмотренным/);
+  assert.equal(messageCalls, 0, 'confirmation page must not prefetch HH messages');
+  const deniedWithoutCsrf = await fetch(conversationUrl, { method: 'POST',
+    headers: { cookie: conversationSessionCookie, origin } });
+  assert.equal(deniedWithoutCsrf.status, 401);
+  assert.equal(messageCalls, 0, 'missing CSRF cannot trigger a message read');
+  const openedConversation = await fetch(conversationUrl, { method: 'POST', headers: {
+    cookie: conversationSessionCookie, origin, 'x-csrf-token': conversationSession.csrfToken } });
+  assert.equal(openedConversation.status, 200);
+  assert.equal((await openedConversation.json()).messages[0].text, 'synthetic private conversation');
+  assert.equal(messageCalls, 1, 'only explicit CSRF-protected POST reaches HH conversation endpoint');
+
+  activeScopes = [...scopes];
   await new Promise(resolve => server.close(resolve));
   server = createPrivateWebRuntime(runtimeOptions);
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
@@ -168,7 +216,7 @@ test('private runtime composes accepted HH response source, encrypted draft, BFF
     draft.reportRef + '/preview', { headers: { cookie: sessionCookie } });
   assert.equal(stale.status, 409);
   assert.equal((await stale.json()).error, 'stale_report_source');
-  assert.equal(messageCalls, 0);
+  assert.equal(messageCalls, 1, 'restart and report preview never re-read the conversation');
   assert.equal(readFileSync(reportDb, 'utf8').includes('Synthetic'), false,
     'encrypted database bytes do not contain report content');
 });
