@@ -7,7 +7,8 @@ import { createHash } from 'node:crypto';
 // All identifiers remain in a root-owned receipt. The journal gets aggregate
 // status only. The source cron DB and imported stage are read-only throughout.
 const [mode, releaseDirectory, hostConfigFile, stageReceiptFile, cronDbPath,
-  secretsDirectory, selectionFile, preflightFile, outputDirectory, expectedAt] = process.argv.slice(2);
+  secretsDirectory, dispositionFile, selectionFile, preflightFile,
+  outputDirectory, expectedAt] = process.argv.slice(2);
 const absolute = value => typeof value === 'string' && isAbsolute(value) && resolve(value) === value;
 const fail = () => { throw new Error('natural_cycle_canary_unavailable'); };
 const readJson = path => JSON.parse(readFileSync(path, 'utf8'));
@@ -18,9 +19,9 @@ const owned = path => {
 };
 let exitCode = 0;
 try {
-  if (!['prepare', 'preflight', 'run', 'replay'].includes(mode) ||
+  if (!['review', 'prepare', 'preflight', 'run', 'replay'].includes(mode) ||
       ![releaseDirectory, hostConfigFile, stageReceiptFile, cronDbPath, secretsDirectory,
-        selectionFile, preflightFile, outputDirectory].every(absolute) ||
+        dispositionFile, selectionFile, preflightFile, outputDirectory].every(absolute) ||
       !Number.isFinite(Date.parse(expectedAt))) fail();
   const stage = readJson(stageReceiptFile);
   if (stage.version !== 'r03-private-schedule-stage-v1' || stage.status !== 'disposable_only' ||
@@ -40,11 +41,15 @@ try {
   const staged = new Database(stage.stagedDbPath, { readonly: true, fileMustExist: true });
   const cron = new Database(cronDbPath, { readonly: true, fileMustExist: true });
   let selected;
+  let history;
   try {
     const rows = staged.prepare('SELECT payload FROM cold_search_schedules').all()
       .map(row => JSON.parse(row.payload));
+    const frozen = cron.prepare(`SELECT COUNT(*) AS n,SUM(enabled) AS enabled
+      FROM cron_jobs WHERE action='hh_proactive_search'`).get();
     if (rows.length !== 11 || rows.some(row => row.enabled || !row.blockedByUnknownOccurrenceId) ||
         rows.filter(row => row.migrationQuarantine?.reason === 'legacy_outcome_unknown').length !== 8 ||
+        frozen.n !== 11 || frozen.enabled !== 0 ||
         staged.prepare('SELECT COUNT(*) AS n FROM cold_search_occurrences').get().n !== 0) fail();
     const matches = rows.filter(row => row.nextRunAt === expectedAt &&
       row.plan?.intervalHours === 24 && row.migrationQuarantine?.reason === 'cutover_review_required' &&
@@ -59,12 +64,12 @@ try {
         host.resolveLegacyProfile(legacy.profile_id) !== selected.profileId ||
         JSON.parse(legacy.arguments_json)?.vacancy_id !== selected.vacancyId ||
         JSON.stringify(legacyCronToPlan(legacy.schedule)) !== JSON.stringify(selected.plan)) fail();
-    // `cron_jobs.last_status=succeeded` can hide an earlier ambiguous effect.
-    // An unknown historical occurrence requires a separate explicit
-    // disposition; this wrapper never silently promotes that schedule.
-    const history = cron.prepare(`SELECT status,COUNT(*) AS n FROM action_executions
-      WHERE cron_id=? GROUP BY status`).all(selected.legacyJobId);
-    if (history.some(row => row.status !== 'succeeded')) fail();
+    // Last status can hide an earlier ambiguous effect. Preserve every
+    // historical occurrence as frozen evidence; only a new future slot runs.
+    history = cron.prepare(`SELECT id,status,scheduled_at FROM action_executions
+      WHERE cron_id=? ORDER BY scheduled_at,id`).all(selected.legacyJobId);
+    if (!history.length || history.some(row => !['succeeded', 'unknown'].includes(row.status) ||
+        typeof row.id !== 'string' || !Number.isSafeInteger(row.scheduled_at))) fail();
   } finally { staged.close(); cron.close(); }
   const { createPrivateBaseSearchPlan } = await import(pathToFileURL(
     join(releaseDirectory, 'src/r03-private-base-plan.js')).href);
@@ -72,13 +77,41 @@ try {
     isVacancyOwned: host.isVacancyOwned });
   const plan = await loadPlan(selected.profileId, selected.vacancyId, { allowGeneration: false });
   if (plan.queryCache.pendingGeneration || plan.queryCache.queries.length !== 7) fail();
+  const unknown = history.filter(row => row.status === 'unknown');
+  if (history.some(row => row.scheduled_at >= Date.parse(expectedAt)) ||
+      unknown.some(row =>
+      !history.some(later => later.status === 'succeeded' &&
+        later.scheduled_at > row.scheduled_at))) fail();
+  const disposition = { version: 'r03-private-historical-unknown-disposition-v1',
+    decision: 'quarantine_old_unknown_no_replay_new_disposable_slot_only',
+    historicalOutcome: 'unresolved', migrationId: stage.migrationId,
+    cronSha256: stage.cronSha256, stageDbSha256: sha256(stage.stagedDbPath),
+    sourceDbSha256: sha256(stage.sourceDbPath), legacyJobId: selected.legacyJobId,
+    unknownActionIds: unknown.map(row => row.id),
+    unknownScheduledAt: unknown.map(row => row.scheduled_at), expectedAt };
+  if (mode === 'review') {
+    if (!unknown.length || existsSync(dispositionFile) || existsSync(selectionFile) ||
+        existsSync(preflightFile) || existsSync(outputDirectory) ||
+        Date.parse(expectedAt) <= Date.now() + 20 * 60_000) fail();
+    writeFileSync(dispositionFile, JSON.stringify(disposition) + '\n',
+      { flag: 'wx', mode: 0o600 });
+    process.stdout.write(JSON.stringify({ event: 'r03.natural_cycle_review',
+      status: 'quarantined_no_replay', historicalUnknown: unknown.length,
+      laterSucceeded: true, expectedAt, disposableOnly: true }) + '\n');
+  } else {
+  if (unknown.length) {
+    owned(dispositionFile);
+    if (JSON.stringify(readJson(dispositionFile)) !== JSON.stringify(disposition)) fail();
+  } else if (existsSync(dispositionFile)) fail();
   const selection = { version: 'r03-private-natural-cycle-selection-v1',
     migrationId: stage.migrationId, stageDbSha256: sha256(stage.stagedDbPath),
     sourceDbSha256: sha256(stage.sourceDbPath), cronSha256: stage.cronSha256,
     scheduleId: selected.scheduleId, legacyJobId: selected.legacyJobId,
     profileId: selected.profileId, vacancyId: selected.vacancyId, expectedAt,
     criteriaRevision: plan.criteriaRevision, queryRevision: plan.queryCache.revision,
-    disposition: 'reviewed_succeeded_disposable_only' };
+    disposition: unknown.length ? 'old_unknown_quarantined_future_disposable_only' :
+      'reviewed_succeeded_disposable_only',
+    dispositionSha256: unknown.length ? sha256(dispositionFile) : null };
   if (mode === 'prepare') {
     if (existsSync(selectionFile) || existsSync(preflightFile) || existsSync(outputDirectory) ||
         Date.parse(expectedAt) <= Date.now() + 20 * 60_000) fail();
@@ -134,6 +167,7 @@ try {
         published: result.published, expectedAt, disposableOnly: true }) + '\n');
       if (!accepted) exitCode = 2;
     }
+  }
   }
 } catch {
   process.stdout.write(JSON.stringify({ event: 'r03.natural_cycle_' + mode, status: 'failed' }) + '\n');
