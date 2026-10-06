@@ -8,6 +8,7 @@ import { SqliteRealHhCandidateState } from '../src/sqlite-real-hh-candidate-stat
 import { R03LegacyScheduleImport } from '../src/r03-legacy-schedule-import.js';
 import { R03LegacyScheduleActivation } from '../src/r03-legacy-schedule-activation.js';
 import { createPrivateHhSearchStack } from '../src/r03-private-hh-search-stack.js';
+import { createHhQueryGenerator } from '../src/r03-hh-query-generator.js';
 
 const profileId = 'profile_invented_001';
 const vacancyId = 'vacancy_invented_001';
@@ -31,8 +32,6 @@ test('imported schedule, private profile and credential produce a durable mornin
   const tokenDirectory = join(directory, 'tokens');
   for (const path of [contextDirectory, proactiveDirectory, tokenDirectory]) mkdirSync(path, { mode: 0o700 });
   writeFileSync(join(contextDirectory, `ats_config:${vacancyId}.json`), JSON.stringify({ value: JSON.stringify(atsConfig) }));
-  writeFileSync(join(proactiveDirectory, `queries-${vacancyId}.json`), JSON.stringify({ vacancy_id: vacancyId,
-    queries: ['вымышленный инженер'], manual: true }));
   writeFileSync(join(tokenDirectory, 'hh'), JSON.stringify({ access_token: 'old_invented_access',
     refresh_token: 'invented_refresh' }), { mode: 0o600 });
   const filename = join(directory, 'private.sqlite');
@@ -45,7 +44,7 @@ test('imported schedule, private profile and credential produce a durable mornin
   const isVacancyOwned = (profile, vacancy) => profile === profileId && vacancy === vacancyId;
   let now = '2026-10-06T00:00:00.000Z';
   const clock = () => new Date(now);
-  let hhCalls = 0, oauthCalls = 0;
+  let hhCalls = 0, oauthCalls = 0, queryCalls = 0;
   const fetchImpl = async (url, options) => {
     if (url === 'https://hh.ru/oauth/token') {
       oauthCalls++;
@@ -57,16 +56,20 @@ test('imported schedule, private profile and credential produce a durable mornin
       return { status: 401, ok: false, json: async () => ({}) };
     assert.equal(options.headers.Authorization, 'Bearer new_invented_access');
     const urlObject = new URL(url);
+    assert.equal(urlObject.searchParams.get('text'), 'Вымышленный инженер');
     assert.deepEqual(urlObject.searchParams.getAll('area'), ['1']);
     const page = Number(urlObject.searchParams.get('page'));
     return { status: 200, ok: true, json: async () => ({
       items: Array.from({ length: 50 }, (_, n) => resume(`inventedpage${page}resume${n}`)),
       pages: 2, found: 100 }) };
   };
+  const generateQueries = createHhQueryGenerator({ chat: async () => {
+    queryCalls++;
+    return '["Вымышленный инженер"]';
+  } });
   const stack = createPrivateHhSearchStack({ resolveProfileBinding, isVacancyOwned,
-    candidateState, scheduleRepository: repository, generateQueries: async () => {
-      throw new Error('manual query must stay pinned');
-    }, encryptionKey: key, clientId: 'invented_client', clientSecret: 'invented_secret', fetchImpl, clock });
+    candidateState, scheduleRepository: repository, generateQueries,
+    encryptionKey: key, clientId: 'invented_client', clientSecret: 'invented_secret', fetchImpl, clock });
   const imported = new R03LegacyScheduleImport({ repository, bindProfile: ref => ref === 'legacy_invented' ? profileId : null,
     isVacancyOwned, clock });
   assert.deepEqual(imported.import({ version: 'legacy-hh-schedules-v1', migrationId: 'migration_invented_001',
@@ -87,6 +90,7 @@ test('imported schedule, private profile and credential produce a durable mornin
   now = activationResult.receipt.nextRunAt;
   assert.deepEqual(await stack.worker.tick('worker_first'), { claimed: 1, completed: 1, rejected: 0, unknown: 0 });
   assert.equal(oauthCalls, 1);
+  assert.equal(queryCalls, 1, 'missing legacy query cache is generated once in target SQLite');
   assert.equal(hhCalls, 3, 'one 401 and two successful result pages');
   const morning = stack.worker.morningResults(context, vacancyId);
   assert.equal(morning.freshness, 'latest_completed');
