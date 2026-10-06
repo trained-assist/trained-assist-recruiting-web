@@ -34,6 +34,7 @@ test('owner-only private mapping binds a schedule profile and exact vacancy', as
   assert.equal(loaded.isVacancyOwned('profile_invented_001', 'vacancy_invented_001'), true);
   assert.equal(loaded.isVacancyOwned('other_profile', 'vacancy_invented_001'), false);
   assert.equal(loaded.isVacancyOwned('profile_invented_001', 'other_vacancy'), false);
+  assert.equal(loaded.resolveLegacyProfile('profile_invented_001'), null, 'legacy links need an explicit mapping');
   assert.equal(loadPrivateHostSecret(f.paths.secrets, 'ladder_token'), 'invented_secret');
 });
 
@@ -52,6 +53,11 @@ test('shared, symlinked, duplicate or malformed private configuration fails clos
   assert.throws(() => loadPrivateHostConfig(f.configFile), /private_host_config_unavailable/);
   chmodSync(f.paths.context, 0o700);
   f.writeConfig({ ...f.record, profiles: [{ ...f.record.profiles[0], vacancyIds: ['../other'] }] });
+  assert.throws(() => loadPrivateHostConfig(f.configFile), /private_host_config_unavailable/);
+  f.writeConfig({ ...f.record, profiles: [
+    { ...f.record.profiles[0], legacyUsername: 'old_login' },
+    { ...f.record.profiles[0], profileId: 'other_profile', legacyUsername: 'old_login' }
+  ] });
   assert.throws(() => loadPrivateHostConfig(f.configFile), /private_host_config_unavailable/);
 });
 
