@@ -38,3 +38,33 @@ test('release artifact binds source commit, archive digest and fails closed on a
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('staged release is readable by the service user and rejects escaping dependency links', () => {
+  const result = spawnSync('python3', ['-c', `
+import importlib.util, pathlib, tempfile, os
+spec = importlib.util.spec_from_file_location('release', ${JSON.stringify(script)})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+with tempfile.TemporaryDirectory() as outer:
+    root = pathlib.Path(outer) / 'release'
+    child = root / 'src'
+    child.mkdir(parents=True, mode=0o700)
+    source = child / 'server.js'
+    source.write_text('ok')
+    source.chmod(0o600)
+    module.make_release_readable(root)
+    assert root.stat().st_mode & 0o777 == 0o755
+    assert child.stat().st_mode & 0o777 == 0o755
+    assert source.stat().st_mode & 0o777 == 0o644
+    outside = pathlib.Path(outer) / 'outside'
+    outside.write_text('x')
+    (root / 'escape').symlink_to(outside)
+    try:
+        module.make_release_readable(root)
+    except RuntimeError as error:
+        assert str(error) == 'release_dependency_symlink_escapes_root'
+    else:
+        raise AssertionError('external symlink accepted')
+`], { cwd: root, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+});
