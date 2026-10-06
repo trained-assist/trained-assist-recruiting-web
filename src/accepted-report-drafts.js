@@ -24,29 +24,47 @@ function publicReport(record) {
 
 function renderClientDraft(record) {
   const fields = record.clientFields;
-  const experience = fields.experience.map(item => `<li><strong>${escapeHtml(item.role)}</strong> — ${escapeHtml(item.company)} (${escapeHtml(item.period)})</li>`).join('');
-  return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta name="referrer" content="no-referrer"><meta name="report-source-revision" content="${record.sourceRevision}"><title>${escapeHtml(fields.candidateName)} — ${escapeHtml(fields.vacancyTitle)}</title><style>body{font:16px/1.5 system-ui,sans-serif;max-width:48rem;margin:2rem auto;padding:0 1rem;color:#17212b}aside{padding:.75rem;background:#fff3cd;margin-bottom:1.5rem}</style></head><body><main><aside>ЧЕРНОВИК · ТРЕБУЕТ ПРОВЕРКИ · НЕ ОТПРАВЛЕН</aside><h1>${escapeHtml(fields.candidateName)}</h1><p>${escapeHtml(fields.position)} · ${escapeHtml(fields.vacancyTitle)}</p><section><h2>Опыт</h2><ul>${experience}</ul></section></main></body></html>`;
+  const experience = fields.experience.map(item => `<article class="job"><h3>${escapeHtml(item.role)} — ${escapeHtml(item.company)}</h3><p class="period">${escapeHtml(item.period)}</p>${item.details?.length ? `<ul>${item.details.map(detail => `<li>${escapeHtml(detail)}</li>`).join('')}</ul>` : ''}</article>`).join('');
+  const fit = (fields.fit ?? []).map(item => `<tr><td class="${item.status}">${escapeHtml({ yes: '✓', partial: '~', no: '✗' }[item.status])}</td><td>${escapeHtml(item.requirement)}</td><td>${escapeHtml(item.comment)}</td></tr>`).join('');
+  const summary = fields.summary?.trim() ? `<section><h2>Кратко о кандидате</h2><p>${escapeHtml(fields.summary)}</p></section>` : '';
+  const conclusion = fields.conclusion?.trim() ? `<section><h2>Вывод рекрутера</h2><div class="conclusion">${escapeHtml(fields.conclusion)}</div></section>` : '';
+  const matrix = fit ? `<section><h2>Соответствие вакансии</h2><table><thead><tr><th>Статус</th><th>Требование</th><th>Комментарий</th></tr></thead><tbody>${fit}</tbody></table><p class="legend">✓ соответствует · ~ частично / с нюансом · ✗ не соответствует</p></section>` : '';
+  return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta name="referrer" content="no-referrer"><meta name="report-source-revision" content="${record.sourceRevision}"><title>${escapeHtml(fields.candidateName)} — ${escapeHtml(fields.vacancyTitle)}</title><style>*{box-sizing:border-box}body{margin:0;font:14px/1.5 -apple-system,"Segoe UI",Roboto,Arial,sans-serif;color:#1c2430;background:#fff}.page{max-width:820px;margin:0 auto;padding:28px 32px}header{border-bottom:2px solid #1f4e8c;padding-bottom:16px}h1{margin:0 0 2px;font-size:24px}h2{font-size:16px;color:#1f4e8c;margin:22px 0 8px;text-transform:uppercase;letter-spacing:.04em}p{margin:0 0 8px}.role,.period,.legend{color:#5d6b7c}.job{margin-bottom:10px;break-inside:avoid}.job h3{font-size:15px;margin:0}.job ul{margin:4px 0 0 18px;padding:0}table{width:100%;border-collapse:collapse;font-size:13px}th,td{border-bottom:1px solid #dfe4ea;padding:6px 8px;text-align:left;vertical-align:top}.yes{color:#1e7a46}.partial{color:#a86a00}.no{color:#b3261e}.legend{font-size:12px;margin-top:6px}.conclusion{background:#f6f8fb;border-left:4px solid #1f4e8c;padding:10px 14px;white-space:pre-wrap}aside{padding:.75rem;background:#fff3cd;margin-bottom:1.5rem}@page{size:A4;margin:0}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}.page{max-width:none;padding:14mm 16mm}h2,tr{break-inside:avoid}h2{break-after:avoid}}</style></head><body><main class="page"><aside>ЧЕРНОВИК · ТРЕБУЕТ ПРОВЕРКИ · НЕ ОТПРАВЛЕН</aside><header><h1>${escapeHtml(fields.candidateName)}</h1><p class="role">${escapeHtml(fields.position)} · ${escapeHtml(fields.vacancyTitle)}</p></header>${summary}<section><h2>Опыт</h2>${experience}</section>${matrix}${conclusion}</main></body></html>`;
 }
 
 function validClientFields(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value) ||
-      Object.keys(value).sort().join(',') !== 'candidateName,experience,position,vacancyTitle' ||
+      Object.keys(value).some(key => !['candidateName', 'experience', 'position', 'vacancyTitle', 'summary', 'fit', 'conclusion'].includes(key)) ||
       !['candidateName', 'position', 'vacancyTitle'].every(key => typeof value[key] === 'string' && value[key].length > 0 && value[key].length <= 300) ||
       !Array.isArray(value.experience) || value.experience.length > 5) return false;
-  return value.experience.every(row => row && typeof row === 'object' && !Array.isArray(row) &&
-    Object.keys(row).sort().join(',') === 'company,period,role' &&
-    ['company', 'period', 'role'].every(key => typeof row[key] === 'string' && row[key].length > 0 && row[key].length <= 500));
+  if (!value.experience.every(row => row && typeof row === 'object' && !Array.isArray(row) &&
+    ['company', 'period', 'role'].every(key => typeof row[key] === 'string' && row[key].length > 0 && row[key].length <= 500) &&
+    Object.keys(row).every(key => ['company', 'period', 'role', 'details'].includes(key)) &&
+    (row.details === undefined || Array.isArray(row.details) && row.details.length <= 10 && row.details.every(item => typeof item === 'string' && item.length <= 500)))) return false;
+  return (value.summary === undefined || typeof value.summary === 'string' && value.summary.length <= 3000) &&
+    (value.conclusion === undefined || typeof value.conclusion === 'string' && value.conclusion.length <= 1500) &&
+    (value.fit === undefined || Array.isArray(value.fit) && value.fit.length <= 20 && value.fit.every(item => item && typeof item === 'object' &&
+      Object.keys(item).every(key => ['requirement', 'status', 'comment'].includes(key)) &&
+      ['requirement', 'status', 'comment'].every(key => key in item) && typeof item.requirement === 'string' && item.requirement.length <= 300 &&
+      ['yes', 'partial', 'no'].includes(item.status) && typeof item.comment === 'string' && item.comment.length <= 1000));
 }
 
 function validClientEdits(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length === 0 ||
-      Object.keys(value).some(key => !['position', 'vacancyTitle', 'experience'].includes(key))) return false;
+      Object.keys(value).some(key => !['position', 'vacancyTitle', 'experience', 'summary', 'fit', 'conclusion'].includes(key))) return false;
   if ('position' in value && (typeof value.position !== 'string' || !value.position.trim() || value.position.length > 300)) return false;
   if ('vacancyTitle' in value && (typeof value.vacancyTitle !== 'string' || !value.vacancyTitle.trim() || value.vacancyTitle.length > 300)) return false;
   if ('experience' in value && (!Array.isArray(value.experience) || value.experience.length > 5 ||
       !value.experience.every(row => row && typeof row === 'object' && !Array.isArray(row) &&
-        Object.keys(row).sort().join(',') === 'company,period,role' &&
-        ['company', 'period', 'role'].every(key => typeof row[key] === 'string' && row[key].trim() && row[key].length <= 500)))) return false;
+        Object.keys(row).every(key => ['company', 'period', 'role', 'details'].includes(key)) &&
+        ['company', 'period', 'role'].every(key => typeof row[key] === 'string' && row[key].trim() && row[key].length <= 500) &&
+        (row.details === undefined || Array.isArray(row.details) && row.details.length <= 10 && row.details.every(item => typeof item === 'string' && item.length <= 500))))) return false;
+  if ('summary' in value && (typeof value.summary !== 'string' || value.summary.length > 3000)) return false;
+  if ('conclusion' in value && (typeof value.conclusion !== 'string' || value.conclusion.length > 1500)) return false;
+  if ('fit' in value && (!Array.isArray(value.fit) || value.fit.length > 20 || !value.fit.every(item => item && typeof item === 'object' &&
+      Object.keys(item).every(key => ['requirement', 'status', 'comment'].includes(key)) &&
+      ['requirement', 'status', 'comment'].every(key => key in item) && typeof item.requirement === 'string' && item.requirement.length <= 300 &&
+      ['yes', 'partial', 'no'].includes(item.status) && typeof item.comment === 'string' && item.comment.length <= 1000))) return false;
   return true;
 }
 
@@ -114,7 +132,7 @@ export function createAcceptedReportDrafts({ sourceRead, store, clock = () => ne
         reportRef: reportRef(), profileId: context.profileId, sourceKind,
         candidateId: request.candidateId, vacancyId: request.vacancyId,
         sourceRevision: source.sourceRevision, policyRevision, revision: 1, status: 'draft', reviewState: 'unreviewed',
-        clientFields: structuredClone(source.clientDraftFields), createdAt: now, updatedAt: now,
+        clientFields: { ...structuredClone(source.clientDraftFields), experience: source.clientDraftFields.experience.map(item => ({ ...item, details: [] })), summary: '', fit: [], conclusion: '' }, createdAt: now, updatedAt: now,
         audit: [{ action: 'draft_created', revision: 1, actorProfileId: context.profileId, at: now, sourceRevision: source.sourceRevision }],
       };
       const created = await store.create({ profileId: context.profileId, idempotencyKey: key,

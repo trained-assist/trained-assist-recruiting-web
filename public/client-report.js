@@ -4,8 +4,12 @@ const revisionNode = document.querySelector('#source-revision');
 const previewNode = document.querySelector('#preview');
 const positionNode = document.querySelector('#position');
 const vacancyTitleNode = document.querySelector('#vacancy-title');
+const summaryNodeEditor = document.querySelector('#summary');
+const conclusionNode = document.querySelector('#conclusion');
 const experienceNode = document.querySelector('#experience-editor');
+const fitNode = document.querySelector('#fit-editor');
 const addExperienceButton = document.querySelector('#add-experience');
+const addFitButton = document.querySelector('#add-fit');
 const saveEditsButton = document.querySelector('#save-edits');
 const approvalNode = document.querySelector('#approval');
 const approveButton = document.querySelector('#approve');
@@ -76,23 +80,50 @@ function experienceRow(value = { role: '', company: '', period: '' }) {
     input.dataset.experienceField = key; input.value = value[key] ?? '';
     label.append(input); fieldset.append(label);
   }
+  const details = document.createElement('textarea'); details.maxLength = 5000; details.rows = 3;
+  details.dataset.experienceDetails = 'true'; details.placeholder = 'Обязанности и результаты, по одному на строку';
+  details.value = (value.details ?? []).join('\n'); fieldset.append(details);
   const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = 'Убрать место работы';
   remove.addEventListener('click', () => { fieldset.remove(); saveEditsButton.disabled = false; });
   fieldset.append(remove); experienceNode.append(fieldset);
 }
 
+function fitRow(value = { requirement: '', status: 'partial', comment: '' }) {
+  const fieldset = document.createElement('fieldset');
+  const requirement = document.createElement('input'); requirement.maxLength = 300; requirement.required = true;
+  requirement.dataset.fitField = 'requirement'; requirement.placeholder = 'Требование'; requirement.value = value.requirement ?? '';
+  const status = document.createElement('select'); status.dataset.fitField = 'status';
+  for (const [key, title] of [['yes', 'Соответствует'], ['partial', 'Частично / неясно'], ['no', 'Не соответствует']]) {
+    const option = document.createElement('option'); option.value = key; option.textContent = title; status.append(option);
+  }
+  status.value = value.status ?? 'partial';
+  const comment = document.createElement('textarea'); comment.maxLength = 1000; comment.rows = 2;
+  comment.dataset.fitField = 'comment'; comment.placeholder = 'Подтверждённые сведения или причина неопределённости'; comment.value = value.comment ?? '';
+  fieldset.append(requirement, status, comment);
+  const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = 'Убрать требование';
+  remove.addEventListener('click', () => { fieldset.remove(); saveEditsButton.disabled = false; });
+  fieldset.append(remove); fitNode.append(fieldset);
+}
+
 function renderEditor(fields) {
+  summaryNodeEditor.value = fields.summary ?? '';
+  conclusionNode.value = fields.conclusion ?? '';
   positionNode.value = fields.position;
   vacancyTitleNode.value = fields.vacancyTitle;
   experienceNode.replaceChildren();
   for (const item of fields.experience) experienceRow(item);
+  fitNode.replaceChildren();
+  for (const item of (fields.fit ?? [])) fitRow(item);
   saveEditsButton.disabled = true;
 }
 
 function setEditorEnabled(enabled) {
   positionNode.disabled = !enabled; vacancyTitleNode.disabled = !enabled;
-  experienceNode.querySelectorAll('input,button').forEach(node => { node.disabled = !enabled; });
+  summaryNodeEditor.disabled = !enabled; conclusionNode.disabled = !enabled;
+  experienceNode.querySelectorAll('input,textarea,button').forEach(node => { node.disabled = !enabled; });
+  fitNode.querySelectorAll('input,select,textarea,button').forEach(node => { node.disabled = !enabled; });
   addExperienceButton.disabled = !enabled;
+  addFitButton.disabled = !enabled;
   if (!enabled) saveEditsButton.disabled = true;
 }
 
@@ -105,8 +136,13 @@ function syncReviewControls() {
 
 function editedFields() {
   return { position: positionNode.value.trim(), vacancyTitle: vacancyTitleNode.value.trim(),
+    summary: summaryNodeEditor.value.trim(), conclusion: conclusionNode.value.trim(),
     experience: [...experienceNode.querySelectorAll('fieldset')].map(row => Object.fromEntries(
-      [...row.querySelectorAll('[data-experience-field]')].map(input => [input.dataset.experienceField, input.value.trim()]))) };
+      [...row.querySelectorAll('[data-experience-field]')].map(input => [input.dataset.experienceField, input.value.trim()])).concat([
+        ['details', [...row.querySelector('[data-experience-details]').value.split('\n')].map(item => item.trim()).filter(Boolean)]
+      ])),
+    fit: [...fitNode.querySelectorAll('fieldset')].map(row => Object.fromEntries(
+      [...row.querySelectorAll('[data-fit-field]')].map(input => [input.dataset.fitField, input.value.trim()]))) };
 }
 
 async function refreshPreview() {
@@ -211,6 +247,11 @@ addExperienceButton.addEventListener('click', () => {
   experienceRow(); saveEditsButton.disabled = false;
 });
 
+addFitButton.addEventListener('click', () => {
+  if (fitNode.querySelectorAll('fieldset').length >= 20) { showStatus('Можно указать не более двадцати требований.'); return; }
+  fitRow(); saveEditsButton.disabled = false;
+});
+
 addPolicyPhraseButton.addEventListener('click', async () => {
   const phrase = policyPhraseNode.value.trim();
   if (!phrase) { showStatus('Введите точную запретную фразу.'); return; }
@@ -219,6 +260,10 @@ addPolicyPhraseButton.addEventListener('click', async () => {
 positionNode.addEventListener('input', () => { saveEditsButton.disabled = false; });
 vacancyTitleNode.addEventListener('input', () => { saveEditsButton.disabled = false; });
 experienceNode.addEventListener('input', () => { saveEditsButton.disabled = false; });
+fitNode.addEventListener('input', () => { saveEditsButton.disabled = false; });
+fitNode.addEventListener('change', () => { saveEditsButton.disabled = false; });
+summaryNodeEditor.addEventListener('input', () => { saveEditsButton.disabled = false; });
+conclusionNode.addEventListener('input', () => { saveEditsButton.disabled = false; });
 
 saveEditsButton.addEventListener('click', async () => {
   if (!report || report.reviewState === 'approved') return;

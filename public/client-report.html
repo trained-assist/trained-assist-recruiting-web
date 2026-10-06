@@ -37,11 +37,16 @@
     </section>
     <section aria-labelledby="edit-title">
       <h2 id="edit-title">Текст черновика</h2>
-      <p>Можно уточнить должность, название вакансии и опыт. Имя берётся из принятого источника и здесь не редактируется.</p>
+      <p>Имя берётся из принятого источника. Краткое описание, матрица соответствия и вывод заполняются рекрутером по подтверждённым фактам; приложение не придумывает их.</p>
+      <label>Кратко о кандидате <textarea id="summary" maxlength="3000" rows="5"></textarea></label>
       <label>Должность <input id="position" maxlength="300" required></label>
       <label>Вакансия <input id="vacancy-title" maxlength="300" required></label>
       <div id="experience-editor"></div>
       <button id="add-experience" type="button">Добавить место работы</button>
+      <h3>Соответствие требованиям вакансии</h3>
+      <div id="fit-editor"></div>
+      <button id="add-fit" type="button">Добавить требование</button>
+      <label>Вывод рекрутера <textarea id="conclusion" maxlength="1500" rows="4"></textarea></label>
       <button id="save-edits" type="button" disabled>Сохранить изменения</button>
     </section>
     <section>

@@ -112,7 +112,11 @@ test('accepted report UI uses real BFF handlers, profile-owned source, private d
   const page = await fetch(`${base}/hh/candidate-report?vacancy_id=${vacancyId}&candidate_id=${candidateId}`, { headers: { cookie: connected.cookie } });
   assert.equal(page.status, 200);
   assert.match(page.headers.get('content-security-policy'), /frame-ancestors 'none'/);
-  assert.match(await page.text(), /Черновик отчёта кандидата/);
+  const reportPageHtml = await page.text();
+  assert.match(reportPageHtml, /Черновик отчёта кандидата/);
+  assert.match(reportPageHtml, /Кратко о кандидате/);
+  assert.match(reportPageHtml, /Соответствие требованиям вакансии/);
+  assert.match(reportPageHtml, /Вывод рекрутера/);
 
   // Missing Origin/CSRF is rejected before the source or draft handler can run.
   const unauthorized = await fetch(`${base}/api/v1/ui/accepted-report-drafts`, { method: 'POST',
@@ -146,8 +150,10 @@ test('accepted report UI uses real BFF handlers, profile-owned source, private d
   assert.equal(JSON.stringify(draft).includes('candidate@example.invalid'), false);
   assert.equal(JSON.stringify(draft).includes('SALARY_PRIVATE'), false);
   assert.equal(JSON.stringify(draft).includes('ATS_CONTEXT_PRIVATE'), false);
-  const editedFields = { position: '<img src=x onerror=synthetic>',
-    experience: [{ role: 'Senior Engineer', company: 'Example Works', period: '2021 — 2025' }] };
+  const editedFields = { position: '<img src=x onerror=synthetic>', summary: 'Synthetic summary <script>bad()</script>',
+    fit: [{ requirement: 'API ownership', status: 'yes', comment: 'Supported by synthetic example.' }],
+    conclusion: 'Synthetic recommendation & rationale.',
+    experience: [{ role: 'Senior Engineer', company: 'Example Works', period: '2021 — 2025', details: ['Designed synthetic APIs', 'Reduced synthetic latency'] }] };
   const editSchema = JSON.parse(await readFile(new URL('../contracts/v1-accepted-report-edit.schema.json', import.meta.url), 'utf8'));
   const validateEdit = new Ajv2020().compile(editSchema);
   const editRequestBody = { expectedReportRevision: draft.reportRevision, clientFields: editedFields };
@@ -169,6 +175,9 @@ test('accepted report UI uses real BFF handlers, profile-owned source, private d
   assert.equal(edited.reviewState, 'unreviewed');
   assert.equal(edited.clientFields.candidateName, 'Synthetic Candidate');
   assert.equal(edited.clientFields.position, editedFields.position);
+  assert.deepEqual(edited.clientFields.fit, editedFields.fit);
+  assert.equal(edited.clientFields.summary, editedFields.summary);
+  assert.equal(edited.clientFields.conclusion, editedFields.conclusion);
   assert.equal(JSON.stringify(edited).includes('INTERNAL_PRIVATE_COMMENT'), false);
   const staleEdit = await fetch(`${base}/api/v1/ui/accepted-report-drafts/${draft.reportRef}/edit`, { method: 'PATCH',
     headers: { cookie: connected.cookie, origin: publicOrigin, 'x-csrf-token': connected.csrfToken,
@@ -179,6 +188,13 @@ test('accepted report UI uses real BFF handlers, profile-owned source, private d
   const editedPreview = await editedPreviewResponse.json();
   assert.equal(editedPreviewResponse.status, 200);
   assert.match(editedPreview.html, /&lt;img src=x onerror=synthetic&gt;/);
+  assert.match(editedPreview.html, /Кратко о кандидате/);
+  assert.match(editedPreview.html, /Соответствие вакансии/);
+  assert.match(editedPreview.html, /Вывод рекрутера/);
+  assert.match(editedPreview.html, /Designed synthetic APIs/);
+  assert.match(editedPreview.html, /&lt;script&gt;bad\(\)&lt;\/script&gt;/);
+  assert.match(editedPreview.html, /@page\{size:A4/);
+  assert.equal(editedPreview.html.includes('<script>bad()'), false);
   assert.equal(editedPreview.html.includes('<img src=x'), false);
   const schema = JSON.parse(await readFile(new URL('../contracts/v1-accepted-report-draft.schema.json', import.meta.url), 'utf8'));
   const validate = new Ajv2020().compile(schema);
