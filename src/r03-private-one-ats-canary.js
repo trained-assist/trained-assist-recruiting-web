@@ -152,6 +152,20 @@ export async function runPrivateOneAtsCanary({ mode, hostConfigFile, sourceRecei
         prior.sourceDbSha256 !== input.sourceDbSha256 ||
         prior.sourceReceiptSha256 !== input.sourceReceiptSha256 ||
         prior.jobId !== input.receipt.jobId || prior.providerRequests !== 1) fail();
+    const copy = new Database(join(outputDirectory, 'candidate.sqlite'),
+      { readonly: true, fileMustExist: true });
+    try {
+      const row = copy.prepare(`SELECT status,input_revision FROM r03_accepted_assessment_queue
+        WHERE profile_id=? AND vacancy_id=? AND job_id=? AND resume_id=?`).get(
+        prior.profileId, prior.vacancyId, prior.jobId, prior.resumeId);
+      const assessed = copy.prepare(`SELECT input_revision FROM real_hh_assessment
+        WHERE profile_id=? AND vacancy_id=? AND job_id=? AND resume_id=?`).get(
+        prior.profileId, prior.vacancyId, prior.jobId, prior.resumeId);
+      if (row?.input_revision !== prior.inputRevision ||
+          (prior.written === 1 && (row.status !== 'completed' ||
+            assessed?.input_revision !== prior.inputRevision)) ||
+          (prior.unknown === 1 && (row.status !== 'outcome_unknown' || assessed))) fail();
+    } finally { copy.close(); }
     return { status: 'replayed', providerRequests: 0,
       written: prior.written, unknown: prior.unknown, disposableOnly: true };
   }
@@ -196,11 +210,19 @@ export async function runPrivateOneAtsCanary({ mode, hostConfigFile, sourceRecei
         result.written + result.unknown + result.blocked !== 1 ||
         schedules.db.pragma('integrity_check', { simple: true }) !== 'ok' ||
         sha(input.sourceDbPath) !== input.sourceDbSha256) fail();
+    const affected = queue.db.prepare(`SELECT resume_id,input_revision,status
+      FROM r03_accepted_assessment_queue WHERE profile_id=? AND vacancy_id=?
+        AND job_id=? AND status IN ('completed','outcome_unknown','blocked_criteria_stale','blocked_unaccepted')`)
+      .all(input.receipt.profileId, input.receipt.vacancyId, input.receipt.jobId);
+    if (affected.length !== 1 || (result.written && affected[0].status !== 'completed') ||
+        (result.unknown && affected[0].status !== 'outcome_unknown')) fail();
     const receipt = { version: 'r03-one-ats-canary-v1', disposition: 'disposable_only',
       sourceDbSha256: input.sourceDbSha256,
       sourceReceiptSha256: input.sourceReceiptSha256,
       profileId: input.receipt.profileId, vacancyId: input.receipt.vacancyId,
-      jobId: input.receipt.jobId, providerRequests, claimed: result.claimed,
+      jobId: input.receipt.jobId, resumeId: affected[0].resume_id,
+      inputRevision: affected[0].input_revision,
+      providerRequests, claimed: result.claimed,
       written: result.written, unknown: result.unknown, blocked: result.blocked,
       assessmentStatus: result.written ? 'assessed' : result.blocked ?
         'blocked_revision_or_acceptance' : 'outcome_unknown',
