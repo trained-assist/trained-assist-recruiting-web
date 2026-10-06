@@ -51,6 +51,8 @@ The R-03 cold-search foundation uses a synthetic provider and a shared scheduled
 
 An opt-in [R-03 synthetic minute worker](docs/R-03-MINUTE-WORKER.md) now opens the schedule, job and candidate-state SQLite stores on one host, checks a fixed fake profile/vacancy binding, and runs one bounded tick under a singleton lease. Its checked-in systemd unit/timer are disabled templates for fixture runs only; they do not connect HH or satisfy the GCP VM stop gate.
 
+The [R-03 private base-plan adapter](docs/R-03-PRIVATE-BASE-PLAN.md) reads a restored profile's ATS context and cached HH queries from explicit private directories, verifies the legacy generated-query hash and vacancy scope, and reaches the shared cold-search handler in an offline composition test. No live profile or token is read by this PR.
+
 An offline [R-03 background scoring pass](docs/R-03-BACKGROUND-SCORING.md) writes revision-bound ATS assessments to the private real-HH SQLite candidate state through an injected evaluator. It is designed for a five-minute timer but is not installed or connected to live LLM, HH, or the public page.
 
 The offline [R-03 morning scoring bridge](docs/R-03-MORNING-SCORING-INTEGRATION.md) overlays accepted scheduled HH assessments in `morningResults`, preserves stale status for a newer unknown run, and holds uncertain snapshots out of background scoring until reconciliation.
