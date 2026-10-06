@@ -71,6 +71,25 @@ if (root) {
     () => savePrompt(promptInput.value)));
   document.getElementById('prompt-reset').addEventListener('click', event => run(event.currentTarget,
     () => savePrompt('', true)));
+  const seenInput = document.getElementById('seen-ids');
+  const seenStatus = document.getElementById('seen-status');
+  const resumeId = value => {
+    if (/^[A-Za-z0-9]{1,128}$/.test(value)) return value;
+    let url;
+    try { url = new URL(value); } catch { throw new Error('Укажите ID или ссылку HH на резюме.'); }
+    const match = /^\/resume\/([A-Za-z0-9]{1,128})\/?$/.exec(url.pathname);
+    if (url.protocol !== 'https:' || !['hh.ru', 'www.hh.ru'].includes(url.hostname) ||
+        url.username || url.password || !match) throw new Error('Некорректная ссылка HH на резюме.');
+    return match[1];
+  };
+  document.getElementById('seen-import').addEventListener('click', event => run(event.currentTarget, async () => {
+    const parts = seenInput.value.split(/[\n\r,]+/).map(value => value.trim()).filter(Boolean);
+    if (!parts.length || parts.length > 500) throw new Error('Укажите от 1 до 500 ID резюме.');
+    const ids = [...new Set(parts.map(resumeId))];
+    const result = await command('/api/hh/proactive/import-seen', { vacancy_id: vacancyId, ids });
+    seenStatus.textContent = `Добавлено ${result.imported}; всего просмотренных по вакансии ${result.total}.`;
+    seenInput.value = '';
+  }));
   document.getElementById('schedule-enable').addEventListener('click', event => run(event.currentTarget, async () => {
     const interval = Number(document.getElementById('interval-hours').value);
     if (!Number.isFinite(interval) || interval < 0.5 || interval > 8760) throw new Error('Укажите интервал от 0,5 до 8760 часов.');

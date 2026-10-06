@@ -16,6 +16,8 @@ test('browser page uses profile cookie API, exact review revisions, idempotent m
     ['schedule-status', element('schedule-status')], ['interval-hours', element('interval-hours', { value: '24' })],
     ['prompt-status', element('prompt-status')], ['prompt-queries', element('prompt-queries')],
     ['prompt-save', element('prompt-save')], ['prompt-reset', element('prompt-reset')],
+    ['seen-status', element('seen-status')], ['seen-ids', element('seen-ids')],
+    ['seen-import', element('seen-import')],
     ['schedule-enable', element('schedule-enable')], ['schedule-disable', element('schedule-disable')],
     ['manual-search', element('manual-search')]
   ]);
@@ -83,7 +85,7 @@ test('switching signed profile on the same vacancy does not resume or reuse the 
   const handlers = new Map();
   const elements = new Map(['action-status', 'manual-status', 'schedule-status', 'interval-hours',
     'schedule-enable', 'schedule-disable', 'manual-search', 'prompt-status', 'prompt-queries',
-    'prompt-save', 'prompt-reset'].map(id => [id, { id,
+    'prompt-save', 'prompt-reset', 'seen-status', 'seen-ids', 'seen-import'].map(id => [id, { id,
     value: id === 'interval-hours' ? '24' : '', textContent: '', disabled: false,
     addEventListener: (_name, handler) => handlers.set(id, handler) }]));
   const calls = [];
@@ -114,7 +116,7 @@ test('browser prompt editor sends target revision and uses reset tombstone witho
   const handlers = new Map();
   const elements = new Map(['action-status', 'manual-status', 'schedule-status', 'interval-hours',
     'schedule-enable', 'schedule-disable', 'manual-search', 'prompt-status', 'prompt-queries',
-    'prompt-save', 'prompt-reset'].map(id => [id, { id, value: '', textContent: '', disabled: false,
+    'prompt-save', 'prompt-reset', 'seen-status', 'seen-ids', 'seen-import'].map(id => [id, { id, value: '', textContent: '', disabled: false,
     addEventListener: (_name, handler) => handlers.set(id, handler) }]));
   const calls = [];
   let promptReads = 0;
@@ -129,7 +131,8 @@ test('browser prompt editor sends target revision and uses reset tombstone witho
       path.endsWith('/prompt') ? (calls.filter(call => call.path.endsWith('/prompt')).length === 1 ?
         { ok: true, queries: ['manual query'], query_revision: secondRevision,
           override_revision: 1, queries_manual: true } :
-        { ok: true, queries_state: 'reset', pending_regeneration: true, override_revision: 2 }) : {};
+        { ok: true, queries_state: 'reset', pending_regeneration: true, override_revision: 2 }) :
+      path.endsWith('/import-seen') ? { ok: true, imported: 2, total: 2 } : {};
     return { ok: true, status: 200, json: async () => body };
   };
   runInNewContext(script, {
@@ -153,4 +156,14 @@ test('browser prompt editor sends target revision and uses reset tombstone witho
     expected_revision: secondRevision, expected_override_revision: 1 });
   assert.ok(writes.every(call => !('token' in JSON.parse(call.options.body))));
   assert.equal(elements.get('prompt-queries').value, 'regenerated');
+  elements.get('seen-ids').value = 'resumeA1, https://hh.ru/resume/resumeB2?from=search\nresumeA1';
+  await handlers.get('seen-import')({ currentTarget: elements.get('seen-import') });
+  const seenWrites = calls.filter(call => call.path === '/api/hh/proactive/import-seen');
+  assert.equal(seenWrites.length, 1);
+  assert.deepEqual(JSON.parse(seenWrites[0].options.body), { vacancy_id: vacancyId,
+    ids: ['resumeA1', 'resumeB2'] });
+  assert.match(elements.get('seen-status').textContent, /Добавлено 2/);
+  elements.get('seen-ids').value = 'https://evil.example/resume/resumeX';
+  await handlers.get('seen-import')({ currentTarget: elements.get('seen-import') });
+  assert.equal(calls.filter(call => call.path === '/api/hh/proactive/import-seen').length, 1);
 });
