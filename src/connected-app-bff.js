@@ -137,7 +137,7 @@ export function createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins, 
         const transaction = pendingHandle ? await store.takePending(hash(pendingHandle)) : null;
         const entries = [...url.searchParams.keys()];
         const code = url.searchParams.get('code'); const state = url.searchParams.get('state');
-        if (!transaction || clock() - transaction.createdAt > 300_000 ||
+        if (!transaction || clock() < transaction.createdAt || clock() - transaction.createdAt > 300_000 ||
             entries.length !== 3 || new Set(entries).size !== 3 || !entries.every(key => ['code', 'state', 'iss'].includes(key)) ||
             !/^[a-f0-9]{64}$/.test(code ?? '') || !equal(state, transaction.state) || url.searchParams.get('iss') !== issuer) {
           respond(res, 401, { error: 'invalid_auth_callback' }, { 'set-cookie': clearCookie(pendingCookie) }); return true;
@@ -159,6 +159,7 @@ export function createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins, 
         }
         const handle = random();
         await store.putSession(hash(handle), { token: exchanged.token, csrf: random(), createdAt: clock(),
+          expiresAt: claims.exp * 1000,
           sub: claims.sub, profileId: claims.profileId, sessionId: claims.sessionId });
         const prior = cookieValue(req, sessionCookie);
         if (prior) await store.deleteSession(hash(prior));

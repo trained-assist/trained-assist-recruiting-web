@@ -18,6 +18,8 @@ import { createR03PrivateAiScore } from './r03-private-ai-score.js';
 import { createR03PrivateManualCandidate } from './r03-private-manual-candidate.js';
 import { loadPrivateHistoricalRead } from './r03-private-historical-read.js';
 import { createRecruitingServer } from './server.js';
+import { createControlPlaneConnectedAppClient, createRecruitingConnectedAppBff } from './connected-app-bff.js';
+import { SqliteConnectedAppBffStore } from './sqlite-connected-app-bff-store.js';
 
 // Constructing the server makes no provider request or public bind. The owner
 // explicitly supplies private config/credentials; the HTTP process owns its
@@ -25,9 +27,11 @@ import { createRecruitingServer } from './server.js';
 export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImpl = globalThis.fetch,
   clock = () => new Date(), publicOrigin = 'https://recruiter-assistant.ru',
   historicalImportConfigFile, historicalReceiptFile, historicalReceiptSha256,
-  connectedAppBff = null } = {}) {
+  connectedAppBff = null, connectedBffConfig = null } = {}) {
   if (typeof fetchImpl !== 'function' || typeof clock !== 'function')
     throw new TypeError('private_web_runtime_unavailable');
+  if (connectedAppBff !== null && connectedBffConfig !== null)
+    throw new TypeError('private_web_auth_modes_conflict');
   const historyOptions = [historicalImportConfigFile, historicalReceiptFile, historicalReceiptSha256];
   if (historyOptions.some(value => value !== undefined) &&
       historyOptions.some(value => value === undefined)) throw new TypeError('historical_receipt_binding_required');
@@ -35,7 +39,9 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
   const historicalRead = historicalReceiptFile === undefined ? null : loadPrivateHistoricalRead({
     importConfigFile: historicalImportConfigFile, receiptFile: historicalReceiptFile,
     receiptSha256: historicalReceiptSha256, hostConfig: config });
-  const legacySecret = connectedAppBff === null ? loadPrivateHostSecret(secretsDirectory, 'legacy_page_secret') : null;
+  let bffStore = null;
+  const legacySecret = connectedAppBff === null && connectedBffConfig === null
+    ? loadPrivateHostSecret(secretsDirectory, 'legacy_page_secret') : null;
   const encryptionKey = loadPrivateHostSecret(secretsDirectory, 'hh_encryption_key');
   if (!/^[a-fA-F0-9]{64}$/.test(encryptionKey)) throw new Error('invalid_private_encryption_key');
   const clientId = loadPrivateHostSecret(secretsDirectory, 'hh_client_id');
@@ -75,6 +81,24 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
     const manualCandidate = createR03PrivateManualCandidate({ candidateState: candidates,
       loadBasePlan: stack.loadBasePlan, credentialBroker: stack.credentialBroker,
       isVacancyOwned: config.isVacancyOwned, fetchImpl, clock });
+    if (connectedBffConfig !== null) {
+      if (typeof connectedBffConfig !== 'object' ||
+          typeof connectedBffConfig.dbPath !== 'string' ||
+          typeof connectedBffConfig.issuer !== 'string' ||
+          typeof connectedBffConfig.publicOrigin !== 'string' ||
+          publicOrigin !== connectedBffConfig.publicOrigin)
+        throw new TypeError('private_web_bff_configuration_required');
+      const issuer = connectedBffConfig.issuer;
+      const client = createControlPlaneConnectedAppClient({ issuer, allowedIssuerOrigins: [issuer],
+        serviceKey: loadPrivateHostSecret(secretsDirectory, 'cp_service_key'), fetcher: fetchImpl });
+      bffStore = new SqliteConnectedAppBffStore({ filename: connectedBffConfig.dbPath,
+        encryptionKey: loadPrivateHostSecret(secretsDirectory, 'bff_encryption_key'),
+        clock: () => clock().getTime() });
+      connectedAppBff = createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins: [issuer],
+        publicOrigin, redirectUri: `${publicOrigin}/auth/connected/callback`, store: bffStore,
+        exchangeCode: client.exchangeCode, introspectToken: client.introspectToken,
+        clock: () => clock().getTime(), scopes: ['recruiting.candidateSearch'] });
+    }
     const auth = connectedAppBff === null ? createPrivateWebAuth({ legacySecret,
       resolveLegacyProfile: config.resolveLegacyProfile,
       isWebProfileMapped: config.isWebProfileMapped, publicOrigin,
@@ -92,17 +116,18 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
         const ids = config.vacancyIdsForProfile(context.profileId);
         return ids.length === 1 ? ids[0] : null;
       }, privateProactiveOnly: true });
-    server.on('close', () => { manualRuns.close(); candidates.close(); schedules.close(); });
+    server.on('close', () => { manualRuns.close(); candidates.close(); schedules.close(); bffStore?.close(); });
     return server;
   } catch (error) {
     manualRuns?.close();
     candidates?.close();
     schedules.close();
+    bffStore?.close();
     throw error;
   }
 }
 
-function parseArgs(args) {
+export function parsePrivateWebArgs(args) {
   const options = {};
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -116,16 +141,30 @@ function parseArgs(args) {
       options.historicalReceiptFile = args[++i];
     else if (arg === '--historical-receipt-sha256' && options.historicalReceiptSha256 === undefined)
       options.historicalReceiptSha256 = args[++i];
+    else if (arg === '--connected-bff' && options.connectedBff === undefined) options.connectedBff = true;
+    else if (arg === '--cp-issuer' && options.cpIssuer === undefined) options.cpIssuer = args[++i];
+    else if (arg === '--public-origin' && options.publicOrigin === undefined) options.publicOrigin = args[++i];
+    else if (arg === '--bff-db' && options.bffDbPath === undefined) options.bffDbPath = args[++i];
     else throw new Error('invalid_private_web_arguments');
   }
   if (!options.liveExecution || !Number.isSafeInteger(options.port) || options.port < 1 || options.port > 65535)
     throw new Error('invalid_private_web_arguments');
+  if (options.connectedBff) {
+    if (!options.cpIssuer || !options.publicOrigin || !options.bffDbPath)
+      throw new Error('invalid_private_web_arguments');
+    options.connectedBffConfig = { issuer: options.cpIssuer,
+      publicOrigin: options.publicOrigin, dbPath: options.bffDbPath };
+  } else if (options.cpIssuer || options.bffDbPath || options.publicOrigin)
+    throw new Error('invalid_private_web_arguments');
+  delete options.connectedBff;
+  delete options.cpIssuer;
+  delete options.bffDbPath;
   return options;
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   try {
-    const options = parseArgs(process.argv.slice(2));
+    const options = parsePrivateWebArgs(process.argv.slice(2));
     createPrivateWebRuntime(options).listen(options.port, '127.0.0.1', () => {
       process.stdout.write(`${JSON.stringify({ event: 'r03.private_web', status: 'listening', bind: 'loopback' })}\n`);
     });
