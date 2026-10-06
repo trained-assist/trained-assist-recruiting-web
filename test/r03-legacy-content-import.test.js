@@ -1,0 +1,141 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { R03LegacyContentImporter } from '../src/r03-legacy-content-import.js';
+import { SqliteRealHhCandidateState } from '../src/sqlite-real-hh-candidate-state.js';
+
+const profile = 'profile_invented';
+const vacancy = 'vacancy_invented';
+const otherVacancy = 'vacancy_elsewhere';
+const owned = (profileId, vacancyId) => profileId === profile && vacancyId === vacancy;
+const bind = source => source === 'source_invented' ? profile : null;
+const copy = value => structuredClone(value);
+
+function content() {
+  const input = {
+    migrationId: 'migration_invented', sourceProfileRef: 'source_invented',
+    allCandidates: {
+      resume_invented_bound: { id: 'resume_invented_bound', vacancy_ids: [vacancy],
+        vacancy_data: { [vacancy]: { status: 'starred' } }, first_name: 'Вымышленная', source: 'search' },
+      resume_invented_wildcard: { id: 'resume_invented_wildcard',
+        first_name: 'Пример', source: 'manual' }
+    },
+    seenIds: { [vacancy]: { resume_invented_bound: '2026-10-01', resume_invented_wildcard: '2026-10-02' } },
+    snapshots: [{ sourceFile: 'search-results-2026-10-03-vacancy_invented.json', payload: {
+      vacancy_id: vacancy, searched_at: '2026-10-03T06:00:00.000Z', total_collected: 2,
+      candidates: [{ id: 'resume_invented_bound', score: 8 }, { id: 'resume_invented_wildcard', score: 6 }]
+    } }],
+    comments: { [vacancy]: { resume_invented_bound: { text: 'Вымышленный комментарий', updatedAt: '2026-10-03T07:00:00.000Z' } } },
+    expectedCounts: { allCandidates: 2, seenIds: 2, snapshots: 1, comments: 1, wildcardQuarantined: 1 }
+  };
+  return withBytes(input);
+}
+
+function withBytes(input) {
+  input.sourceFiles = Object.fromEntries([
+    ['all-candidates.json', input.allCandidates], ['seen-ids.json', input.seenIds],
+    ...input.snapshots.map(row => [row.sourceFile, row.payload]),
+    ...Object.entries(input.comments).map(([vacancyId, value]) =>
+      [`candidate-comments-${encodeURIComponent(vacancyId)}.json`, value])
+  ].map(([file, value]) => [file, Buffer.from(JSON.stringify(value, null, 2))]));
+  return input;
+}
+
+function fixture(t, onStep = () => {}) {
+  const directory = mkdtempSync(join(tmpdir(), 'r03-legacy-content-'));
+  const filename = join(directory, 'private.sqlite');
+  const opened = [];
+  t.after(() => { for (const store of opened) if (store.db.open) store.close(); rmSync(directory, { recursive: true, force: true }); });
+  return { filename, open: () => {
+    const store = new R03LegacyContentImporter({ filename, bindProfile: bind, isVacancyOwned: owned, onStep });
+    opened.push(store); return store;
+  } };
+}
+
+test('private import preserves invented content and quarantines wildcard and legacy snapshots', t => {
+  const { filename, open } = fixture(t);
+  const importer = open();
+  const receipt = importer.import(content());
+  assert.equal(receipt.kind, 'imported');
+  assert.deepEqual(receipt.counts, content().expectedCounts);
+  assert.match(receipt.sourceDigest, /^[a-f0-9]{64}$/);
+  assert.equal(receipt.sourceReceipts.length, 4);
+  assert.deepEqual(receipt.sourceReceipts.map(row => row.file),
+    ['all-candidates.json', `candidate-comments-${vacancy}.json`, 'search-results-2026-10-03-vacancy_invented.json', 'seen-ids.json']);
+  assert.ok(receipt.sourceReceipts.every(row => row.bytes > 0 && /^[a-f0-9]{64}$/.test(row.sha256)));
+  assert.equal(statSync(filename).mode & 0o077, 0);
+  const wildcard = importer.db.prepare('SELECT wildcard_quarantined,payload FROM r03_legacy_content_candidate WHERE resume_id=?')
+    .get('resume_invented_wildcard');
+  assert.equal(wildcard.wildcard_quarantined, 1);
+  assert.equal(JSON.parse(wildcard.payload).first_name, 'Пример');
+  assert.equal(importer.db.prepare('SELECT acceptance_status FROM r03_legacy_content_snapshot').get().acceptance_status, 'quarantined');
+  assert.equal(importer.db.prepare('SELECT text FROM r03_legacy_content_comment').get().text, 'Вымышленный комментарий');
+  assert.equal(importer.db.prepare('SELECT COUNT(*) AS count FROM r03_legacy_content_seen').get().count, 2);
+  importer.close();
+
+  const active = new SqliteRealHhCandidateState({ filename, isVacancyOwned: owned });
+  t.after(() => active.close());
+  assert.equal(active.latestSnapshot(profile, vacancy), null, 'import cannot mint accepted current snapshots');
+  assert.equal(active.seenTotal(profile, vacancy), 0, 'quarantined source seen dates cannot affect fresh-run counters');
+});
+
+test('exact replay is idempotent; changed content under same migration conflicts without mutation', t => {
+  const { open } = fixture(t);
+  const first = open();
+  assert.equal(first.import(content()).kind, 'imported');
+  first.close();
+  const second = open();
+  assert.equal(second.import(content()).kind, 'replayed');
+  const changed = content();
+  changed.comments[vacancy].resume_invented_bound.text = 'Другой вымышленный комментарий';
+  withBytes(changed);
+  assert.equal(second.import(changed).kind, 'conflict');
+  assert.equal(second.db.prepare('SELECT text FROM r03_legacy_content_comment').get().text, 'Вымышленный комментарий');
+  assert.equal(second.db.prepare('SELECT COUNT(*) AS count FROM r03_legacy_content_import').get().count, 1);
+});
+
+test('all four content families roll back together on injected failure', t => {
+  let fail = true;
+  const { open } = fixture(t, stage => { if (fail && stage === 'comments') throw new Error('invented_import_crash'); });
+  const importer = open();
+  assert.throws(() => importer.import(content()), /invented_import_crash/);
+  for (const table of ['import', 'candidate', 'seen', 'snapshot', 'comment'])
+    assert.equal(importer.db.prepare(`SELECT COUNT(*) AS count FROM r03_legacy_content_${table}`).get().count, 0);
+  fail = false;
+  assert.equal(importer.import(content()).kind, 'imported');
+});
+
+test('profile, vacancy, links, counts, duplicates and source filenames fail before writes', t => {
+  const { open } = fixture(t);
+  const importer = open();
+  const cases = [
+    input => { input.sourceProfileRef = 'unknown_source'; },
+    input => { input.allCandidates.resume_invented_bound.vacancy_ids = [otherVacancy]; },
+    input => { input.allCandidates.resume_invented_bound.vacancy_data[otherVacancy] = {}; },
+    input => { input.seenIds[vacancy].missing_candidate = '2026-10-02'; },
+    input => { input.snapshots[0].payload.candidates[0].id = 'missing_candidate'; },
+    input => { input.snapshots.push(copy(input.snapshots[0])); input.expectedCounts.snapshots++; },
+    input => { input.snapshots[0].sourceFile = '../search-results-evil.json'; },
+    input => { input.comments[vacancy].missing_candidate = { text: 'Fake' }; },
+    input => { input.expectedCounts.seenIds = 1; }
+  ];
+  for (const mutate of cases) {
+    const input = content(); mutate(input);
+    assert.throws(() => importer.import(input));
+  }
+  assert.equal(importer.db.prepare('SELECT COUNT(*) AS count FROM r03_legacy_content_import').get().count, 0);
+});
+
+test('source byte receipts require exact supplied JSON bytes for every family', t => {
+  const { open } = fixture(t);
+  const importer = open();
+  const changed = content();
+  changed.sourceFiles['all-candidates.json'] = Buffer.from('{}');
+  assert.throws(() => importer.import(changed), /legacy_content_source_bytes_mismatch/);
+  const missing = content();
+  delete missing.sourceFiles['seen-ids.json'];
+  assert.throws(() => importer.import(missing), /legacy_content_source_files_mismatch/);
+  assert.equal(importer.db.prepare('SELECT COUNT(*) AS count FROM r03_legacy_content_import').get().count, 0);
+});
