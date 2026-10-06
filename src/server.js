@@ -31,7 +31,7 @@ function renderLiveResponsePage(data) {
   const pageLink = page => `/hh/responses?vacancy_id=${vacancy}&page=${page}`;
   const previous = data.page > 0 ? `<a href="${pageLink(data.page - 1)}">Назад</a>` : '';
   const next = data.page + 1 < data.pages ? `<a href="${pageLink(data.page + 1)}">Далее</a>` : '';
-  return `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Отклики HH</title><main><h1>Отклики по вакансии ${escapeResponseHtml(data.vacancyId)}</h1><p>Получено от HH: ${escapeResponseHtml(data.fetchedAt)}. Страницы могут измениться между запросами.</p><p>Страница ${data.page + 1} из ${Math.max(1, data.pages)} · Всего ${data.total}</p><ol>${itemHtml}</ol><nav>${previous} ${next}</nav></main></html>`;
+  return `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Отклики HH</title><main><h1>Отклики по вакансии ${escapeResponseHtml(data.vacancyId)}</h1><p><a href="/hh/proactive?vacancy_id=${vacancy}">Холодный поиск</a></p><p>Получено от HH: ${escapeResponseHtml(data.fetchedAt)}. Страницы могут измениться между запросами.</p><p>Страница ${data.page + 1} из ${Math.max(1, data.pages)} · Всего ${data.total}</p><ol>${itemHtml}</ol><nav>${previous} ${next}</nav></main></html>`;
 }
 const release = {
   version: '0.1.0',
@@ -342,7 +342,7 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
         if (pageRoute && keys.length === 0) {
           type = mime.html;
           const ids = listRealVacancies(context).filter(id => /^[A-Za-z0-9_-]{1,128}$/.test(id));
-          body = `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="referrer" content="no-referrer"><title>Вакансии HH</title><main><h1>Выберите вакансию</h1><ul>${ids.map(id => `<li><a href="/hh/responses?vacancy_id=${encodeURIComponent(id)}">${escapeResponseHtml(id)}</a></li>`).join('')}</ul></main></html>`;
+          body = `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="referrer" content="no-referrer"><title>Вакансии HH</title><main><h1>Выберите вакансию</h1><p><a href="/hh/proactive">Холодный поиск</a></p><ul>${ids.map(id => `<li><a href="/hh/responses?vacancy_id=${encodeURIComponent(id)}">${escapeResponseHtml(id)}</a></li>`).join('')}</ul></main></html>`;
         } else if (keys.some(key => ![pageRoute ? 'vacancy_id' : 'vacancyId', 'page'].includes(key)) ||
             new Set(keys).size !== keys.length ||
             typeof vacancyId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(vacancyId) ||
@@ -415,6 +415,18 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
         status = 401;
         body = { error: 'trusted_profile_context_required' };
       } else if (!context.scopes.includes('recruiting.candidateSearch')) {
+        if (connectedAppBff !== null && path === '/hh/proactive' && req.method === 'GET' &&
+            [...url.searchParams.keys()].every(key => ['vacancy_id', 'list'].includes(key)) &&
+            url.searchParams.getAll('vacancy_id').length <= 1 &&
+            url.searchParams.getAll('list').length <= 1 &&
+            (!url.searchParams.has('vacancy_id') || isRealProactiveVacancy(url.searchParams.get('vacancy_id'))) &&
+            (!url.searchParams.has('list') || ['active', 'starred', 'archived'].includes(url.searchParams.get('list')))) {
+          const start = new URL('/auth/connected/start', 'http://localhost');
+          start.searchParams.set('from', 'proactive');
+          if (url.searchParams.has('vacancy_id')) start.searchParams.set('vacancy_id', url.searchParams.get('vacancy_id'));
+          res.writeHead(303, { Location: start.pathname + start.search, 'Cache-Control': 'no-store',
+            'Referrer-Policy': 'no-referrer' }); res.end(); return;
+        }
         status = 403;
         body = { error: 'search_scope_required' };
       } else if (realProactiveFeed !== null) {
@@ -581,7 +593,8 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
               type = mime.html;
               body = renderRealProactivePage({ profileId: context.profileId, vacancyId: realVacancyId, feed: result.feed,
                 listView: url.searchParams.get('list') ?? 'active',
-                historicalAvailable: realProactiveHistoricalRead?.has(context, realVacancyId) ?? false });
+                historicalAvailable: realProactiveHistoricalRead?.has(context, realVacancyId) ?? false,
+                responsesAvailable: connectedAppBff !== null && liveResponseRead !== null });
               res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'");
               res.setHeader('Referrer-Policy', 'no-referrer');
             } else body = result.value;

@@ -111,8 +111,13 @@ test('private response entry requests one step-up scope, real HTTP reader and ow
   assert.match(html, /r_vacancy_A_1|&lt;Recruiter&gt;/);
   assert.doesNotMatch(html, /<Recruiter>/);
   assert.match(html, /Страницы могут измениться/);
+  assert.match(html, /href="\/hh\/proactive\?vacancy_id=vacancy_A"/);
   assert.equal((await fetch(`${base}/hh/responses`, { headers: { cookie: login.session } })).status, 200);
-  assert.equal((await fetch(`${base}/hh/proactive?vacancy_id=vacancy_A`,
+  const back = await fetch(`${base}/hh/proactive?vacancy_id=vacancy_A`,
+    { headers: { cookie: login.session }, redirect: 'manual' });
+  assert.equal(back.status, 303);
+  assert.equal(back.headers.get('location'), '/auth/connected/start?from=proactive&vacancy_id=vacancy_A');
+  assert.equal((await fetch(`${base}/api/hh/proactive/candidates?vacancy_id=vacancy_A`,
     { headers: { cookie: login.session } })).status, 403);
   assert.equal((await fetch(`${base}/api/v1/ui/hh-responses?vacancyId=vacancy_B`,
     { headers: { cookie: login.session } })).status, 404);
@@ -153,6 +158,9 @@ test('response BFF denies missing scope/profile switch and outages; refreshes on
   assert.equal((await fetch(`${base}/hh/proactive?vacancy_id=vacancy_A`, { redirect: 'manual' })).status, 303);
   assert.equal((await fetch(`${base}/hh/proactive?vacancy_id=vacancy_A`,
     { headers: { cookie: candidateOnly.session } })).status, 200);
+  const proactivePage = await (await fetch(`${base}/hh/proactive?vacancy_id=vacancy_A`,
+    { headers: { cookie: candidateOnly.session } })).text();
+  assert.match(proactivePage, /href="\/hh\/responses\?vacancy_id=vacancy_A"/);
   f.setScope('recruiting.responses.read');
   const login = await signIn(base, 'responses', 'vacancy_A');
   assert.equal(login.accepted.status, 303);
