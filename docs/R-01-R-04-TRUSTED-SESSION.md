@@ -1,0 +1,11 @@
+# R-01/R-04 trusted read session boundary
+
+`createRecruitingReadSessionResolver` is an opt-in HTTP authentication adapter for the existing `createRecruitingServer` read routes. It accepts only a bearer credential verified by an injected agent/platform `verifyToken` port. That port must validate the issuer cryptographically or by live introspection; decoding a token or trusting proxy headers is insufficient. The resolver then requires the configured issuer and `recruiting-web` audience, live `nbf`/`exp` with at most one hour of validity, a stable user, profile and session ID, and a current `isProfileBound(user, profile, session)` decision. It emits only profile ID and scopes. A revocation or profile switch can therefore invalidate the binding on the next read.
+
+The R-01 HTTP route requires `recruiting.responses.read`; the R-04 source route requires `recruiting.reports.read`. The R-03 signed-link cookie carries only `recruiting.candidateSearch` and is never consumed by this adapter. The source read remains a proposal, not an approved or published report. This module is not mounted in the private R-03 process or production manifest.
+
+## Agent-owned integration contract still needed
+
+The retiring agent currently has its own web JWT cookie and in-memory run tokens. Neither has the audience, scopes, external session validation and profile-switch/revocation contract needed here. The new agent/control plane must define an issuer or introspection endpoint that returns verified `iss`, `aud`, `sub`, `profileId`, `sessionId`, `nbf`, `exp` and scopes, then implement `isProfileBound` against its current profile/session authority. Browser handoff needs a short-lived code exchange or equivalent so the token is not placed in a URL or exposed to third-party scripts. The relay needs a separate authorization grant for each operation. Only after this contract and real profile mapping are in place should the host mount R-01/R-04 routes and test a real HH read and report source canary.
+
+Offline tests use invented claims and a fake verifier. They prove the local validation and route scope separation, not issuer cryptography, real session revocation, browser handoff or live HH access.
