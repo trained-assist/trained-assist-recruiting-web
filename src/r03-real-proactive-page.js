@@ -10,7 +10,7 @@ const safeResumeUrl = value => {
 };
 
 export function renderRealProactivePage({ profileId = '', vacancyId, feed, listView = 'active', historicalAvailable = false,
-  responsesAvailable = false }) {
+  responsesAvailable = false, reportsAvailable = false }) {
   if (!['active', 'starred', 'archived'].includes(listView)) throw new TypeError('invalid_list_view');
   const freshness = feed.freshness === 'latest_run_incomplete' ? 'Последний поиск не завершён; показаны ранее принятые кандидаты.' :
     feed.status === 'never_run' && feed.total > 0 ? 'Принятых результатов поиска пока нет; показаны кандидаты, добавленные вручную.' :
@@ -29,6 +29,8 @@ export function renderRealProactivePage({ profileId = '', vacancyId, feed, listV
     <p>${escapeHtml(item.firstName)} ${escapeHtml(item.lastName)} · ${escapeHtml(item.area)}</p>
     <p>ATS: ${item.atsScore === null ? 'ожидает оценки' : escapeHtml(item.atsScore)} · ${escapeHtml(item.review.status)}</p>
     ${item.jobId ? '<button type="button" class="score-now">Оценить ATS сейчас</button><span class="score-result" role="status"></span>' : ''}
+    ${reportsAvailable && item.jobId && item.atsScore !== null && ['active', 'starred'].includes(item.review?.status)
+      ? `<p><a href="/auth/connected/start?from=report&amp;vacancy_id=${encodeURIComponent(vacancyId)}&amp;candidate_id=${encodeURIComponent(item.id)}">Подготовить отчёт клиенту</a></p>` : ''}
     ${item.comment ? `<p class="comment">${escapeHtml(item.comment)}</p>` : ''}
     ${safeResumeUrl(item.hhUrl) ? `<a href="${escapeHtml(safeResumeUrl(item.hhUrl))}" target="_blank" rel="noopener noreferrer">Резюме HH</a>` : ''}
     <div class="controls"><label>Статус <select class="candidate-status"><option value="active"${item.review?.status === 'active' ? ' selected' : ''}>Активный</option><option value="starred"${item.review?.status === 'starred' ? ' selected' : ''}>Избранный</option><option value="archived"${item.review?.status === 'archived' ? ' selected' : ''}>Архив</option></select></label>

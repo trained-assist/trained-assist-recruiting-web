@@ -125,6 +125,34 @@ test('private runtime composes accepted HH response source, encrypted draft, BFF
 
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const base = 'http://127.0.0.1:' + server.address().port;
+  activeScopes = ['recruiting.candidateSearch'];
+  const proactiveEntry = await fetch(base + '/hh/proactive?vacancy_id=' + vacancyId, { redirect: 'manual' });
+  assert.equal(proactiveEntry.status, 303);
+  const proactiveStart = await fetch(base + proactiveEntry.headers.get('location'), { redirect: 'manual' });
+  assert.equal(proactiveStart.status, 303);
+  assert.equal(new URL(proactiveStart.headers.get('location')).searchParams.get('scope'), 'recruiting.candidateSearch');
+  const proactivePending = cookie(proactiveStart, '__Host-recruiting-oauth-pending');
+  const proactiveAuthorize = new URL(proactiveStart.headers.get('location'));
+  const proactiveCallbackUrl = new URL('/auth/connected/callback', base);
+  proactiveCallbackUrl.searchParams.set('code', 'd'.repeat(64));
+  proactiveCallbackUrl.searchParams.set('state', proactiveAuthorize.searchParams.get('state'));
+  proactiveCallbackUrl.searchParams.set('iss', issuer);
+  const proactiveCallback = await fetch(proactiveCallbackUrl, { redirect: 'manual', headers: { cookie: proactivePending } });
+  assert.equal(proactiveCallback.status, 303);
+  const proactiveCookie = cookie(proactiveCallback, '__Host-recruiting-app-session');
+  const morningPageResponse = await fetch(base + '/hh/proactive?vacancy_id=' + vacancyId,
+    { headers: { cookie: proactiveCookie } });
+  assert.equal(morningPageResponse.status, 200);
+  const morningPage = await morningPageResponse.text();
+  const reportEntryPath = `/auth/connected/start?from=report&amp;vacancy_id=${vacancyId}&amp;candidate_id=${resumeId}`;
+  assert.ok(morningPage.includes(reportEntryPath));
+  assert.match(morningPage, /Подготовить отчёт клиенту/);
+  const reportStepUp = await fetch(base + reportEntryPath.replaceAll('&amp;', '&'), { redirect: 'manual' });
+  assert.equal(reportStepUp.status, 303);
+  assert.equal(new URL(reportStepUp.headers.get('location')).searchParams.get('scope'),
+    'recruiting.reports.read recruiting.reports.create recruiting.reports.edit recruiting.reports.review');
+
+  activeScopes = [...scopes];
   const entry = await fetch(base + '/hh/candidate-report?vacancy_id=' + vacancyId +
     '&candidate_id=' + negotiationId + '&source_kind=accepted_hh_response', { redirect: 'manual' });
   assert.equal(entry.status, 303);

@@ -904,7 +904,8 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
               body = renderRealProactivePage({ profileId: context.profileId, vacancyId: realVacancyId, feed: result.feed,
                 listView: url.searchParams.get('list') ?? 'active',
                 historicalAvailable: realProactiveHistoricalRead?.has(context, realVacancyId) ?? false,
-                responsesAvailable: connectedAppBff !== null && liveResponseRead !== null });
+                responsesAvailable: connectedAppBff !== null && liveResponseRead !== null,
+                reportsAvailable: connectedAppBff !== null && acceptedReportDrafts !== null });
               res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'");
               res.setHeader('Referrer-Policy', 'no-referrer');
             } else body = result.value;

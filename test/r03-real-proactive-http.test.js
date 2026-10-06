@@ -12,13 +12,14 @@ import { createR03AccumulatedRealFeedFromStores } from '../src/r03-accumulated-r
 import { createRealProactiveRead } from '../src/r03-real-proactive-read.js';
 import { SqliteColdSearchScheduleRepository } from '../src/sqlite-cold-search-schedule-repository.js';
 import { createR03RealProactiveActions } from '../src/r03-real-proactive-actions.js';
+import { renderRealProactivePage } from '../src/r03-real-proactive-page.js';
 
 const vacancyId = 'vacancy_synthetic_real_001';
 const profileId = 'profile_synthetic_real_001';
 const headers = { 'X-Test-Principal': profileId };
 const candidate = { id: 'syntheticresume1', title: '<script>alert(1)</script>', firstName: 'Вымышленное', lastName: 'Имя',
   area: 'Вымышленный регион', hhUrl: 'https://hh.ru/resume/syntheticresume1', atsScore: 8,
-  review: { status: 'starred', revision: 1 }, comment: '<img src=x onerror=alert(1)>' };
+  jobId: 'job_synthetic_1', review: { status: 'starred', revision: 1 }, comment: '<img src=x onerror=alert(1)>' };
 const result = { status: 'completed', freshness: 'latest_run_incomplete', total: 1, resultRevision: 'synthetic_revision_1', items: [candidate] };
 
 async function started(t, options) {
@@ -55,6 +56,7 @@ test('opt-in real page and API use one trusted profile/vacancy feed; HTML escape
   assert.match(page, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
   assert.match(page, /&lt;img src=x onerror=alert\(1\)&gt;/);
   assert.doesNotMatch(page, /<script>|<img src=x/);
+  assert.doesNotMatch(page, /Подготовить отчёт клиенту/, 'report entry stays absent unless the connected report workflow is mounted');
   assert.equal(reads.length, 2);
   assert.equal(reads[0].context.profileId, profileId);
   assert.equal(reads[0].vacancy, vacancyId);
@@ -76,6 +78,17 @@ test('completed discovery exposes pending ATS backlog in the same page and API',
   const page = await (await fetch(base + `/hh/proactive?vacancy_id=${vacancyId}`)).text();
   assert.match(page, /Ожидают оценки ATS: 1/);
   assert.match(page, /data-assessment-status="assessment_pending"/);
+  assert.doesNotMatch(page, /Подготовить отчёт клиенту/, 'unscored candidates cannot start an accepted report');
+});
+
+test('candidate report link is limited to report-enabled accepted assessed candidates', () => {
+  const acceptedPage = renderRealProactivePage({ vacancyId, feed: result, listView: 'starred', reportsAvailable: true });
+  assert.match(acceptedPage, new RegExp(`/auth/connected/start\\?from=report&amp;vacancy_id=${vacancyId}&amp;candidate_id=${candidate.id}`));
+  const pendingPage = renderRealProactivePage({ vacancyId,
+    feed: { ...result, items: [{ ...candidate, atsScore: null }] }, listView: 'starred', reportsAvailable: true });
+  assert.doesNotMatch(pendingPage, /Подготовить отчёт клиенту/);
+  const unmountedPage = renderRealProactivePage({ vacancyId, feed: result, listView: 'starred', reportsAvailable: false });
+  assert.doesNotMatch(unmountedPage, /Подготовить отчёт клиенту/);
 });
 
 test('default server keeps the existing synthetic page and API behavior', async t => {
