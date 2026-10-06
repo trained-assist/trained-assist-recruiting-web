@@ -168,7 +168,8 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
     throw new TypeError('report source read port required');
   if (resolveLegacyOpenTab !== null && (!privateProactiveOnly || typeof resolveLegacyOpenTab !== 'function'))
     throw new TypeError('legacy open-tab resolver requires private proactive mode');
-  if (connectedAppBff !== null && (privateProactiveOnly || typeof connectedAppBff.handle !== 'function' ||
+  if (connectedAppBff !== null && (privateProactiveOnly && resolveLegacyOpenTab !== null ||
+      typeof connectedAppBff.handle !== 'function' ||
       typeof connectedAppBff.resolve !== 'function')) throw new TypeError('connected app BFF ports required');
   const trustedReadResolver = connectedAppBff?.resolve ?? resolveTrustedProfileContext;
   if (realProactiveHistoricalRead !== null && (realProactiveFeed === null ||
@@ -346,8 +347,9 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
         }
       }
       let context;
-      try { if (status === 200) context = await resolveTrustedProfileContext(req, url, res); }
-      catch { status = 503; body = { error: 'trusted_profile_unavailable' }; }
+      try { if (status === 200) context = await trustedReadResolver(req, url, res); }
+      catch (error) { status = 503; body = { error: error instanceof ConnectedAppIntrospectionUnavailable
+        ? 'connected_app_introspection_unavailable' : 'trusted_profile_unavailable' }; }
       if (status !== 200) {
         // A failing trusted resolver must not enter a profile-scoped handler.
       } else if (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes)) {
@@ -484,7 +486,8 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
         } else if ((path !== '/hh/proactive' && path !== '/api/hh/proactive/candidates') || (req.method !== 'GET' && req.method !== 'HEAD')) {
           status = 501;
           body = { error: 'real_proactive_route_unavailable' };
-        } else if ([...url.searchParams.keys()].some(key => !(['vacancy_id', 'username', 'token', 'list'].includes(key) &&
+        } else if (connectedAppBff !== null && (url.searchParams.has('username') || url.searchParams.has('token')) ||
+            [...url.searchParams.keys()].some(key => !(['vacancy_id', 'username', 'token', 'list'].includes(key) &&
             (path === '/hh/proactive' || key === 'vacancy_id'))) ||
             url.searchParams.getAll('vacancy_id').length > 1 ||
             url.searchParams.getAll('list').length > 1 ||

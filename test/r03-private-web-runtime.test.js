@@ -15,7 +15,7 @@ const legacyUsername = 'old_invented_login';
 const vacancyId = 'invented_vacancy';
 const secret = 'invented-legacy-page-secret-32-characters-minimum';
 
-function fixture(t, vacancyIds = [vacancyId]) {
+function fixture(t, vacancyIds = [vacancyId], runtimeOptions = {}) {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), 'r03-private-web-')));
   chmodSync(directory, 0o700);
   const privateDir = name => { const path = join(directory, name); mkdirSync(path, { mode: 0o700 }); return path; };
@@ -23,7 +23,7 @@ function fixture(t, vacancyIds = [vacancyId]) {
   const proactive = privateDir('proactive');
   const tokens = privateDir('tokens');
   const secrets = privateDir('secrets');
-  for (const [name, value] of Object.entries({ legacy_page_secret: secret,
+  for (const [name, value] of Object.entries({ ...(runtimeOptions.connectedAppBff ? {} : { legacy_page_secret: secret }),
     hh_encryption_key: 'a'.repeat(64), hh_client_id: 'invented-client',
     hh_client_secret: 'invented-client-secret', ladder_token: 'invented-ladder',
     hh_user_agent: 'invented-recruiting/1.0 (contact@example.test)' }))
@@ -34,12 +34,23 @@ function fixture(t, vacancyIds = [vacancyId]) {
       contextDirectory: contexts, proactiveDirectory: proactive, tokenDirectory: tokens }] }), { mode: 0o600 });
   const server = createPrivateWebRuntime({ configFile, secretsDirectory: secrets,
     fetchImpl: async () => { throw new Error('unexpected_provider_call'); },
-    clock: () => new Date('2026-10-06T08:00:00.000Z') });
+    clock: () => new Date('2026-10-06T08:00:00.000Z'), ...runtimeOptions });
   server.listen(0, '127.0.0.1');
   t.after(async () => { await new Promise(resolve => server.close(resolve)); rmSync(directory, { recursive: true, force: true }); });
   const token = createHmac('sha256', secret).update(legacyUsername).digest('hex').slice(0, 16);
   return { server, token, dbPath: join(directory, 'state.sqlite') };
 }
+
+test('private runtime can use injected Connected App BFF without legacy page secret', async t => {
+  const bff = { resolve: async () => ({ profileId, scopes: ['recruiting.candidateSearch'] }),
+    handle: async () => false };
+  const { server } = fixture(t, [vacancyId], { connectedAppBff: bff });
+  await once(server, 'listening');
+  const base = `http://127.0.0.1:${server.address().port}`;
+  assert.equal((await fetch(`${base}/hh/proactive?vacancy_id=${vacancyId}`)).status, 200);
+  assert.equal((await fetch(`${base}/api/hh/proactive/candidates?vacancy_id=${vacancyId}`)).status, 200);
+  assert.equal((await fetch(`${base}/hh/proactive?username=${legacyUsername}&token=deadbeef&vacancy_id=${vacancyId}`)).status, 400);
+});
 
 test('private web runtime accepts only exact old signed link then scopes session to configured vacancy', async t => {
   const { server, token } = fixture(t);

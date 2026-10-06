@@ -1,5 +1,5 @@
-// Browser client for the private real-HH page. The signed legacy URL is only
-// used to establish the server-side profile session; requests carry no token.
+// Browser client for the private real-HH page. Authentication is a server-side
+// session; requests never carry an app token or legacy link secret in JSON.
 const root = document.querySelector('main[data-vacancy-id]');
 if (root) {
   const profileId = root.dataset.profileId;
@@ -18,8 +18,19 @@ if (root) {
     if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
     return body;
   };
-  const command = (path, body, headers = {}) => request(path, { method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
+  let commandCsrf;
+  const csrfHeader = async () => {
+    if (commandCsrf !== undefined) return commandCsrf ? { 'X-CSRF-Token': commandCsrf } : {};
+    const response = await fetch('/auth/connected/session', { credentials: 'same-origin', cache: 'no-store' });
+    if (response.status === 404) { commandCsrf = null; return {}; } // Legacy signed-link mode.
+    const session = await response.json().catch(() => ({}));
+    if (!response.ok || !/^[A-Za-z0-9_-]{43}$/.test(session.csrfToken ?? ''))
+      throw new Error(session.error || 'browser_session_unavailable');
+    commandCsrf = session.csrfToken;
+    return { 'X-CSRF-Token': commandCsrf };
+  };
+  const command = async (path, body, headers = {}) => request(path, { method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...await csrfHeader(), ...headers }, body: JSON.stringify(body) });
   const message = error => error instanceof Error ? error.message : 'action_unavailable';
   let manualBlocked = false;
   const run = async (button, action) => {

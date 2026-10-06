@@ -39,6 +39,7 @@ test('browser page uses profile cookie API, exact review revisions, idempotent m
   const session = new Map();
   const fetch = async (path, options = {}) => {
     calls.push({ path, options });
+    if (path === '/auth/connected/session') return { ok: false, status: 404, json: async () => ({}) };
     let body = { ok: true };
     if (path.startsWith('/api/hh/proactive/schedule?')) body = { ok: true, schedules: [],
       flags: { starred: false, archived: false, revision: 0 } };
@@ -106,6 +107,7 @@ test('switching signed profile on the same vacancy does not resume or reuse the 
   const calls = [];
   const fetch = async (path, options = {}) => {
     calls.push({ path, options });
+    if (path === '/auth/connected/session') return { ok: false, status: 404, json: async () => ({}) };
     return { ok: true, status: 200, json: async () => path.includes('/schedule?') ? { schedules: [] } :
       path.includes('/prompt?') ? { queries: ['invented query'], query_revision: `queries-${'a'.repeat(24)}`, override_revision: 0 } :
       path.endsWith('/search') ? { run: { runId: 'run_B' } } : { run: { status: 'completed' } } };
@@ -141,6 +143,7 @@ test('browser prompt editor sends target revision and uses reset tombstone witho
   const secondRevision = `queries-${'b'.repeat(24)}`;
   const fetch = async (path, options = {}) => {
     calls.push({ path, options });
+    if (path === '/auth/connected/session') return { ok: false, status: 404, json: async () => ({}) };
     const body = path.includes('/schedule?') ? { schedules: [] } :
       path.includes('/prompt?') ? (promptReads++ ? { queries: ['regenerated'],
         query_revision: `queries-${'c'.repeat(24)}`, override_revision: 2 } :
@@ -191,4 +194,40 @@ test('browser prompt editor sends target revision and uses reset tombstone witho
   assert.deepEqual(JSON.parse(manualWrites[0].options.body), { vacancy_id: vacancyId,
     resume_url_or_id: 'resumeC3' });
   assert.match(elements.get('manual-candidate-status').textContent, /Кандидат добавлен/);
+});
+
+test('browser commands obtain the Connected App CSRF token from the session endpoint', async () => {
+  const handlers = new Map();
+  const elements = new Map(['action-status', 'manual-status', 'schedule-status', 'vacancy-flags-status', 'interval-hours',
+    'schedule-enable', 'schedule-disable', 'manual-search', 'prompt-status', 'prompt-queries',
+    'prompt-save', 'prompt-reset', 'seen-status', 'seen-ids', 'seen-import',
+    'manual-candidate-input', 'manual-candidate-add', 'manual-candidate-status',
+    'vacancy-star', 'vacancy-unstar', 'vacancy-archive', 'vacancy-restore'].map(id => [id, { id,
+    value: id === 'interval-hours' ? '24' : '', textContent: '', disabled: false,
+    addEventListener: (_name, handler) => handlers.set(id, handler) }]));
+  const calls = [];
+  const csrfToken = 'c'.repeat(43);
+  const fetch = async (path, options = {}) => {
+    calls.push({ path, options });
+    const body = path === '/auth/connected/session' ? { csrfToken } :
+      path.includes('/schedule?') ? { schedules: [] } :
+      path.includes('/prompt?') ? { queries: [], query_revision: 'queries-' + 'a'.repeat(24), override_revision: 0 } : {};
+    return { ok: true, status: 200, json: async () => body };
+  };
+  runInNewContext(script, {
+    document: { querySelector: () => ({ dataset: { profileId: 'invented_profile', vacancyId } }),
+      getElementById: id => elements.get(id), querySelectorAll: () => [] },
+    location: { href: `https://recruiter-assistant.ru/hh/proactive?vacancy_id=${vacancyId}`, reload: () => {} },
+    history: { replaceState: () => {} }, crypto: { randomUUID: () => 'invented-key' },
+    sessionStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+    fetch, URL, setTimeout: callback => { callback(); return 1; }
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  await handlers.get('schedule-enable')({ currentTarget: elements.get('schedule-enable') });
+  const sessionCalls = calls.filter(call => call.path === '/auth/connected/session');
+  const writes = calls.filter(call => call.path === '/api/hh/proactive/vacancy-state');
+  assert.equal(sessionCalls.length, 1);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].options.headers['X-CSRF-Token'], csrfToken);
+  assert.ok(!('token' in JSON.parse(writes[0].options.body)));
 });
