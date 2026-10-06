@@ -29,8 +29,13 @@ errors and key conflicts are reconciled through a fresh chat read.
 
 ## Not yet delivered
 
-- There is no browser/server route, approval intent prepare/review/resume flow,
-  or production permission wiring for `recruiting.assignment.material.send`.
+- The private BFF now has server-only CP prepare/consume client calls and an
+  encrypted, session/profile-bound approval handle with stable consume recovery.
+  The returned approval URL is restricted to the configured CP issuer.
+- These methods are not yet wired to assignment HTTP handlers or a browser
+  prepare → review → resume flow. The send scope is vocabulary and an opt-in
+  re-auth request only; no profile membership or production grant is added.
+- There is no browser/server route or agreement-confirmation UI.
 - Proposal creation is not implemented as an independently approved HH write.
 - The UI for selecting and explicitly confirming the applicant agreement
   message is not implemented; the function requires that confirmation as a

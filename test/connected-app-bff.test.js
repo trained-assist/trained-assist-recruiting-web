@@ -15,7 +15,7 @@ const claims = { active: true, iss: issuer, aud: 'recruiting-web', sub: 'user_de
   profileId: 'profile_demo_001', sessionId: 'session_demo_001', nbf: now / 1000 - 1,
   exp: now / 1000 + 300, scopes: ['recruiting.responses.read'] };
 
-async function fixture(t) {
+async function fixture(t, approvalClient = null) {
   let current = { ...claims };
   let exchangeCalls = 0;
   let readCalls = 0;
@@ -29,7 +29,7 @@ async function fixture(t) {
       assert.equal(callback, redirectUri);
       return { token, expiresAt: now / 1000 + 300 };
     },
-    introspectToken: async offered => offered === token ? current : { active: false },
+    introspectToken: async offered => offered === token ? current : { active: false }, approvalClient,
     scopes: ['recruiting.responses.read'] });
   const server = createRecruitingServer({ connectedAppBff: bff,
     liveResponseRead: async context => { readCalls++; return { status: 200, body: { profileId: context.profileId } }; },
@@ -38,11 +38,14 @@ async function fixture(t) {
   t.after(() => new Promise(resolve => server.close(resolve)));
   const base = `http://127.0.0.1:${server.address().port}`;
   return { base, setClaims: value => { current = value; },
-    get exchangeCalls() { return exchangeCalls; }, get readCalls() { return readCalls; } };
+    get exchangeCalls() { return exchangeCalls; }, get readCalls() { return readCalls; }, bff };
 }
 const getCookie = (response, name) => response.headers.getSetCookie().find(part => part.startsWith(`${name}=`))?.split(';')[0];
-async function start(base, from = 'responses') {
-  const response = await fetch(`${base}/auth/connected/start?from=${from}`, { redirect: 'manual' });
+async function start(base, from = 'responses', vacancyId = null, negotiationId = null) {
+  const url = new URL(`${base}/auth/connected/start`); url.searchParams.set('from', from);
+  if (vacancyId !== null) url.searchParams.set('vacancy_id', vacancyId);
+  if (negotiationId !== null) url.searchParams.set('negotiation_id', negotiationId);
+  const response = await fetch(url, { redirect: 'manual' });
   assert.equal(response.status, 303);
   const authorize = new URL(response.headers.get('location'));
   assert.equal(`${authorize.origin}${authorize.pathname}`, `${issuer}/v1/connected-app-sessions/authorize`);
@@ -268,4 +271,112 @@ test('CP client exchanges code and introspects with its server-side service cred
     serviceKey: 'app-service-secret-at-least-thirty-two-characters',
     fetcher: async () => new Response(null, { status: 503 }) });
   await assert.rejects(() => unavailable.introspectToken(token), /connected_app_introspection_unavailable/);
+});
+
+test('CP approval client sends exact prepare/consume payloads with server credential and rejects redirects', async () => {
+  const calls = [];
+  const client = createControlPlaneConnectedAppClient({ issuer, allowedIssuerOrigins: [issuer],
+    serviceKey: 'app-service-secret-at-least-thirty-two-characters', fetcher: async (url, options) => {
+      calls.push({ url, options });
+      return new Response(JSON.stringify(url.endsWith('/prepare')
+        ? { intentId: 'd'.repeat(64), approvalUrl: `${issuer}/v1/connected-app-approvals/review?intent=${'d'.repeat(64)}`, expiresAt: now / 1000 + 300 }
+        : { version: 1, receipt: { receiptId: 'c'.repeat(64) } }), { status: 201 });
+    } });
+  const operation = { vacancyId: 'vac_demo_001', negotiationId: 'neg_demo_001', chatId: 'chat_demo_001',
+    sourceSha256: 'a'.repeat(64), savedPlanRevisionSha256: 'b'.repeat(64), materialSha256: 'c'.repeat(64),
+    agreementMessageId: 'msg_agreement_001', message: 'Exact message' };
+  const prepared = await client.prepareApproval({ appToken: token, command: 'recruiting.assignment.material.send',
+    sourceRevision: 'b'.repeat(64), operation });
+  assert.equal(prepared.intentId, 'd'.repeat(64));
+  const consumed = await client.consumeApproval({ appToken: token, command: 'recruiting.assignment.material.send',
+    sourceRevision: 'b'.repeat(64), operation, intentId: 'd'.repeat(64), consumerRequestId: 'request_A' });
+  assert.equal(consumed.receipt.receiptId, 'c'.repeat(64));
+  assert.deepEqual(calls.map(call => call.url), [
+    `${issuer}/v1/connected-app-approvals/prepare`, `${issuer}/v1/connected-app-approvals/consume`]);
+  assert.deepEqual(JSON.parse(calls[0].options.body), { appToken: token, audience: 'recruiting-web',
+    command: 'recruiting.assignment.material.send', sourceRevision: 'b'.repeat(64), operation });
+  assert.equal(JSON.parse(calls[1].options.body).consumerRequestId, 'request_A');
+  assert.ok(calls.every(call => call.options.headers.authorization.startsWith('Bearer app-service-secret-')));
+  assert.ok(calls.every(call => call.options.redirect === 'manual'));
+  const redirected = createControlPlaneConnectedAppClient({ issuer, allowedIssuerOrigins: [issuer],
+    serviceKey: 'app-service-secret-at-least-thirty-two-characters',
+    fetcher: async () => new Response(null, { status: 302, headers: { location: 'https://evil.invalid/' } }) });
+  await assert.rejects(() => redirected.prepareApproval({ appToken: token,
+    command: 'recruiting.assignment.material.send', sourceRevision: 'b'.repeat(64), operation }),
+  /connected_app_approval_unavailable/);
+});
+
+test('CP assignment approval round trip keeps app token server-side and binds one pending handle to session/profile', async t => {
+  const op = { profileId: claims.profileId, vacancyId: 'vac_demo_001', negotiationId: 'neg_demo_001',
+    chatId: 'chat_demo_001', agreementMessageId: 'msg_agreement_001', sourceSha256: 'a'.repeat(64),
+    savedPlanRevisionSha256: 'b'.repeat(64), message: 'Exact approved task',
+    materialSha256: createHash('sha256').update('Exact approved task').digest('hex') };
+  const cpOperation = { vacancyId: op.vacancyId, negotiationId: op.negotiationId, chatId: op.chatId,
+    sourceSha256: op.sourceSha256, savedPlanRevisionSha256: op.savedPlanRevisionSha256,
+    materialSha256: op.materialSha256, agreementMessageId: op.agreementMessageId, message: op.message };
+  const canonical = Object.fromEntries(Object.entries(cpOperation).sort(([a], [b]) => a.localeCompare(b)));
+  const requestHash = createHash('sha256').update(JSON.stringify({ audience: 'recruiting-web', clientId: 'recruiting-web',
+    commandId: 'recruiting.assignment.material.send', operation: canonical,
+    sourceRevision: op.savedPlanRevisionSha256 })).digest('hex');
+  const receipt = { receiptId: 'c'.repeat(64), audience: 'recruiting-web', clientId: 'recruiting-web',
+    command: 'recruiting.assignment.material.send', requestHash, sourceRevision: op.savedPlanRevisionSha256,
+    principalId: claims.sub, profileId: claims.profileId, approvedAt: now / 1000 - 1,
+    consumedAt: now / 1000, operation: cpOperation };
+  const calls = [];
+  const approvalClient = {
+    async prepareApproval(input) { calls.push({ kind: 'prepare', input }); return {
+      intentId: 'd'.repeat(64), approvalUrl: `${issuer}/v1/connected-app-approvals/review?intent=${'d'.repeat(64)}`,
+      expiresAt: now / 1000 + 300 }; },
+    async consumeApproval(input) { calls.push({ kind: 'consume', input }); return { version: 1, receipt }; }
+  };
+  const f = await fixture(t, approvalClient);
+  f.setClaims({ ...claims, scopes: ['recruiting.assignment.material.send', 'recruiting.responses.conversation.open'] });
+  const { authorize, pendingCookie } = await start(f.base, 'assignment-send', 'vac_demo_001', 'neg_demo_001');
+  assert.equal(authorize.searchParams.get('scope'),
+    'recruiting.assignment.material.send recruiting.responses.conversation.open');
+  const login = await callback(f.base, authorize.searchParams.get('state'), pendingCookie);
+  assert.equal(login.status, 303);
+  assert.equal(login.headers.get('location'), `${publicOrigin}/hh/assignment/send?vacancy_id=vac_demo_001&negotiation_id=neg_demo_001`);
+  const appCookie = getCookie(login, '__Host-recruiting-app-session');
+  const visible = await (await fetch(`${f.base}/auth/connected/session`, { headers: { cookie: appCookie } })).json();
+  const req = { method: 'POST', headers: { cookie: appCookie, origin: publicOrigin, 'x-csrf-token': visible.csrfToken } };
+  const missingCsrf = await f.bff.prepareApprovalIntent({ method: 'POST', headers: { cookie: appCookie, origin: publicOrigin } }, op);
+  assert.equal(missingCsrf.status, 401);
+  assert.equal(calls.length, 0, 'missing CSRF never creates a CP approval intent');
+  const prepared = await f.bff.prepareApprovalIntent(req, op);
+  assert.equal(prepared.status, 201);
+  assert.match(prepared.body.approvalHandle, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(prepared.body.approvalUrl, `${issuer}/v1/connected-app-approvals/review?intent=${'d'.repeat(64)}`);
+  assert.equal(JSON.stringify(prepared).includes(token), false);
+  assert.equal(calls[0].input.appToken, token, 'CP receives app token only from server BFF state');
+  assert.deepEqual(calls[0].input.operation, cpOperation);
+  const consumed = await f.bff.consumeApprovalIntent(req, prepared.body.approvalHandle);
+  assert.deepEqual(consumed, { status: 200, body: { receipt } });
+  assert.equal(calls[1].input.intentId, 'd'.repeat(64));
+  assert.match(calls[1].input.consumerRequestId, /^[0-9a-f-]{36}$/);
+  assert.deepEqual(calls[1].input.operation, cpOperation);
+  assert.deepEqual(await f.bff.consumeApprovalIntent(req, prepared.body.approvalHandle), consumed);
+  assert.equal(calls.filter(call => call.kind === 'consume').length, 1, 'local receipt recovery is stable');
+  const switched = { ...claims, profileId: 'profile_other_003', scopes: ['recruiting.assignment.material.send'] };
+  f.setClaims(switched);
+  assert.equal((await f.bff.consumeApprovalIntent(req, prepared.body.approvalHandle)).status, 401);
+  assert.equal(calls.filter(call => call.kind === 'consume').length, 1);
+});
+
+test('CP approval URLs outside the configured issuer fail closed', async t => {
+  const approvalClient = { prepareApproval: async () => ({ intentId: 'd'.repeat(64),
+    approvalUrl: 'https://attacker.example/review?intent=' + 'd'.repeat(64), expiresAt: now / 1000 + 300 }),
+    consumeApproval: async () => { throw new Error('must not consume'); } };
+  const f = await fixture(t, approvalClient);
+  f.setClaims({ ...claims, scopes: ['recruiting.assignment.material.send', 'recruiting.responses.conversation.open'] });
+  const { authorize, pendingCookie } = await start(f.base, 'assignment-send', 'vac_demo_001', 'neg_demo_001');
+  const login = await callback(f.base, authorize.searchParams.get('state'), pendingCookie);
+  const appCookie = getCookie(login, '__Host-recruiting-app-session');
+  const visible = await (await fetch(`${f.base}/auth/connected/session`, { headers: { cookie: appCookie } })).json();
+  const req = { method: 'POST', headers: { cookie: appCookie, origin: publicOrigin, 'x-csrf-token': visible.csrfToken } };
+  const op = { profileId: claims.profileId, vacancyId: 'vac_demo_001', negotiationId: 'neg_demo_001',
+    chatId: 'chat_demo_001', agreementMessageId: 'msg_agreement_001', sourceSha256: 'a'.repeat(64),
+    savedPlanRevisionSha256: 'b'.repeat(64), message: 'Exact approved task',
+    materialSha256: createHash('sha256').update('Exact approved task').digest('hex') };
+  await assert.rejects(() => f.bff.prepareApprovalIntent(req, op), /connected_app_approval_unavailable/);
 });

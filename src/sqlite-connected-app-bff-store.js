@@ -40,6 +40,16 @@ export class SqliteConnectedAppBffStore {
     this.get = this.db.prepare('SELECT expires_at,sealed FROM connected_bff_record WHERE kind=? AND handle_hash=?');
     this.delete = this.db.prepare('DELETE FROM connected_bff_record WHERE kind=? AND handle_hash=?');
     this.pruneStatement = this.db.prepare('DELETE FROM connected_bff_record WHERE expires_at <= ?');
+    this.db.exec(`CREATE TABLE IF NOT EXISTS connected_bff_approval (
+      handle_hash TEXT PRIMARY KEY,
+      expires_at INTEGER NOT NULL,
+      sealed TEXT NOT NULL
+    )`);
+    this.putApprovalRecord = this.db.prepare(`INSERT INTO connected_bff_approval(handle_hash,expires_at,sealed)
+      VALUES (?,?,?) ON CONFLICT(handle_hash) DO UPDATE SET expires_at=excluded.expires_at,sealed=excluded.sealed`);
+    this.getApprovalRecord = this.db.prepare('SELECT expires_at,sealed FROM connected_bff_approval WHERE handle_hash=?');
+    this.deleteApprovalRecord = this.db.prepare('DELETE FROM connected_bff_approval WHERE handle_hash=?');
+    this.pruneApprovals = this.db.prepare('DELETE FROM connected_bff_approval WHERE expires_at<=?');
   }
 
   close() { this.db.close(); this.key.fill(0); }
@@ -93,5 +103,21 @@ export class SqliteConnectedAppBffStore {
 
   async deleteSession(handleHash) {
     if (digest(handleHash)) this.delete.run('session', handleHash);
+  }
+
+  async putApproval(handleHash, value) {
+    if (!digest(handleHash) || !Number.isSafeInteger(value?.expiresAt) || value.expiresAt * 1000 <= this.clock())
+      throw new TypeError('invalid_bff_approval');
+    this.prune(); this.pruneApprovals.run(this.clock());
+    this.putApprovalRecord.run(handleHash, value.expiresAt * 1000,
+      this.seal('approval', handleHash, value));
+  }
+
+  async getApproval(handleHash) {
+    if (!digest(handleHash)) return null;
+    const row = this.getApprovalRecord.get(handleHash);
+    if (!row) return null;
+    if (row.expires_at <= this.clock()) { this.deleteApprovalRecord.run(handleHash); return null; }
+    return this.open('approval', handleHash, row.sealed);
   }
 }
