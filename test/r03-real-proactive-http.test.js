@@ -10,6 +10,8 @@ import { REAL_HH_RESULT_VERSION, SqliteRealHhCandidateState } from '../src/sqlit
 import { SqliteRealHhManualRuns } from '../src/sqlite-real-hh-manual-runs.js';
 import { createR03AccumulatedRealFeedFromStores } from '../src/r03-accumulated-real-feed.js';
 import { createRealProactiveRead } from '../src/r03-real-proactive-read.js';
+import { SqliteColdSearchScheduleRepository } from '../src/sqlite-cold-search-schedule-repository.js';
+import { createR03RealProactiveActions } from '../src/r03-real-proactive-actions.js';
 
 const vacancyId = 'vacancy_synthetic_real_001';
 const profileId = 'profile_synthetic_real_001';
@@ -93,7 +95,8 @@ test('durable manual receipt, assessment, HTTP page/API and MCP domain read shar
   const manualRuns = new SqliteRealHhManualRuns({ filename, isVacancyOwned: owned,
     loadSearchPlan: async () => ({ profileId, vacancyId, criteriaRevision: 'criteria_synthetic_r1',
       queryCache: { revision: 'query_synthetic_r1', queries: ['invented query'] } }), search, candidateState: state });
-  t.after(() => { manualRuns.close(); state.close(); rmSync(directory, { recursive: true, force: true }); });
+  const schedules = new SqliteColdSearchScheduleRepository(filename);
+  t.after(() => { schedules.close(); manualRuns.close(); state.close(); rmSync(directory, { recursive: true, force: true }); });
   const trusted = { profileId, scopes: ['recruiting.candidateSearch'] };
   const request = { vacancyId, criteriaRevision: 'criteria_synthetic_r1', queryRevision: 'query_synthetic_r1' };
   const first = await manualRuns.start(trusted, 'manual_key_synthetic_1', request);
@@ -105,9 +108,13 @@ test('durable manual receipt, assessment, HTTP page/API and MCP domain read shar
     candidateId: pending.candidate.id, inputRevision: pending.inputRevision,
     assessment: { atsScore: 8, atsTag: 'PASS', knockout: { status: 'passed', criteria: [] } },
     assessedAt: '2026-10-06T06:05:00.000Z' }).kind, 'written');
-  const feed = createR03AccumulatedRealFeedFromStores({ scheduleRepository: { listOccurrences: () => [] },
+  const feed = createR03AccumulatedRealFeedFromStores({ scheduleRepository: schedules,
     candidateState: state, manualRuns });
+  const actions = createR03RealProactiveActions({ scheduleRepository: schedules, manualRuns, feed,
+    loadSearchPlan: async () => ({ profileId, vacancyId, criteriaRevision: 'criteria_synthetic_r1',
+      queryCache: { revision: 'query_synthetic_r1', queries: ['invented query'] } }), isVacancyOwned: owned });
   const base = await started(t, { realProactiveFeed: feed,
+    realProactiveActions: actions,
     resolveTrustedProfileContext: req => req.headers['x-test-principal'] === profileId ? trusted : null,
     resolveRealVacancyOwnership: (context, vacancy) => owned(context.profileId, vacancy) });
   const apiPath = `/api/hh/proactive/candidates?vacancy_id=${vacancyId}`;
@@ -118,6 +125,20 @@ test('durable manual receipt, assessment, HTTP page/API and MCP domain read shar
   assert.deepEqual((await mcpRead(trusted, vacancyId)).value, api, 'MCP-facing domain operation and HTTP share one projection');
   assert.equal((await mcpRead({ profileId, scopes: [] }, vacancyId)).kind, 'denied');
   assert.match(await (await fetch(base + `/hh/proactive?vacancy_id=${vacancyId}`, { headers })).text(), /ATS: 8/);
+  const post = (path, body, key = null) => fetch(base + path, { method: 'POST', headers: { ...headers,
+    'Content-Type': 'application/json', ...(key ? { 'Idempotency-Key': key } : {}) }, body: JSON.stringify(body) });
+  assert.equal((await post('/api/hh/proactive/vacancy-state', { vacancy_id: vacancyId, action: 'enable', interval_hours: 24 })).status, 200);
+  assert.equal((await (await fetch(base + `/api/hh/proactive/schedule?vacancy_id=${vacancyId}`, { headers })).json()).schedules.length, 1);
+  assert.equal((await (await fetch(base + `/api/hh/proactive/occurrences?vacancy_id=${vacancyId}`, { headers })).json()).occurrences.length, 0);
+  assert.equal((await post('/api/hh/proactive/comment', { vacancy_id: vacancyId, candidate_id: mapped(1).id,
+    expected_revision: 0, comment: 'Вымышленная заметка', exclude_from_search: true })).status, 200);
+  assert.equal((await post('/api/hh/proactive/set-status', { vacancy_id: vacancyId, candidate_id: mapped(1).id,
+    expected_revision: 1, status: 'starred' })).status, 200);
+  assert.equal((await post('/api/hh/proactive/set-status', { vacancy_id: vacancyId, candidate_id: mapped(1).id,
+    expected_revision: 0, status: 'archived' })).status, 409);
+  const reviewed = await (await fetch(base + apiPath, { headers })).json();
+  assert.equal(reviewed.candidates[0].review.status, 'starred');
+  assert.equal(reviewed.candidates[0].comment, 'Вымышленная заметка');
   const second = await manualRuns.start(trusted, 'manual_key_synthetic_2', request);
   for (let i = 0; i < 30 && manualRuns.get(trusted, second.run.runId).run.status === 'running'; i++)
     await new Promise(resolve => setImmediate(resolve));
@@ -125,4 +146,12 @@ test('durable manual receipt, assessment, HTTP page/API and MCP domain read shar
   const afterUnknown = await (await fetch(base + apiPath, { headers })).json();
   assert.equal(afterUnknown.total, 1);
   assert.equal(afterUnknown.candidates[0].id, mapped(1).id);
+  assert.equal((await (await fetch(base + `/api/hh/proactive/manual-runs/${second.run.runId}`, { headers })).json()).run.status, 'outcome_unknown');
+  const thirdResponse = await post('/api/hh/proactive/search', { vacancy_id: vacancyId }, 'manual_key_synthetic_3');
+  assert.equal(thirdResponse.status, 202);
+  const third = (await thirdResponse.json()).run;
+  for (let i = 0; i < 30 && manualRuns.get(trusted, third.runId).run.status === 'running'; i++)
+    await new Promise(resolve => setImmediate(resolve));
+  assert.equal((await (await fetch(base + `/api/hh/proactive/manual-runs/${third.runId}`, { headers })).json()).run.status, 'completed');
+  assert.equal((await (await fetch(base + apiPath, { headers })).json()).total, 2);
 });
