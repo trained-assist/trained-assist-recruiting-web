@@ -211,7 +211,30 @@ export function createAcceptedReportDrafts({ sourceRead, store, clock = () => ne
 export function createMemoryAcceptedReportDraftStore() {
   const byRef = new Map(); const byKey = new Map();
   const policies = new Map();
+  const instructionRecords = new Map();
+  const instructionKey = (profileId, scopeType, scopeId) => JSON.stringify([profileId, scopeType, scopeId]);
   return {
+    getReportInstructions(profileId, scopeType, scopeId) {
+      const record = instructionRecords.get(instructionKey(profileId, scopeType, scopeId));
+      return record ? structuredClone(record) : null;
+    },
+    replaceReportInstructions({ profileId, scopeType, scopeId, expectedRevision, record }) {
+      const key = instructionKey(profileId, scopeType, scopeId);
+      const current = instructionRecords.get(key) ?? null;
+      const revision = current?.revision ?? 0;
+      if (revision !== expectedRevision) return { kind: 'stale_instructions', record: current && structuredClone(current) };
+      if (current && JSON.stringify(current.instructions) === JSON.stringify(record.instructions))
+        return { kind: 'existing', record: structuredClone(current) };
+      const historyEntry = { revision: revision + 1, updatedAt: record.updatedAt,
+        instructions: structuredClone(record.instructions) };
+      const next = { ...structuredClone(record), revision: revision + 1,
+        history: [...(current?.history ?? []), historyEntry].slice(-100),
+        audit: [...(current?.audit ?? []), { action: 'instructions_updated', revision: revision + 1,
+          actorProfileId: profileId, at: record.updatedAt, counts: Object.fromEntries(
+            Object.entries(record.instructions).map(([field, items]) => [field, items.length])) }].slice(-100) };
+      instructionRecords.set(key, next);
+      return { kind: 'updated', record: structuredClone(next) };
+    },
     getPolicy(profileId, candidateId, vacancyId) {
       const value = policies.get(JSON.stringify([profileId, candidateId, vacancyId]));
       return value ? structuredClone(value) : null;

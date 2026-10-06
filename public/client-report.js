@@ -17,12 +17,24 @@ const requestChangesButton = document.querySelector('#request-changes');
 const policyListNode = document.querySelector('#policy-list');
 const policyPhraseNode = document.querySelector('#policy-phrase');
 const addPolicyPhraseButton = document.querySelector('#add-policy-phrase');
+const instructionSection = document.querySelector('#instructions-section');
+const instructionScopeNode = document.querySelector('#instruction-scope');
+const instructionIncludeNode = document.querySelector('#instruction-include');
+const instructionStyleNode = document.querySelector('#instruction-style');
+const instructionRecruiterNode = document.querySelector('#instruction-recruiter');
+const instructionSummaryNode = document.querySelector('#effective-instructions');
+const instructionStatusNode = document.querySelector('#instructions-status');
+const instructionHistoryNode = document.querySelector('#instruction-history-list');
+const saveInstructionsButton = document.querySelector('#save-instructions');
 const params = new URLSearchParams(location.search);
 const candidateId = params.get('candidate_id');
 const vacancyId = params.get('vacancy_id');
 const sourceKind = params.get('source_kind') ?? 'accepted_cold_search';
 let report = null;
 let policy = null;
+let reportInstructions = null;
+let displayedInstructionScope = null;
+const instructionDrafts = new Map();
 let csrfToken = null;
 
 function showStatus(text) { statusNode.textContent = text; }
@@ -53,6 +65,101 @@ function renderPolicy() {
     const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = 'Убрать';
     remove.addEventListener('click', () => savePolicy(policy.forbiddenPhrases.filter((_, i) => i !== index)));
     item.append(remove); policyListNode.append(item);
+  }
+}
+
+const instructionFields = [
+  ['includeGuidance', instructionIncludeNode], ['styleGuidance', instructionStyleNode],
+  ['recruiterNotes', instructionRecruiterNode],
+];
+const scopeTitles = { profile: 'Профиль', vacancy: 'Вакансия', candidate: 'Кандидат', report_version: 'Версия отчёта' };
+function lines(value) { return value.split('\n').map(item => item.trim()).filter(Boolean); }
+function renderEffectiveInstructions() {
+  instructionSummaryNode.replaceChildren();
+  const shown = reportInstructions?.provenance ?? [];
+  if (!shown.length) { instructionSummaryNode.textContent = 'Для выбранных областей сохранённых инструкций пока нет.'; return; }
+  for (const entry of shown) {
+    const row = document.createElement('p');
+    const source = `${scopeTitles[entry.scopeType]} · ревизия ${entry.revision}`;
+    row.textContent = `${source}: ${entry.text}`;
+    instructionSummaryNode.append(row);
+  }
+}
+function renderInstructionEditor() {
+  displayedInstructionScope = instructionScopeNode.value;
+  const scope = reportInstructions?.scopes.find(item => item.scopeType === instructionScopeNode.value);
+  const value = instructionDrafts.get(instructionScopeNode.value) ?? scope?.instructions ??
+    { includeGuidance: [], styleGuidance: [], recruiterNotes: [] };
+  for (const [key, node] of instructionFields) node.value = value[key].join('\n');
+  instructionHistoryNode.replaceChildren();
+  const history = (scope?.history ?? []).slice(-10).reverse();
+  for (const entry of history) {
+    const row = document.createElement('li');
+    const detail = document.createElement('details');
+    const summary = document.createElement('summary');
+    summary.textContent = `Ревизия ${entry.revision} · ${entry.updatedAt}`; detail.append(summary);
+    for (const [key, node] of instructionFields) {
+      if (!entry.instructions[key].length) continue;
+      const heading = document.createElement('h4'); heading.textContent = key === 'includeGuidance' ? 'Что включать'
+        : key === 'styleGuidance' ? 'Стиль' : 'Заметки рекрутера'; detail.append(heading);
+      const list = document.createElement('ul');
+      for (const text of entry.instructions[key]) { const item = document.createElement('li'); item.textContent = text; list.append(item); }
+      detail.append(list);
+    }
+    row.append(detail); instructionHistoryNode.append(row);
+  }
+  saveInstructionsButton.disabled = false;
+}
+function storeCurrentInstructionDraft() {
+  if (!reportInstructions || !displayedInstructionScope) return;
+  instructionDrafts.set(displayedInstructionScope,
+    Object.fromEntries(instructionFields.map(([key, node]) => [key, lines(node.value)])));
+}
+async function loadReportInstructions() {
+  instructionSection.hidden = false;
+  instructionStatusNode.textContent = 'Загружаю инструкции по выбранному профилю, вакансии и кандидату…';
+  saveInstructionsButton.disabled = true;
+  const query = new URLSearchParams({ candidateId, vacancyId, sourceKind,
+    reportRef: report.reportRef, reportRevision: report.reportRevision });
+  const response = await request(`/api/v1/ui/accepted-report-instructions?${query}`);
+  const result = await response.json();
+  if (!response.ok) throw new Error(result?.error ?? 'report_instructions_unavailable');
+  reportInstructions = result;
+  renderEffectiveInstructions();
+  renderInstructionEditor();
+  instructionStatusNode.textContent = 'Инструкции загружены. Профиль → вакансия → кандидат → версия отчёта.';
+}
+
+async function saveReportInstructions() {
+  if (!report || !reportInstructions) return;
+  const scopeType = instructionScopeNode.value;
+  const scope = reportInstructions.scopes.find(item => item.scopeType === scopeType);
+  const instructions = Object.fromEntries(instructionFields.map(([key, node]) => [key, lines(node.value)]));
+  const totalLength = Object.values(instructions).flat().reduce((total, item) => total + item.length, 0);
+  if (Object.values(instructions).some(list => list.length > 30 || list.some(item => item.length > 1000)) || totalLength > 8000) {
+    instructionStatusNode.textContent = 'Не больше 30 строк в каждом разделе, до 1000 символов на строку и до 8000 символов на область.'; return;
+  }
+  saveInstructionsButton.disabled = true;
+  instructionStatusNode.textContent = 'Сохраняю новую ревизию…';
+  try {
+    const response = await request('/api/v1/ui/accepted-report-instructions', { method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ candidateId, vacancyId, sourceKind, scopeType,
+        expectedRevision: scope.revision, instructions,
+        ...(scopeType === 'report_version' ? { reportRef: report.reportRef, reportRevision: report.reportRevision } : {}) }) });
+    const result = await response.json();
+    if (!response.ok) {
+      instructionStatusNode.textContent = result?.error === 'stale_report_instructions'
+        ? 'Инструкции изменились в другой вкладке. Перезагрузите страницу.'
+        : `Не удалось сохранить инструкции (${response.status}).`;
+      saveInstructionsButton.disabled = false; return;
+    }
+    instructionDrafts.delete(scopeType);
+    await loadReportInstructions();
+    instructionStatusNode.textContent = 'Инструкции сохранены; предыдущие ревизии доступны в истории выбранной области.';
+  } catch {
+    instructionStatusNode.textContent = 'Связь недоступна. Инструкции не сохранены.';
+    saveInstructionsButton.disabled = false;
   }
 }
 
@@ -191,6 +298,8 @@ async function load() {
     });
     report = await createResponse.json();
     if (!createResponse.ok) { showStatus(reportError(createResponse, report)); return; }
+    try { await loadReportInstructions(); }
+    catch { instructionSection.hidden = false; instructionStatusNode.textContent = 'Не удалось загрузить инструкции. Проверьте соединение перед оформлением отчёта.'; }
     if (!await refreshPreview()) return;
     renderEditor(report.clientFields);
     setEditorEnabled(report.reviewState !== 'approved');
@@ -281,5 +390,10 @@ saveEditsButton.addEventListener('click', async () => {
     showStatus('Изменения сохранены. Просмотрите обновлённый клиентский вид перед внутренним подтверждением.');
   } catch { showStatus('Не удалось сохранить правки. Черновик остался приватным.'); saveEditsButton.disabled = false; }
 });
+instructionScopeNode.addEventListener('change', () => { storeCurrentInstructionDraft(); renderInstructionEditor(); });
+for (const [, node] of instructionFields) node.addEventListener('input', () => {
+  storeCurrentInstructionDraft(); saveInstructionsButton.disabled = false;
+});
+saveInstructionsButton.addEventListener('click', saveReportInstructions);
 
 load();

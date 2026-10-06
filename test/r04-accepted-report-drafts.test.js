@@ -114,6 +114,8 @@ test('accepted report UI uses real BFF handlers, profile-owned source, private d
   assert.match(page.headers.get('content-security-policy'), /frame-ancestors 'none'/);
   const reportPageHtml = await page.text();
   assert.match(reportPageHtml, /Черновик отчёта кандидата/);
+  assert.match(reportPageHtml, /Сохранённые инструкции к отчётам/);
+  assert.match(reportPageHtml, /автоматическая генерация текста пока не подключена/);
   assert.match(reportPageHtml, /Кратко о кандидате/);
   assert.match(reportPageHtml, /Соответствие требованиям вакансии/);
   assert.match(reportPageHtml, /Вывод рекрутера/);
@@ -289,11 +291,17 @@ test('SQLite report drafts survive restart, encrypt candidate fields at rest, an
     { ...request, expectedPolicyRevision: 1 });
   assert.equal(created.kind, 'created');
   const ref = created.report.reportRef;
+  const instructionText = 'Encrypt this private recruiter instruction.';
+  const instructionRecord = { profileId: profileOne, scopeType: 'profile', scopeId: profileOne,
+    revision: 1, updatedAt: nowDate.toISOString(), actorProfileId: profileOne,
+    instructions: { includeGuidance: [instructionText], styleGuidance: [], recruiterNotes: [] } };
+  assert.equal(firstStore.replaceReportInstructions({ profileId: profileOne, scopeType: 'profile', scopeId: profileOne,
+    expectedRevision: 0, record: instructionRecord }).kind, 'updated');
   firstStore.close();
   const mode = (await stat(filename)).mode & 0o777;
   assert.equal(mode, 0o600);
   const bytes = await readFile(filename);
-  for (const privateText of ['Synthetic Candidate', 'INTERNAL_PRIVATE_COMMENT', 'candidate@example.invalid', 'ATS_CONTEXT_PRIVATE', 'private promise'])
+  for (const privateText of ['Synthetic Candidate', 'INTERNAL_PRIVATE_COMMENT', 'candidate@example.invalid', 'ATS_CONTEXT_PRIVATE', 'private promise', instructionText])
     assert.equal(bytes.includes(Buffer.from(privateText)), false, `${privateText} is encrypted or excluded at rest`);
 
   const secondStore = new SqliteAcceptedReportDraftStore({ filename, encryptionKey: key });
@@ -305,6 +313,13 @@ test('SQLite report drafts survive restart, encrypt candidate fields at rest, an
   assert.deepEqual(loadedPolicy.forbiddenPhrases, ['private promise']);
   assert.equal(loadedPolicy.audit.length, 1);
   assert.equal(secondStore.getPolicy(profileTwo, candidateId, vacancyId), null);
+  const loadedInstructions = secondStore.getReportInstructions(profileOne, 'profile', profileOne);
+  assert.equal(loadedInstructions.revision, 1);
+  assert.deepEqual(loadedInstructions.instructions.includeGuidance, [instructionText]);
+  assert.equal(secondStore.getReportInstructions(profileTwo, 'profile', profileTwo), null);
+  const staleInstructions = secondStore.replaceReportInstructions({ profileId: profileOne, scopeType: 'profile', scopeId: profileOne,
+    expectedRevision: 0, record: { ...instructionRecord, revision: 1, instructions: { includeGuidance: [], styleGuidance: [], recruiterNotes: [] } } });
+  assert.equal(staleInstructions.kind, 'stale_instructions');
   const loaded = await secondDomain.get(context, ref);
   assert.equal(loaded.kind, 'found');
   assert.equal(loaded.report.sourceRevision, sourceRevision);
@@ -341,6 +356,126 @@ test('SQLite report drafts survive restart, encrypt candidate fields at rest, an
 
   revision = 'c'.repeat(64);
   assert.equal((await secondDomain.preview(context, ref)).kind, 'stale_source');
+});
+
+test('scoped report instructions use real authenticated handlers, ordered provenance and durable profile isolation', async t => {
+  const store = createMemoryAcceptedReportDraftStore();
+  const sourceRead = async context => context.profileId === profileOne
+    ? { status: 200, body: { ...structuredClone(sourceBase), profileId: context.profileId } }
+    : { status: 404, body: { error: 'not_found' } };
+  const bff = createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins: [issuer], publicOrigin,
+    redirectUri: `${publicOrigin}/auth/connected/callback`, store: createMemoryConnectedAppBffStore(),
+    clock: () => now, exchangeCode: async ({ code }) => ({ token: code, expiresAt: now / 1000 + 300 }),
+    introspectToken: async token => claimsFor(token) });
+  const server = createRecruitingServer({ connectedAppBff: bff, acceptedReportSourceRead: sourceRead,
+    acceptedReportDraftStore: store });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const connected = await connect(base);
+  const query = new URLSearchParams({ candidateId, vacancyId, sourceKind: 'accepted_cold_search' });
+  const url = `${base}/api/v1/ui/accepted-report-instructions?${query}`;
+  const initialResponse = await fetch(url, { headers: { cookie: connected.cookie } });
+  assert.equal(initialResponse.status, 200);
+  const initial = await initialResponse.json();
+  assert.deepEqual(initial.scopes.map(item => item.scopeType), ['profile', 'vacancy', 'candidate']);
+  assert.equal('scopeId' in initial.scopes[0], false, 'profile identity is derived from trusted context, not sent back');
+  assert.deepEqual(initial.effective, { includeGuidance: [], styleGuidance: [], recruiterNotes: [] });
+  const responseSchema = JSON.parse(await readFile(new URL('../contracts/v1-accepted-report-instructions.schema.json', import.meta.url), 'utf8'));
+  const validateResponse = new Ajv2020().compile(responseSchema);
+  assert.equal(validateResponse(initial), true, JSON.stringify(validateResponse.errors));
+  const updateSchema = JSON.parse(await readFile(new URL('../contracts/v1-accepted-report-instructions-update.schema.json', import.meta.url), 'utf8'));
+  const validateUpdate = new Ajv2020().compile(updateSchema);
+  const validUpdate = { candidateId, vacancyId, sourceKind: 'accepted_cold_search', scopeType: 'profile',
+    expectedRevision: 0, instructions: { includeGuidance: [], styleGuidance: [], recruiterNotes: [] } };
+  assert.equal(validateUpdate(validUpdate), true, JSON.stringify(validateUpdate.errors));
+  assert.equal(validateUpdate({ ...validUpdate, reportRef: 'report_0123456789abcdef0123456789abcdef' }), false);
+  assert.equal(validateUpdate({ ...validUpdate, scopeType: 'report_version',
+    reportRef: 'report_0123456789abcdef0123456789abcdef', reportRevision: 'report-r1' }), true);
+  assert.equal(validateUpdate({ ...validUpdate, scopeType: 'report_version',
+    reportRef: 'report_0123456789abcdef0123456789abcdef' }), false);
+
+  const put = async (scopeType, expectedRevision, instructions, reportRef, reportRevision) => fetch(`${base}/api/v1/ui/accepted-report-instructions`, {
+    method: 'PUT', headers: { cookie: connected.cookie, origin: publicOrigin, 'x-csrf-token': connected.csrfToken,
+      'content-type': 'application/json' }, body: JSON.stringify({ candidateId, vacancyId,
+      sourceKind: 'accepted_cold_search', scopeType, expectedRevision, instructions,
+      ...(reportRef ? { reportRef, reportRevision } : {}) })
+  });
+  const profileInstructions = { includeGuidance: ['Include only confirmed results.'],
+    styleGuidance: ['Write concise Russian prose.'], recruiterNotes: ['Private recruiter note.'] };
+  const profileWrite = await put('profile', 0, profileInstructions);
+  assert.equal(profileWrite.status, 200);
+  const profileRecord = await profileWrite.json();
+  assert.equal(profileRecord.scopeType, 'profile');
+  assert.equal('scopeId' in profileRecord, false);
+  const revisedProfileWrite = await put('profile', 1, { includeGuidance: ['Include confirmed results.'],
+    styleGuidance: ['Write concise Russian prose.'], recruiterNotes: ['Private recruiter note.'] });
+  assert.equal(revisedProfileWrite.status, 200);
+  const vacancyWrite = await put('vacancy', 0, { includeGuidance: ['Mention the role-specific must-have.'],
+    styleGuidance: [], recruiterNotes: [] });
+  assert.equal(vacancyWrite.status, 200);
+  const candidateWrite = await put('candidate', 0, { includeGuidance: [], styleGuidance: [],
+    recruiterNotes: ['Recruiter note for this candidate.'] });
+  assert.equal(candidateWrite.status, 200);
+  const invalidInstructions = await put('profile', 2, { includeGuidance: ['  '], styleGuidance: [], recruiterNotes: [] });
+  assert.equal(invalidInstructions.status, 400, 'blank guidance is rejected instead of silently stored');
+  const overBudget = Array.from({ length: 9 }, (_, index) => `${index}${'x'.repeat(899)}`);
+  const oversizedInstructions = await put('profile', 2, { includeGuidance: overBudget, styleGuidance: [], recruiterNotes: [] });
+  assert.equal(oversizedInstructions.status, 400, 'per-scope storage is bounded before it can exceed the API body limit');
+  const effectiveResponse = await fetch(url, { headers: { cookie: connected.cookie } });
+  const effective = await effectiveResponse.json();
+  assert.deepEqual(effective.effective.includeGuidance, ['Include confirmed results.', 'Mention the role-specific must-have.']);
+  assert.deepEqual(effective.effective.styleGuidance, ['Write concise Russian prose.']);
+  assert.deepEqual(effective.effective.recruiterNotes, ['Private recruiter note.', 'Recruiter note for this candidate.']);
+  assert.deepEqual(effective.provenance.map(item => item.scopeType), ['profile', 'profile', 'profile', 'vacancy', 'candidate']);
+  assert.equal(effective.scopes[0].revision, 2);
+  assert.equal(effective.scopes[0].history.length, 2);
+  assert.deepEqual(effective.scopes[0].history[0].instructions.includeGuidance, ['Include only confirmed results.']);
+
+  const createDraft = await fetch(`${base}/api/v1/ui/accepted-report-drafts`, { method: 'POST',
+    headers: { cookie: connected.cookie, origin: publicOrigin, 'x-csrf-token': connected.csrfToken,
+      'content-type': 'application/json', 'Idempotency-Key': 'r04-instruction-report-001' },
+    body: JSON.stringify({ candidateId, vacancyId, sourceKind: 'accepted_cold_search', expectedSourceRevision: sourceRevision }) });
+  assert.equal(createDraft.status, 201);
+  const draft = await createDraft.json();
+  const versionInstruction = await put('report_version', 0, { includeGuidance: [], styleGuidance: ['Retain original approved wording.'],
+    recruiterNotes: [] }, draft.reportRef, draft.reportRevision);
+  assert.equal(versionInstruction.status, 200);
+  const versionQuery = new URLSearchParams({ candidateId, vacancyId, sourceKind: 'accepted_cold_search',
+    reportRef: draft.reportRef, reportRevision: draft.reportRevision });
+  const versionResponse = await fetch(`${base}/api/v1/ui/accepted-report-instructions?${versionQuery}`, { headers: { cookie: connected.cookie } });
+  const versionBody = await versionResponse.json();
+  assert.equal(versionResponse.status, 200);
+  assert.equal(versionBody.reportRef, draft.reportRef);
+  assert.equal(versionBody.reportRevision, draft.reportRevision);
+  assert.deepEqual(versionBody.scopes.map(item => item.scopeType), ['profile', 'vacancy', 'candidate', 'report_version']);
+  assert.equal(versionBody.effective.styleGuidance.at(-1), 'Retain original approved wording.');
+  assert.equal(validateResponse(versionBody), true, JSON.stringify(validateResponse.errors));
+  const reviseDraft = await fetch(`${base}/api/v1/ui/accepted-report-drafts/${draft.reportRef}/edit`, { method: 'PATCH',
+    headers: { cookie: connected.cookie, origin: publicOrigin, 'x-csrf-token': connected.csrfToken, 'content-type': 'application/json' },
+    body: JSON.stringify({ expectedReportRevision: draft.reportRevision, clientFields: { position: 'Reviewed role' } }) });
+  assert.equal(reviseDraft.status, 200);
+  const staleVersionInstructions = await fetch(`${base}/api/v1/ui/accepted-report-instructions?${versionQuery}`,
+    { headers: { cookie: connected.cookie } });
+  assert.equal(staleVersionInstructions.status, 409, 'instructions for a prior report revision cannot appear as current');
+  assert.equal((await staleVersionInstructions.json()).error, 'stale_report_revision');
+
+  const stale = await put('profile', 0, profileInstructions);
+  assert.equal(stale.status, 409);
+  assert.equal((await stale.json()).error, 'stale_report_instructions');
+  const foreign = await connect(base, 'b');
+  const foreignGet = await fetch(url, { headers: { cookie: foreign.cookie } });
+  assert.equal(foreignGet.status, 404, 'the same candidate/vacancy IDs resolve only under the matching trusted profile');
+  const unsafe = await fetch(`${base}/api/v1/ui/accepted-report-instructions`, { method: 'PUT',
+    headers: { cookie: connected.cookie, origin: publicOrigin, 'content-type': 'application/json' },
+    body: JSON.stringify({ candidateId, vacancyId, sourceKind: 'accepted_cold_search', scopeType: 'profile',
+      expectedRevision: 1, instructions: profileInstructions }) });
+  assert.equal(unsafe.status, 401, 'instruction writes require the real BFF CSRF token');
+  const duplicateQuery = await fetch(`${base}/api/v1/ui/accepted-report-instructions?candidateId=${candidateId}&vacancyId=${vacancyId}&vacancyId=${vacancyId}`,
+    { headers: { cookie: connected.cookie } });
+  assert.equal(duplicateQuery.status, 400, 'duplicate query parameters cannot choose a different scope implicitly');
+  const mismatchedVersionScope = await put('profile', 2, profileInstructions, draft.reportRef, draft.reportRevision);
+  assert.equal(mismatchedVersionScope.status, 400, 'a report-version reference cannot be attached to another scope');
 });
 
 test('report policy phrase matching normalizes case, whitespace and ё/e without returning rule text', () => {

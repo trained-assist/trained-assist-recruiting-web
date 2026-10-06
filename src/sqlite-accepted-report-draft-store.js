@@ -38,6 +38,12 @@ export class SqliteAcceptedReportDraftStore {
       revision INTEGER NOT NULL CHECK(revision > 0),
       sealed_record TEXT NOT NULL
     )`);
+    this.db.exec(`CREATE TABLE IF NOT EXISTS accepted_report_instruction (
+      instruction_key TEXT PRIMARY KEY,
+      owner_hash TEXT NOT NULL,
+      revision INTEGER NOT NULL CHECK(revision > 0),
+      sealed_record TEXT NOT NULL
+    )`);
     this.findByKey = this.db.prepare('SELECT * FROM accepted_report_draft WHERE owner_hash=? AND idempotency_hash=?');
     this.findByRef = this.db.prepare('SELECT * FROM accepted_report_draft WHERE report_ref=? AND owner_hash=?');
     this.insert = this.db.prepare(`INSERT INTO accepted_report_draft
@@ -49,6 +55,11 @@ export class SqliteAcceptedReportDraftStore {
       (policy_key,owner_hash,revision,sealed_record) VALUES (?,?,?,?)`);
     this.replacePolicyRow = this.db.prepare(`UPDATE accepted_report_policy SET revision=?,sealed_record=?
       WHERE policy_key=? AND owner_hash=? AND revision=?`);
+    this.findInstruction = this.db.prepare('SELECT * FROM accepted_report_instruction WHERE instruction_key=? AND owner_hash=?');
+    this.insertInstruction = this.db.prepare(`INSERT INTO accepted_report_instruction
+      (instruction_key,owner_hash,revision,sealed_record) VALUES (?,?,?,?)`);
+    this.replaceInstructionRow = this.db.prepare(`UPDATE accepted_report_instruction SET revision=?,sealed_record=?
+      WHERE instruction_key=? AND owner_hash=? AND revision=?`);
   }
 
   close() { this.db.close(); this.key.fill(0); }
@@ -58,6 +69,48 @@ export class SqliteAcceptedReportDraftStore {
   fingerprintHash(fingerprint) { return hmac(this.key, 'fingerprint', fingerprint); }
   policyKey(profileId, candidateId, vacancyId) {
     return hmac(this.key, 'policy', `${profileId}\0${candidateId}\0${vacancyId}`);
+  }
+
+  instructionKey(profileId, scopeType, scopeId) {
+    return hmac(this.key, 'report-instructions', `${profileId}\0${scopeType}\0${scopeId}`);
+  }
+
+  getReportInstructions(profileId, scopeType, scopeId) {
+    const ownerHash = this.ownerHash(profileId);
+    const instructionKey = this.instructionKey(profileId, scopeType, scopeId);
+    const row = this.findInstruction.get(instructionKey, ownerHash);
+    if (!row) return null;
+    const record = this.open({ ...row, report_ref: row.instruction_key });
+    if (record.profileId !== profileId || record.scopeType !== scopeType || record.scopeId !== scopeId)
+      throw new Error('report_instructions_invalid');
+    return record;
+  }
+
+  replaceReportInstructions({ profileId, scopeType, scopeId, expectedRevision, record }) {
+    const ownerHash = this.ownerHash(profileId);
+    const instructionKey = this.instructionKey(profileId, scopeType, scopeId);
+    return this.db.transaction(() => {
+      const row = this.findInstruction.get(instructionKey, ownerHash);
+      const current = row ? this.open({ ...row, report_ref: row.instruction_key }) : null;
+      const revision = current?.revision ?? 0;
+      if (revision !== expectedRevision) return { kind: 'stale_instructions', record: current };
+      if (current && JSON.stringify(current.instructions) === JSON.stringify(record.instructions))
+        return { kind: 'existing', record: current };
+      const historyEntry = { revision: revision + 1, updatedAt: record.updatedAt,
+        instructions: structuredClone(record.instructions) };
+      const next = { ...record, reportRef: instructionKey, revision: revision + 1,
+        history: [...(current?.history ?? []), historyEntry].slice(-100),
+        audit: [...(current?.audit ?? []), { action: 'instructions_updated', revision: revision + 1,
+          actorProfileId: record.actorProfileId, at: record.updatedAt, counts: Object.fromEntries(
+            Object.entries(record.instructions).map(([field, items]) => [field, items.length])) }].slice(-100) };
+      const sealed = this.seal(instructionKey, ownerHash, next);
+      if (!row) this.insertInstruction.run(instructionKey, ownerHash, next.revision, sealed);
+      else {
+        const result = this.replaceInstructionRow.run(next.revision, sealed, instructionKey, ownerHash, revision);
+        if (result.changes !== 1) return { kind: 'stale_instructions', record: this.getReportInstructions(profileId, scopeType, scopeId) };
+      }
+      return { kind: 'updated', record: structuredClone(next) };
+    }).immediate();
   }
 
   seal(reportRef, ownerHash, record) {

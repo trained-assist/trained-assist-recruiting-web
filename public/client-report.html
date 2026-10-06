@@ -24,6 +24,26 @@
       <p id="source-summary">Загружаю подтверждённый источник…</p>
       <small id="source-revision"></small>
     </section>
+    <section id="instructions-section" aria-labelledby="instructions-title" hidden>
+      <h2 id="instructions-title">Сохранённые инструкции к отчётам</h2>
+      <p>Показываю правила профиля, вакансии, кандидата и этой версии отчёта. Они помогают рекрутеру оформить материал; автоматическая генерация текста пока не подключена.</p>
+      <div id="effective-instructions" aria-live="polite"></div>
+      <label>Изменить область
+        <select id="instruction-scope">
+          <option value="profile">Все отчёты профиля</option>
+          <option value="vacancy">Эта вакансия</option>
+          <option value="candidate">Этот кандидат</option>
+          <option value="report_version">Эта версия отчёта</option>
+        </select>
+      </label>
+      <p>На одну область можно сохранить до 30 пунктов в каждом разделе, не более 1000 символов на пункт и 8000 символов суммарно.</p>
+      <label>Что включать <textarea id="instruction-include" rows="4" maxlength="8000"></textarea></label>
+      <label>Стиль оформления <textarea id="instruction-style" rows="4" maxlength="8000"></textarea></label>
+      <label>Заметки рекрутера <textarea id="instruction-recruiter" rows="4" maxlength="8000"></textarea></label>
+      <details id="instruction-history"><summary>История этой области</summary><ol id="instruction-history-list"></ol></details>
+      <button id="save-instructions" type="button" disabled>Сохранить инструкции</button>
+      <p id="instructions-status" role="status" aria-live="polite"></p>
+    </section>
     <section aria-labelledby="preview-title">
       <h2 id="preview-title">Клиентский вид</h2>
       <iframe id="preview" title="Предпросмотр черновика" sandbox=""></iframe>
