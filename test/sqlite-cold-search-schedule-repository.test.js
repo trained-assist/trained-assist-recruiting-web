@@ -80,6 +80,28 @@ test('expired lease is quarantined after restart; late finish is fenced and no r
   assert.equal(second.listOccurrences(principal.profileId).length, 1);
 });
 
+test('occurrence heartbeat extends schedule and occurrence atomically and fences foreign or expired workers', async t => {
+  const open = fixture(t);
+  const first = open();
+  const second = open();
+  const enabled = await handler(first, () => '2026-10-06T00:00:00.000Z')
+    .handle({ action: 'enable', vacancyId: 'vac_demo_001', interval_hours: 1 }, principal);
+  const now = enabled.schedule.nextRunAt;
+  const initial = new Date(Date.parse(now) + 60_000).toISOString();
+  const [{ occurrence }] = first.claimDueOccurrences({ now, workerId: 'worker-a', leaseUntil: initial });
+  const later = new Date(Date.parse(now) + 30_000).toISOString();
+  const extended = new Date(Date.parse(now) + 90_000).toISOString();
+  assert.equal(second.renewOccurrenceLease(occurrence.occurrenceId, 'worker-b', later, extended), false);
+  assert.equal(second.renewOccurrenceLease(occurrence.occurrenceId, 'worker-a', later, initial), false);
+  assert.equal(second.renewOccurrenceLease(occurrence.occurrenceId, 'worker-a', later, extended), true);
+  assert.equal(first.getOccurrence(occurrence.occurrenceId).leaseUntil, extended);
+  assert.equal(first.getSchedule(enabled.schedule.scheduleId).leaseUntil, extended);
+  assert.equal(first.finishOccurrence(occurrence.occurrenceId, 'worker-a', { status: 'succeeded' }, initial), true);
+  assert.equal(second.renewOccurrenceLease(occurrence.occurrenceId, 'worker-a', later, extended), false);
+  assert.throws(() => second.renewOccurrenceLease(occurrence.occurrenceId, 'worker-a', later, later),
+    /valid occurrence heartbeat required/);
+});
+
 test('unique legacy job and scheduled slot prevents duplicate effect and missed slots coalesce', async t => {
   const open = fixture(t);
   const first = open();
