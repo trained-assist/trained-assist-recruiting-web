@@ -23,6 +23,16 @@ const landingPage = await readFile(join(root, 'public/index.html'), 'utf8');
 const proactivePage = await readFile(join(root, 'public/proactive.html'), 'utf8');
 const proactiveScript = await readFile(join(root, 'public/proactive.js'), 'utf8');
 const realProactiveScript = await readFile(join(root, 'public/real-proactive.js'), 'utf8');
+const escapeResponseHtml = value => String(value ?? '').replace(/[&<>"']/g,
+  char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
+function renderLiveResponsePage(data) {
+  const vacancy = encodeURIComponent(data.vacancyId);
+  const itemHtml = data.items.map(item => `<li><strong>${escapeResponseHtml(item.name || item.title || item.resumeId)}</strong> — ${escapeResponseHtml(item.title)} <small>${escapeResponseHtml(item.receivedAt)}</small></li>`).join('');
+  const pageLink = page => `/hh/responses?vacancy_id=${vacancy}&page=${page}`;
+  const previous = data.page > 0 ? `<a href="${pageLink(data.page - 1)}">Назад</a>` : '';
+  const next = data.page + 1 < data.pages ? `<a href="${pageLink(data.page + 1)}">Далее</a>` : '';
+  return `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Отклики HH</title><main><h1>Отклики по вакансии ${escapeResponseHtml(data.vacancyId)}</h1><p>Получено от HH: ${escapeResponseHtml(data.fetchedAt)}. Страницы могут измениться между запросами.</p><p>Страница ${data.page + 1} из ${Math.max(1, data.pages)} · Всего ${data.total}</p><ol>${itemHtml}</ol><nav>${previous} ${next}</nav></main></html>`;
+}
 const release = {
   version: '0.1.0',
   sourceRevision: process.env.SOURCE_REVISION ?? 'unversioned-local',
@@ -246,7 +256,9 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
     let type = mime.json;
     let body;
 
-    if (privateProactiveOnly && !isProactivePath && path !== '/health/ready') {
+    if (privateProactiveOnly && !isProactivePath && path !== '/health/ready' &&
+        !(connectedAppBff !== null && liveResponseRead !== null &&
+          (path === '/hh/responses' || path === '/api/v1/ui/hh-responses'))) {
       status = 404;
       body = { error: 'not_found' };
     } else if (req.method !== 'GET' && req.method !== 'HEAD' && !(req.method === 'POST' && (isCandidateSearchPath || isReportDraftPath || path === '/api/hh/proactive/vacancy-state' || path === '/api/hh/proactive/search' || realProactiveFeed !== null && path.startsWith('/api/hh/proactive/'))) && !(req.method === 'PATCH' && isReportDraftPath)) {
@@ -288,20 +300,51 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
           } catch { status = 503; body = { error: 'report_source_unavailable' }; }
         }
       }
-    } else if (path === '/api/v1/ui/hh-responses' && liveResponseRead !== null) {
+    } else if ((path === '/api/v1/ui/hh-responses' ||
+        path === '/hh/responses' && connectedAppBff !== null) && liveResponseRead !== null) {
       let context;
       try { context = await trustedReadResolver(req, url, res); }
       catch (error) { status = 503; body = { error: error instanceof ConnectedAppIntrospectionUnavailable
         ? 'connected_app_introspection_unavailable' : 'trusted_profile_unavailable' }; }
       if (status === 200 && (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes))) {
+        if (path === '/hh/responses' && connectedAppBff !== null && req.method === 'GET' &&
+            [...url.searchParams.keys()].every(key => ['vacancy_id', 'page'].includes(key)) &&
+            url.searchParams.getAll('vacancy_id').length <= 1 &&
+            url.searchParams.getAll('page').length <= 1 &&
+            (!url.searchParams.has('vacancy_id') || /^[A-Za-z0-9_-]{1,128}$/.test(url.searchParams.get('vacancy_id'))) &&
+            (!url.searchParams.has('page') || /^(?:0|[1-9][0-9]{0,2})$/.test(url.searchParams.get('page')))) {
+          const start = new URL('/auth/connected/start', 'http://localhost');
+          start.searchParams.set('from', 'responses');
+          if (url.searchParams.has('vacancy_id')) start.searchParams.set('vacancy_id', url.searchParams.get('vacancy_id'));
+          res.writeHead(303, { Location: start.pathname + start.search, 'Cache-Control': 'no-store',
+            'Referrer-Policy': 'no-referrer' }); res.end(); return;
+        }
         status = 401; body = { error: 'trusted_profile_context_required' };
       } else if (status === 200 && !context.scopes.includes('recruiting.responses.read')) {
+        if (path === '/hh/responses' && connectedAppBff !== null && req.method === 'GET' &&
+            [...url.searchParams.keys()].every(key => ['vacancy_id', 'page'].includes(key)) &&
+            url.searchParams.getAll('vacancy_id').length <= 1 &&
+            url.searchParams.getAll('page').length <= 1 &&
+            (!url.searchParams.has('vacancy_id') || /^[A-Za-z0-9_-]{1,128}$/.test(url.searchParams.get('vacancy_id'))) &&
+            (!url.searchParams.has('page') || /^(?:0|[1-9][0-9]{0,2})$/.test(url.searchParams.get('page')))) {
+          const start = new URL('/auth/connected/start', 'http://localhost');
+          start.searchParams.set('from', 'responses');
+          if (url.searchParams.has('vacancy_id')) start.searchParams.set('vacancy_id', url.searchParams.get('vacancy_id'));
+          res.writeHead(303, { Location: start.pathname + start.search, 'Cache-Control': 'no-store',
+            'Referrer-Policy': 'no-referrer' }); res.end(); return;
+        }
         status = 403; body = { error: 'response_scope_required' };
       } else if (status === 200) {
         const keys = [...url.searchParams.keys()];
+        const pageRoute = path === '/hh/responses';
         const rawPage = url.searchParams.get('page');
-        const vacancyId = url.searchParams.get('vacancyId');
-        if (keys.some(key => !['vacancyId', 'page'].includes(key)) || new Set(keys).size !== keys.length ||
+        const vacancyId = url.searchParams.get(pageRoute ? 'vacancy_id' : 'vacancyId');
+        if (pageRoute && keys.length === 0) {
+          type = mime.html;
+          const ids = listRealVacancies(context).filter(id => /^[A-Za-z0-9_-]{1,128}$/.test(id));
+          body = `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="referrer" content="no-referrer"><title>Вакансии HH</title><main><h1>Выберите вакансию</h1><ul>${ids.map(id => `<li><a href="/hh/responses?vacancy_id=${encodeURIComponent(id)}">${escapeResponseHtml(id)}</a></li>`).join('')}</ul></main></html>`;
+        } else if (keys.some(key => ![pageRoute ? 'vacancy_id' : 'vacancyId', 'page'].includes(key)) ||
+            new Set(keys).size !== keys.length ||
             typeof vacancyId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(vacancyId) ||
             rawPage !== null && !/^(?:0|[1-9][0-9]{0,2})$/.test(rawPage)) {
           status = 400; body = { error: 'invalid_response_request' };
@@ -309,6 +352,7 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
           try {
             const result = await liveResponseRead(context, { vacancyId, page: rawPage === null ? 0 : Number(rawPage) });
             status = result.status; body = result.body;
+            if (status === 200 && pageRoute) { type = mime.html; body = renderLiveResponsePage(body); }
           } catch { status = 503; body = { error: 'response_read_unavailable' }; }
         }
       }
