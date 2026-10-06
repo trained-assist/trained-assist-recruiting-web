@@ -97,6 +97,44 @@ test('unsigned vacancy selector never widens a legacy signed link to another pro
   assert.equal((await fetch(base + path + `&vacancy_id=${vacancyId}&username=${legacyUsername}`)).status, 401);
 });
 
+test('old open-tab JSON commands receive an actionable reload without executing writes', async t => {
+  const { server, token } = fixture(t);
+  await once(server, 'listening');
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const post = (route, fields, headers = {}) => fetch(`${base}/api/hh/proactive/${route}`, {
+    method: 'POST', headers: { Origin: 'https://recruiter-assistant.ru',
+      'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify({ username: legacyUsername, token, ...fields }) });
+  const oldCommands = [
+    ['ai-score', { candidate_id: 'inventedresume1', vacancy_id: vacancyId }],
+    ['search', { vacancy_id: vacancyId }],
+    ['prompt', { vacancy_id: vacancyId, queries: 'invented search' }],
+    ['comment', { vacancy_id: vacancyId, candidate_id: 'inventedresume1', text: 'Invented' }],
+    ['vacancy-state', { vacancy_id: vacancyId, action: 'disable' }],
+    ['set-status', { vacancy_id: vacancyId, candidate_id: 'inventedresume1', status: 'starred' }],
+    ['import-seen', { ids: ['inventedresume1'] }],
+    ['add-manual', { vacancy_id: vacancyId, resume_url_or_id: 'inventedresume1' }]
+  ];
+  for (const [route, fields] of oldCommands) {
+    const response = await post(route, fields);
+    assert.equal(response.status, 409, route);
+    const body = await response.json();
+    assert.equal(body.code, 'legacy_page_reload_required');
+    assert.match(body.error, /Перезагрузите/);
+    assert.equal(body.reload_url, '/hh/proactive');
+    assert.equal(response.headers.get('set-cookie'), null);
+  }
+  assert.equal((await post('import-seen', { vacancy_id: 'other', ids: ['inventedresume1'] })).status, 404);
+  assert.equal((await post('search', { vacancy_id: vacancyId, token: '0'.repeat(16) })).status, 401);
+  assert.equal((await post('search', { vacancy_id: vacancyId }, { Origin: 'https://evil.example' })).status, 401);
+  assert.equal((await post('search', { vacancy_id: vacancyId, username: 'other' })).status, 401);
+  assert.equal((await post('search', { vacancy_id: vacancyId }, { Cookie: '__Host-r03-proactive=invalid' })).status, 409);
+  const page = await fetch(`${base}/hh/proactive?username=${legacyUsername}&token=${token}&vacancy_id=${vacancyId}`);
+  const cookie = page.headers.get('set-cookie').split(';')[0];
+  const result = await fetch(`${base}/api/hh/proactive/candidates?vacancy_id=${vacancyId}`, { headers: { Cookie: cookie } });
+  assert.equal((await result.json()).total, 0);
+});
+
 test('removing legacy mapping revokes both signed entry and existing profile cookie', async () => {
   const mappings = new Map([[legacyUsername, profileId]]);
   const auth = createPrivateWebAuth({ legacySecret: secret,
@@ -111,6 +149,8 @@ test('removing legacy mapping revokes both signed entry and existing profile coo
   const cookie = headers.get('Set-Cookie').split(';')[0];
   mappings.clear();
   assert.equal(await auth({ method: 'GET', headers: {} }, url, { setHeader: () => {} }), null);
+  assert.equal(auth.resolveLegacyOpenTab({ method: 'POST', headers: { origin: 'https://recruiter-assistant.ru' } },
+    { username: legacyUsername, token, vacancy_id: vacancyId }), null);
   assert.equal(await auth({ method: 'GET', headers: { cookie } },
     new URL('https://recruiter-assistant.ru/api/hh/proactive/candidates'), { setHeader: () => {} }), null);
 });
