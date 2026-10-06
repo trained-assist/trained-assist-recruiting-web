@@ -56,6 +56,8 @@ test('opt-in real page and API use one trusted profile/vacancy feed; HTML escape
   assert.equal(reads[0].vacancy, vacancyId);
   assert.equal((await fetch(base + '/api/hh/proactive/search', { method: 'POST', headers })).status, 501,
     'real mode cannot fall through to the synthetic search writer');
+  assert.equal((await fetch(base + '/api/hh/proactive/status', { headers })).status, 501,
+    'unimplemented legacy namespace paths cannot fall through to synthetic routes');
 });
 
 test('default server keeps the existing synthetic page and API behavior', async t => {
