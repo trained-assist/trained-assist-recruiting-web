@@ -83,11 +83,13 @@ test('completed discovery exposes pending ATS backlog in the same page and API',
 
 test('candidate report link is limited to report-enabled accepted assessed candidates', () => {
   const acceptedPage = renderRealProactivePage({ vacancyId, feed: result, listView: 'starred', reportsAvailable: true });
+  assert.match(acceptedPage, /data-reports-available="true"/);
   assert.match(acceptedPage, new RegExp(`/auth/connected/start\\?from=report&amp;vacancy_id=${vacancyId}&amp;candidate_id=${candidate.id}`));
   const pendingPage = renderRealProactivePage({ vacancyId,
     feed: { ...result, items: [{ ...candidate, atsScore: null }] }, listView: 'starred', reportsAvailable: true });
   assert.doesNotMatch(pendingPage, /Подготовить отчёт клиенту/);
   const unmountedPage = renderRealProactivePage({ vacancyId, feed: result, listView: 'starred', reportsAvailable: false });
+  assert.match(unmountedPage, /data-reports-available="false"/);
   assert.doesNotMatch(unmountedPage, /Подготовить отчёт клиенту/);
 });
 

@@ -25,14 +25,17 @@ test('browser page uses profile cookie API, exact review revisions, idempotent m
   ]);
   const cardElements = new Map([
     ['.save-status', element('save-status')], ['.save-comment', element('save-comment')],
-    ['.score-now', element('score-now')], ['.score-result', element('score-result')],
+    ['.score-now', element('score-now')], ['.score-result', element('score-result', { after: value => {
+      cardElements.set('.candidate-report-row', value);
+      cardElements.set('.candidate-report-entry', value.children[0]);
+    } })],
     ['.candidate-status', element('candidate-status', { value: 'starred' })],
     ['.candidate-comment', element('candidate-comment', { value: 'Invented note' })],
     ['.candidate-exclude', element('candidate-exclude', { checked: true })]
   ]);
-  const card = { dataset: { candidateId: 'invented_resume', jobId: 'invented_job', reviewRevision: '2' },
+  const card = { dataset: { candidateId: 'invented_resume', jobId: 'invented_job', reviewRevision: '2', reviewStatus: 'starred' },
     querySelector: selector => cardElements.get(selector) };
-  const root = { dataset: { profileId: 'invented_profile_A', vacancyId } };
+  const root = { dataset: { profileId: 'invented_profile_A', vacancyId, reportsAvailable: 'true' } };
   let reloads = 0;
   let replaced = '';
   let polls = 0;
@@ -53,6 +56,7 @@ test('browser page uses profile cookie API, exact review revisions, idempotent m
   };
   runInNewContext(script, {
     document: { querySelector: () => root, getElementById: id => elements.get(id),
+      createElement: tag => ({ tag, children: [], append(child) { this.children.push(child); } }),
       querySelectorAll: () => [card] },
     location: { href: `https://recruiter-assistant.ru/hh/proactive?username=invented&token=old-token&vacancy_id=${vacancyId}`,
       reload: () => { reloads++; } },
@@ -86,6 +90,11 @@ test('browser page uses profile cookie API, exact review revisions, idempotent m
   assert.deepEqual(JSON.parse(posts[6].options.body), { vacancy_id: vacancyId, candidate_id: 'invented_resume',
     expected_job_id: 'invented_job' });
   assert.match(cardElements.get('.score-result').textContent, /ATS: 8 \(PASS\)/);
+  const reportRow = cardElements.get('.candidate-report-row');
+  assert.ok(reportRow);
+  assert.equal(reportRow.children[0].href,
+    `/auth/connected/start?from=report&vacancy_id=${vacancyId}&candidate_id=invented_resume`);
+  assert.equal(reportRow.children[0].textContent, 'Подготовить отчёт клиенту');
   assert.ok(calls.every(call => call.options.credentials === 'same-origin'));
   assert.ok(posts.every(call => !('token' in JSON.parse(call.options.body))));
   assert.equal(polls, 2);
