@@ -71,6 +71,13 @@ function fixture(t) {
       if (hhOutage) throw new Error('HH unavailable');
       if (refresh && options.headers.authorization === `Bearer ${actor.token}`)
         return { status: 401, ok: false };
+      if (url.pathname.startsWith('/negotiations/n_')) {
+        const id = decodeURIComponent(url.pathname.slice('/negotiations/'.length));
+        const vacancyId = id.match(/^n_(vacancy_[AB])_0$/)?.[1] ?? actor.vacancyId;
+        return { status: 200, ok: true, json: async () => ({ id, vacancy: { id: vacancyId },
+          resume: { id: 'resume_example' }, state: { id: 'response' },
+          updated_at: '2026-10-06T07:10:00Z' }) };
+      }
       const requested = url.searchParams.get('vacancy_id');
       const page = Number(url.searchParams.get('page'));
       return { status: 200, ok: true, json: async () => hhPage(requested, page) };
@@ -87,6 +94,36 @@ function fixture(t) {
     setRefresh: value => { refresh = value; },
     get exchanges() { return exchanges; } };
 }
+
+test('exact response detail checks CP scope and owned vacancy without opening HH messages', async t => {
+  const f = fixture(t); await once(f.server, 'listening');
+  const base = `http://127.0.0.1:${f.server.address().port}`;
+  f.setScope('recruiting.candidateSearch');
+  const proactive = await signIn(base, 'proactive', 'vacancy_A');
+  const restrictedApi = `${base}/api/v1/ui/hh-response-detail?vacancyId=vacancy_A&negotiationId=n_vacancy_A_0`;
+  assert.equal((await fetch(restrictedApi, { headers: { cookie: proactive.session } })).status, 403);
+  f.setScope('recruiting.responses.read');
+  const login = await signIn(base, 'responses', 'vacancy_A');
+  const headers = { cookie: login.session };
+  const api = `${base}/api/v1/ui/hh-response-detail?vacancyId=vacancy_A&negotiationId=n_vacancy_A_0`;
+  const detail = await fetch(api, { headers });
+  assert.equal(detail.status, 200);
+  assert.equal((await detail.json()).state, 'response');
+  const page = await fetch(`${base}/hh/response-detail?vacancy_id=vacancy_A&negotiation_id=n_vacancy_A_0`, { headers });
+  assert.equal(page.status, 200);
+  assert.match(await page.text(), /Текущий статус HH: response/);
+  assert.equal((await fetch(`${base}/api/v1/ui/hh-response-detail?vacancyId=vacancy_B&negotiationId=n_vacancy_B_0`,
+    { headers })).status, 404);
+  assert.equal((await fetch(`${api}&token=bad`, { headers })).status, 400);
+  assert.equal((await fetch(api, { method: 'POST', headers })).status, 405);
+  assert.equal(f.calls.length, 2);
+  assert.ok(f.calls.every(call => call.url.pathname === '/negotiations/n_vacancy_A_0'));
+  f.setActor(actors[1]);
+  assert.equal((await fetch(api, { headers })).status, 401);
+  f.setActor(actors[0]); f.setCpOutage(true);
+  assert.equal((await fetch(api, { headers })).status, 503);
+  assert.equal(f.calls.length, 2);
+});
 
 async function signIn(base, from, vacancyId) {
   const start = await fetch(`${base}/auth/connected/start${from ? `?from=${from}${vacancyId ? `&vacancy_id=${vacancyId}` : ''}` : ''}`,
