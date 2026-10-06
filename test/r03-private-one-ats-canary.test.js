@@ -103,6 +103,7 @@ test('fresh free-ladder proof, one accepted real candidate, then replay without 
   assert.equal(copy.prepare('SELECT COUNT(*) AS n FROM real_hh_assessment').get().n, 1);
   copy.close();
   const replay = await runPrivateOneAtsCanary({ ...f, mode: 'replay',
+    clock: () => new Date('2026-10-07T10:00:00.000Z'),
     fetchImpl: async () => { throw new Error('replay fetched'); } });
   assert.equal(replay.providerRequests, 0);
   assert.equal(JSON.parse(readFileSync(join(f.outputDirectory, 'receipt.json'))).published, false);
