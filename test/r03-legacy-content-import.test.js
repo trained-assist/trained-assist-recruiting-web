@@ -80,6 +80,8 @@ test('private import preserves invented content and quarantines wildcard and leg
     'Вымышленный комментарий');
   assert.equal(importer.db.prepare('SELECT text FROM r03_legacy_content_comment WHERE scope_status=?').get('unbound').text,
     'Глобальная заметка без вакансии');
+  assert.deepEqual(JSON.parse(importer.db.prepare('SELECT payload FROM r03_legacy_content_comment WHERE scope_status=?')
+    .get('bound').payload), content().comments[vacancy].resume_invented_bound);
   assert.equal(importer.db.prepare('SELECT COUNT(*) AS count FROM r03_legacy_content_seen').get().count, 2);
   importer.close();
 

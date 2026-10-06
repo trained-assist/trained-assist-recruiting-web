@@ -49,14 +49,14 @@ export class R03LegacyContentImporter {
     CREATE TABLE IF NOT EXISTS r03_legacy_content_comment (
       migration_id TEXT NOT NULL, profile_id TEXT NOT NULL, vacancy_id TEXT NOT NULL,
       resume_id TEXT NOT NULL, text TEXT NOT NULL, updated_at TEXT,
-      unbound_reference INTEGER NOT NULL, scope_status TEXT NOT NULL,
+      payload TEXT NOT NULL, unbound_reference INTEGER NOT NULL, scope_status TEXT NOT NULL,
       PRIMARY KEY(migration_id, profile_id, vacancy_id, resume_id));`);
     this.lookup = this.db.prepare('SELECT source_digest,counts,source_receipts FROM r03_legacy_content_import WHERE migration_id=? AND profile_id=?');
     this.addImport = this.db.prepare('INSERT INTO r03_legacy_content_import VALUES(?,?,?,?,?)');
     this.addCandidate = this.db.prepare('INSERT INTO r03_legacy_content_candidate VALUES(?,?,?,?,?,?)');
     this.addSeen = this.db.prepare('INSERT INTO r03_legacy_content_seen VALUES(?,?,?,?,?,?)');
     this.addSnapshot = this.db.prepare('INSERT INTO r03_legacy_content_snapshot VALUES(?,?,?,?,?,?,?,?,?)');
-    this.addComment = this.db.prepare('INSERT INTO r03_legacy_content_comment VALUES(?,?,?,?,?,?,?,?)');
+    this.addComment = this.db.prepare('INSERT INTO r03_legacy_content_comment VALUES(?,?,?,?,?,?,?,?,?)');
   }
 
   close() { this.db.close(); }
@@ -208,6 +208,7 @@ export class R03LegacyContentImporter {
       this.onStep('snapshots');
       for (const { vacancyId, id, row, unbound, scopeStatus } of plan.comments)
         this.addComment.run(migrationId, profileId, vacancyId, id, row.text, row.updatedAt ?? null,
+          JSON.stringify(row),
           unbound ? 1 : 0, scopeStatus);
       this.onStep('comments');
       this.addImport.run(migrationId, profileId, sourceDigest, JSON.stringify(counts), JSON.stringify(sourceReceipts));
