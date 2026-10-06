@@ -61,9 +61,13 @@ export function createDurableHhOccurrenceWorker({ scheduleRepository, loadSearch
         // A plan can change between preflight and the runner's first read. That
         // specific failure precedes provider dispatch; all other errors may
         // have followed a provider call or committed snapshot.
-        const preDispatch = !heartbeatLost && (error?.code === 'search_plan_unavailable' || error?.code === 'search_scope_denied');
+        const preDispatch = !heartbeatLost && (error?.code === 'search_plan_unavailable' ||
+          error?.code === 'search_scope_denied' || error?.code === 'search_budget_pre_dispatch');
         const status = preDispatch ? 'rejected' : 'outcome_unknown';
-        if (finish({ status, criteriaRevision: plan.criteriaRevision, errorCode: preDispatch ? 'search_plan_unavailable' : 'search_outcome_unknown', jobId })) {
+        const budgetError = ['search_budget_pre_dispatch', 'provider_budget_exceeded_partial',
+          'candidate_budget_exceeded_partial', 'provider_window_partial'].includes(error?.code);
+        if (finish({ status, criteriaRevision: plan.criteriaRevision,
+          errorCode: budgetError ? error.code : preDispatch ? 'search_plan_unavailable' : 'search_outcome_unknown', jobId })) {
           totals[preDispatch ? 'rejected' : 'unknown']++;
         } else totals.unknown++;
       } finally { clearInterval(heartbeat); }
