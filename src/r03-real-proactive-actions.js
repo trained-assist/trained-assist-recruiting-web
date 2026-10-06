@@ -7,7 +7,7 @@ const exact = (value, keys) => value && typeof value === 'object' && !Array.isAr
   Object.keys(value).every(key => keys.includes(key));
 
 export function createR03RealProactiveActions({ scheduleRepository, manualRuns, feed, loadSearchPlan,
-  isVacancyOwned, clock = () => new Date() }) {
+  isVacancyOwned, vacancyFlags = null, clock = () => new Date() }) {
   if (typeof scheduleRepository?.listSchedules !== 'function' || typeof scheduleRepository?.upsertSchedule !== 'function' ||
       typeof scheduleRepository?.listOccurrences !== 'function' || typeof manualRuns?.start !== 'function' ||
       typeof manualRuns?.get !== 'function' || typeof feed?.read !== 'function' || typeof feed?.update !== 'function' ||
@@ -24,20 +24,34 @@ export function createR03RealProactiveActions({ scheduleRepository, manualRuns, 
   return {
     scheduleStatus(context, vacancyId) {
       if (!scope(context, vacancyId)) return deny;
-      return { status: 200, body: { ok: true, schedules: scheduleRepository.listSchedules(context.profileId).filter(row => row.vacancyId === vacancyId) } };
+      return { status: 200, body: { ok: true,
+        schedules: scheduleRepository.listSchedules(context.profileId).filter(row => row.vacancyId === vacancyId),
+        ...(vacancyFlags ? { flags: vacancyFlags.getVacancyFlags(context.profileId, vacancyId) } : {}) } };
     },
     occurrences(context, vacancyId) {
       if (!scope(context, vacancyId)) return deny;
       return { status: 200, body: { ok: true, occurrences: scheduleRepository.listOccurrences(context.profileId).filter(row => row.vacancyId === vacancyId) } };
     },
     async updateSchedule(context, command) {
-      if (!exact(command, ['vacancy_id', 'action', 'interval_hours']) || !scope(context, command.vacancy_id) ||
-          !['enable', 'disable'].includes(command.action) ||
+      if (!exact(command, ['vacancy_id', 'action', 'interval_hours', 'expected_revision']) || !scope(context, command.vacancy_id) ||
+          !['enable', 'disable', 'star', 'unstar', 'archive', 'restore'].includes(command.action) ||
           command.action === 'disable' && command.interval_hours !== undefined ||
           command.action === 'enable' && (!Number.isFinite(command.interval_hours) || command.interval_hours < 0.5 || command.interval_hours > 8760))
         return { status: 400, body: { error: 'invalid_schedule_action' } };
       const { profileId } = context;
       const vacancyId = command.vacancy_id;
+      if (['star', 'unstar', 'archive', 'restore'].includes(command.action)) {
+        if (!vacancyFlags || command.interval_hours !== undefined || !Number.isSafeInteger(command.expected_revision) ||
+            command.expected_revision < 0) return { status: 400, body: { error: 'invalid_vacancy_flag_action' } };
+        const existing = scheduleFor(profileId, vacancyId);
+        const flag = ['star', 'unstar'].includes(command.action) ? 'starred' : 'archived';
+        const value = ['star', 'archive'].includes(command.action);
+        const result = vacancyFlags.setVacancyFlag(profileId, vacancyId, flag, value,
+          command.expected_revision, command.action === 'archive' ? existing : null, clock().toISOString());
+        return result.kind === 'conflict' ? { status: 409, body: { error: 'vacancy_flag_revision_conflict',
+          flags: result.current } } : { status: 200, body: { ok: true, flags: result.state } };
+      }
+      if (command.expected_revision !== undefined) return { status: 400, body: { error: 'invalid_schedule_action' } };
       const existing = scheduleFor(profileId, vacancyId);
       if (command.action === 'disable') {
         if (!existing) return { status: 404, body: { error: 'schedule_not_found' } };
@@ -46,6 +60,8 @@ export function createR03RealProactiveActions({ scheduleRepository, manualRuns, 
       }
       if (existing?.blockedByUnknownOccurrenceId)
         return { status: 409, body: { error: 'schedule_blocked_by_unknown', occurrenceId: existing.blockedByUnknownOccurrenceId } };
+      if (vacancyFlags?.getVacancyFlags(profileId, vacancyId).archived)
+        return { status: 409, body: { error: 'vacancy_archived_restore_first' } };
       let plan;
       try { plan = await loadSearchPlan(profileId, vacancyId); } catch { plan = null; }
       if (plan?.profileId !== profileId || plan?.vacancyId !== vacancyId ||

@@ -112,7 +112,8 @@ test('durable manual receipt, assessment, HTTP page/API and MCP domain read shar
     candidateState: state, manualRuns });
   const actions = createR03RealProactiveActions({ scheduleRepository: schedules, manualRuns, feed,
     loadSearchPlan: async () => ({ profileId, vacancyId, criteriaRevision: 'criteria_synthetic_r1',
-      queryCache: { revision: 'query_synthetic_r1', queries: ['invented query'] } }), isVacancyOwned: owned });
+      queryCache: { revision: 'query_synthetic_r1', queries: ['invented query'] } }), isVacancyOwned: owned,
+    vacancyFlags: schedules });
   const base = await started(t, { realProactiveFeed: feed,
     realProactiveActions: actions,
     resolveTrustedProfileContext: req => req.headers['x-test-principal'] === profileId ? trusted : null,
@@ -128,6 +129,22 @@ test('durable manual receipt, assessment, HTTP page/API and MCP domain read shar
   const post = (path, body, key = null) => fetch(base + path, { method: 'POST', headers: { ...headers,
     'Content-Type': 'application/json', ...(key ? { 'Idempotency-Key': key } : {}) }, body: JSON.stringify(body) });
   assert.equal((await post('/api/hh/proactive/vacancy-state', { vacancy_id: vacancyId, action: 'enable', interval_hours: 24 })).status, 200);
+  assert.equal((await post('/api/hh/proactive/vacancy-state', { vacancy_id: vacancyId,
+    action: 'star', expected_revision: 0 })).status, 200);
+  assert.equal((await post('/api/hh/proactive/vacancy-state', { vacancy_id: vacancyId,
+    action: 'archive', expected_revision: 0 })).status, 409, 'stale flag revision never disables schedule');
+  assert.equal(schedules.listSchedules(profileId)[0].enabled, true);
+  assert.equal((await post('/api/hh/proactive/vacancy-state', { vacancy_id: vacancyId,
+    action: 'archive', expected_revision: 1 })).status, 200);
+  assert.equal(schedules.listSchedules(profileId)[0].enabled, false, 'archive disables the existing timer');
+  assert.equal((await post('/api/hh/proactive/vacancy-state', { vacancy_id: vacancyId,
+    action: 'enable', interval_hours: 24 })).status, 409, 'restore is explicit');
+  assert.equal((await post('/api/hh/proactive/vacancy-state', { vacancy_id: vacancyId,
+    action: 'restore', expected_revision: 2 })).status, 200);
+  assert.equal(schedules.getVacancyFlags(profileId, vacancyId).archived, false);
+  const reopenedFlags = new SqliteColdSearchScheduleRepository(filename);
+  assert.deepEqual(reopenedFlags.getVacancyFlags(profileId, vacancyId), { starred: true, archived: false, revision: 3 });
+  reopenedFlags.close();
   assert.equal((await (await fetch(base + `/api/hh/proactive/schedule?vacancy_id=${vacancyId}`, { headers })).json()).schedules.length, 1);
   assert.equal((await (await fetch(base + `/api/hh/proactive/occurrences?vacancy_id=${vacancyId}`, { headers })).json()).occurrences.length, 0);
   assert.equal((await post('/api/hh/proactive/comment', { vacancy_id: vacancyId, candidate_id: mapped(1).id,

@@ -13,12 +13,14 @@ test('browser page uses profile cookie API, exact review revisions, idempotent m
     addEventListener: (_event, handler) => handlers.set(id, handler), ...more });
   const elements = new Map([
     ['action-status', element('action-status')], ['manual-status', element('manual-status')],
-    ['schedule-status', element('schedule-status')], ['interval-hours', element('interval-hours', { value: '24' })],
+    ['schedule-status', element('schedule-status')], ['vacancy-flags-status', element('vacancy-flags-status')],
+    ['interval-hours', element('interval-hours', { value: '24' })],
     ['prompt-status', element('prompt-status')], ['prompt-queries', element('prompt-queries')],
     ['prompt-save', element('prompt-save')], ['prompt-reset', element('prompt-reset')],
     ['seen-status', element('seen-status')], ['seen-ids', element('seen-ids')],
     ['seen-import', element('seen-import')],
     ['schedule-enable', element('schedule-enable')], ['schedule-disable', element('schedule-disable')],
+    ...['star', 'unstar', 'archive', 'restore'].map(action => [`vacancy-${action}`, element(`vacancy-${action}`)]),
     ['manual-search', element('manual-search')]
   ]);
   const cardElements = new Map([
@@ -37,7 +39,8 @@ test('browser page uses profile cookie API, exact review revisions, idempotent m
   const fetch = async (path, options = {}) => {
     calls.push({ path, options });
     let body = { ok: true };
-    if (path.startsWith('/api/hh/proactive/schedule?')) body = { ok: true, schedules: [] };
+    if (path.startsWith('/api/hh/proactive/schedule?')) body = { ok: true, schedules: [],
+      flags: { starred: false, archived: false, revision: 0 } };
     if (path.startsWith('/api/hh/proactive/prompt?')) body = { ok: true, queries: ['invented query'],
       query_revision: `queries-${'a'.repeat(24)}`, override_revision: 0 };
     if (path === '/api/hh/proactive/search') body = { ok: true, run: { runId: 'invented_run' } };
@@ -59,18 +62,22 @@ test('browser page uses profile cookie API, exact review revisions, idempotent m
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(replaced, `/hh/proactive?vacancy_id=${vacancyId}`);
   assert.equal(elements.get('schedule-status').textContent, 'Расписание не создано.');
+  await handlers.get('vacancy-star')({ currentTarget: elements.get('vacancy-star') });
+  assert.deepEqual(JSON.parse(calls.find(call => call.path === '/api/hh/proactive/vacancy-state' &&
+    JSON.parse(call.options.body).action === 'star').options.body),
+  { vacancy_id: vacancyId, action: 'star', expected_revision: 0 });
   for (const id of ['schedule-enable', 'schedule-disable', 'manual-search', 'save-status', 'save-comment']) {
     const button = elements.get(id) ?? cardElements.get(`.${id}`);
     await handlers.get(id)({ currentTarget: button });
   }
   const posts = calls.filter(call => call.options.method === 'POST');
-  assert.equal(posts.length, 5);
-  assert.deepEqual(JSON.parse(posts[0].options.body), { vacancy_id: vacancyId, action: 'enable', interval_hours: 24 });
-  assert.deepEqual(JSON.parse(posts[1].options.body), { vacancy_id: vacancyId, action: 'disable' });
-  assert.equal(posts[2].options.headers['Idempotency-Key'], 'invented_idempotency_key');
-  assert.deepEqual(JSON.parse(posts[3].options.body), { vacancy_id: vacancyId, candidate_id: 'invented_resume',
-    expected_revision: 2, status: 'starred' });
+  assert.equal(posts.length, 6);
+  assert.deepEqual(JSON.parse(posts[1].options.body), { vacancy_id: vacancyId, action: 'enable', interval_hours: 24 });
+  assert.deepEqual(JSON.parse(posts[2].options.body), { vacancy_id: vacancyId, action: 'disable' });
+  assert.equal(posts[3].options.headers['Idempotency-Key'], 'invented_idempotency_key');
   assert.deepEqual(JSON.parse(posts[4].options.body), { vacancy_id: vacancyId, candidate_id: 'invented_resume',
+    expected_revision: 2, status: 'starred' });
+  assert.deepEqual(JSON.parse(posts[5].options.body), { vacancy_id: vacancyId, candidate_id: 'invented_resume',
     expected_revision: 2, comment: 'Invented note', exclude_from_search: true });
   assert.ok(calls.every(call => call.options.credentials === 'same-origin'));
   assert.ok(posts.every(call => !('token' in JSON.parse(call.options.body))));
@@ -83,9 +90,10 @@ test('switching signed profile on the same vacancy does not resume or reuse the 
   const previousRunKey = `r03:manual-run:invented_profile_A:${vacancyId}`;
   const session = new Map([[previousRunKey, 'run_A']]);
   const handlers = new Map();
-  const elements = new Map(['action-status', 'manual-status', 'schedule-status', 'interval-hours',
+  const elements = new Map(['action-status', 'manual-status', 'schedule-status', 'vacancy-flags-status', 'interval-hours',
     'schedule-enable', 'schedule-disable', 'manual-search', 'prompt-status', 'prompt-queries',
-    'prompt-save', 'prompt-reset', 'seen-status', 'seen-ids', 'seen-import'].map(id => [id, { id,
+    'prompt-save', 'prompt-reset', 'seen-status', 'seen-ids', 'seen-import',
+    'vacancy-star', 'vacancy-unstar', 'vacancy-archive', 'vacancy-restore'].map(id => [id, { id,
     value: id === 'interval-hours' ? '24' : '', textContent: '', disabled: false,
     addEventListener: (_name, handler) => handlers.set(id, handler) }]));
   const calls = [];
@@ -114,9 +122,10 @@ test('switching signed profile on the same vacancy does not resume or reuse the 
 
 test('browser prompt editor sends target revision and uses reset tombstone without legacy token', async () => {
   const handlers = new Map();
-  const elements = new Map(['action-status', 'manual-status', 'schedule-status', 'interval-hours',
+  const elements = new Map(['action-status', 'manual-status', 'schedule-status', 'vacancy-flags-status', 'interval-hours',
     'schedule-enable', 'schedule-disable', 'manual-search', 'prompt-status', 'prompt-queries',
-    'prompt-save', 'prompt-reset', 'seen-status', 'seen-ids', 'seen-import'].map(id => [id, { id, value: '', textContent: '', disabled: false,
+    'prompt-save', 'prompt-reset', 'seen-status', 'seen-ids', 'seen-import',
+    'vacancy-star', 'vacancy-unstar', 'vacancy-archive', 'vacancy-restore'].map(id => [id, { id, value: '', textContent: '', disabled: false,
     addEventListener: (_name, handler) => handlers.set(id, handler) }]));
   const calls = [];
   let promptReads = 0;

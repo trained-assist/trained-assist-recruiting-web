@@ -40,6 +40,11 @@ nav a{margin-right:1rem}button{cursor:pointer}#action-status{min-height:1.5rem}
 <label>Интервал, часы <input id="interval-hours" type="number" min="0.5" max="8760" step="0.5" value="24"></label>
 <button id="schedule-enable" type="button">Включить расписание</button>
 <button id="schedule-disable" type="button">Выключить расписание</button>
+<p id="vacancy-flags-status">Статус вакансии загружается…</p>
+<button id="vacancy-star" type="button">В избранное</button>
+<button id="vacancy-unstar" type="button">Убрать из избранного</button>
+<button id="vacancy-archive" type="button">Архивировать вакансию</button>
+<button id="vacancy-restore" type="button">Восстановить вакансию</button>
 <button id="manual-search" type="button">Запустить поиск сейчас</button><p id="manual-status"></p></section>
 <section><h2>Запросы поиска</h2><p>Один запрос на строку, максимум 15. Пустой список сбрасывает ручную настройку.</p>
 <textarea id="prompt-queries" rows="5" maxlength="8000" aria-label="Запросы поиска"></textarea>
