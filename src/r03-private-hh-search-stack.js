@@ -4,6 +4,8 @@ import { createReviewAwareSearchPlan } from './r03-review-aware-search-plan.js';
 import { createHhResumeTransport } from './hh-resume-transport.js';
 import { createOfflineHhColdSearch } from './hh-cold-search-offline.js';
 import { createDurableHhOccurrenceWorker } from './r03-durable-hh-worker.js';
+import { SqlitePrivateBaseQueryCache } from './sqlite-private-base-query-cache.js';
+import { SqlitePrivateQueryOverrides } from './sqlite-private-query-overrides.js';
 
 // Composition boundary for one private host. Identity, ownership, SQLite,
 // query generation, secrets and HTTP are supplied by the host, never by a
@@ -16,7 +18,10 @@ export function createPrivateHhSearchStack({ resolveProfileBinding, isVacancyOwn
       typeof candidateState?.recordCompletedSearch !== 'function' ||
       typeof scheduleRepository?.claimDueOccurrences !== 'function' || typeof clock !== 'function')
     throw new TypeError('private HH search stack ports required');
-  const loadBasePlan = createPrivateBaseSearchPlan({ resolveProfileBinding, isVacancyOwned });
+  const baseQueryCache = new SqlitePrivateBaseQueryCache({ db: candidateState.db });
+  const queryOverrides = new SqlitePrivateQueryOverrides({ db: candidateState.db });
+  const loadBasePlan = createPrivateBaseSearchPlan({ resolveProfileBinding, isVacancyOwned,
+    generateQueries, queryCache: baseQueryCache, queryOverrides });
   const loadSearchPlan = createReviewAwareSearchPlan({ loadBasePlan, candidateState, generateQueries });
   const credentials = createPrivateHhCredentialBroker({ resolveProfileBinding,
     encryptionKey, clientId, clientSecret, fetchImpl });
@@ -32,5 +37,5 @@ export function createPrivateHhSearchStack({ resolveProfileBinding, isVacancyOwn
   const search = createOfflineHhColdSearch({ loadSearchPlan, transport, candidateState, clock });
   const worker = createDurableHhOccurrenceWorker({ scheduleRepository, loadSearchPlan,
     search, candidateState, clock });
-  return { loadSearchPlan, search, worker };
+  return { loadBasePlan, loadSearchPlan, queryOverrides, search, worker };
 }
