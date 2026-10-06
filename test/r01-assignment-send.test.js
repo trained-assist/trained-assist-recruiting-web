@@ -126,6 +126,19 @@ test('stale agreement, duplicate outbound, changed saved source and unconfirmed 
   }
 });
 
+test('receipt with changed canonical request hash is rejected before HH or history calls', async t => {
+  const outbox = privateOutbox(t); let reads = 0, posts = 0;
+  const send = createAssignmentMaterialSender({ outbox,
+    loadSavedMaterialBinding: async () => binding,
+    readFreshConversation: async () => { reads++; return agreed(); },
+    sendHhMessage: async () => { posts++; return { kind: 'accepted' }; } });
+  const result = await send({ context: { profileId: operation.profileId }, operation,
+    receipt: { ...receipt, requestHash: 'e'.repeat(64) }, agreementConfirmed: true });
+  assert.deepEqual(result, { status: 400, body: { error: 'invalid_assignment_send' } });
+  assert.equal(reads, 0);
+  assert.equal(posts, 0);
+});
+
 test('HH adapter sends one UUID-keyed POST and treats empty 201 body as accepted', async () => {
   const calls = [];
   const send = createHhChatMessageSend({ loadCredential: async profileId => ({ profileId, accessToken: 'token_A' }),
