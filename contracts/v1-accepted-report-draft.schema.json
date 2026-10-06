@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-accepted-report-draft.schema.json",
+  "title": "Private report draft from an accepted profile-owned candidate source",
+  "type": "object",
+  "required": ["domainApiVersion", "reportRef", "candidateId", "vacancyId", "sourceRevision", "reportRevision", "status", "reviewState", "clientFields", "createdAt", "updatedAt"],
+  "properties": {
+    "domainApiVersion": { "const": "v1" },
+    "reportRef": { "type": "string", "pattern": "^report_[a-f0-9]{32}$" },
+    "candidateId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+    "vacancyId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+    "sourceRevision": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "reportRevision": { "type": "string", "pattern": "^report-r[1-9][0-9]*$" },
+    "status": { "const": "draft" },
+    "reviewState": { "enum": ["unreviewed", "approved", "changes_requested"] },
+    "clientFields": {
+      "type": "object", "required": ["candidateName", "position", "vacancyTitle", "experience"],
+      "properties": {
+        "candidateName": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "position": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "vacancyTitle": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "experience": { "type": "array", "maxItems": 5, "items": {
+          "type": "object", "required": ["role", "company", "period"],
+          "properties": {
+            "role": { "type": "string", "minLength": 1, "maxLength": 500 },
+            "company": { "type": "string", "minLength": 1, "maxLength": 500 },
+            "period": { "type": "string", "minLength": 1, "maxLength": 500 }
+          }, "additionalProperties": false
+        } }
+      }, "additionalProperties": false
+    },
+    "createdAt": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[^ ]+Z$" },
+    "updatedAt": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[^ ]+Z$" }
+  }, "additionalProperties": false
+}
