@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRecruitingServer } from '../src/server.js';
 import { createR03AccumulatedRealFeed } from '../src/r03-accumulated-real-feed.js';
+import { createRealProactiveRead } from '../src/r03-real-proactive-read.js';
+import { renderRealProactivePage } from '../src/r03-real-proactive-page.js';
 import { createR03PrivateManualCandidate } from '../src/r03-private-manual-candidate.js';
 import { SqliteRealHhCandidateState } from '../src/sqlite-real-hh-candidate-state.js';
 import Ajv2020 from 'ajv/dist/2020.js';
@@ -22,8 +24,9 @@ const atsConfig = { vacancy_title: 'Вымышленная вакансия', fi
 
 function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), 'r03-manual-candidate-'));
+  const filename = join(directory, 'private.sqlite');
   const owned = (profile, vacancy) => profile === profileId && vacancy === vacancyId;
-  const state = new SqliteRealHhCandidateState({ filename: join(directory, 'private.sqlite'), isVacancyOwned: owned });
+  const state = new SqliteRealHhCandidateState({ filename, isVacancyOwned: owned });
   t.after(() => { state.close(); rmSync(directory, { recursive: true, force: true }); });
   const feed = createR03AccumulatedRealFeed({ scheduleRepository: { listOccurrences: () => [] }, candidateState: state });
   const calls = [];
@@ -37,7 +40,7 @@ function fixture(t) {
       calls.push({ url, options });
       return { ok: true, status: 200, headers: { get: () => null }, json: async () => raw };
     }, clock: () => new Date('2026-10-06T08:00:00.000Z') });
-  return { state, feed, add, calls };
+  return { state, feed, add, calls, filename, owned };
 }
 
 test('manual HH candidate is exact-vacancy, idempotent and visible without a search receipt', async t => {
@@ -64,6 +67,15 @@ test('manual HH candidate is exact-vacancy, idempotent and visible without a sea
   assert.equal((await f.add(trusted, command)).body.added, false);
   assert.equal(f.calls.length, 1, 'repeat must not call HH');
   assert.equal(f.state.latestSnapshot(profileId, vacancyId), null, 'manual add is not a search');
+  const reopened = new SqliteRealHhCandidateState({ filename: f.filename, isVacancyOwned: f.owned });
+  t.after(() => reopened.close());
+  const restartedFeed = createR03AccumulatedRealFeed({ scheduleRepository: { listOccurrences: () => [] },
+    candidateState: reopened });
+  assert.equal(restartedFeed.read(trusted, vacancyId).items[0].id, resumeId);
+  const page = renderRealProactivePage({ profileId, vacancyId, feed: restartedFeed.read(trusted, vacancyId) });
+  assert.match(page, /показаны кандидаты, добавленные вручную/);
+  assert.match(page, /Вымышленный инженер/);
+  assert.doesNotMatch(page, /data-job-id="[A-Za-z0-9_-]+"/);
 });
 
 test('HTTP manual add binds trusted profile and does not expose raw HH data', async t => {
@@ -93,6 +105,12 @@ test('HTTP manual add binds trusted profile and does not expose raw HH data', as
   const schema = JSON.parse(readFileSync(new URL('../contracts/v1-real-proactive-results.schema.json', import.meta.url), 'utf8'));
   const validate = new Ajv2020({ strict: true }).compile(schema);
   assert.equal(validate(feed), true, JSON.stringify(validate.errors));
+  const mcpRead = createRealProactiveRead({ feed: f.feed,
+    resolveVacancyOwnership: (context, vacancy) => context.profileId === profileId && vacancy === vacancyId });
+  const mcpValue = await mcpRead(trusted, vacancyId);
+  assert.equal(mcpValue.kind, 'found');
+  assert.equal(validate(mcpValue.value), true, JSON.stringify(validate.errors));
+  assert.deepEqual(mcpValue.value, feed);
 });
 
 test('one credential refresh is bounded; mismatched HH ID and failed SQLite transaction publish nothing', async t => {
