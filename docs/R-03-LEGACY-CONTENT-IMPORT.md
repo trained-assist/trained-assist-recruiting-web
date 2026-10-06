@@ -21,9 +21,11 @@ content matches those supplied bytes; the operator must separately verify that
 these are the bytes captured from the old host.
 
 Raw content stays in owner-only SQLite tables named `r03_legacy_content_*`.
-Wildcard records, unscoped comments, dangling historical references and every
-old snapshot remain quarantined. A snapshot filename must match its payload's
-vacancy ID. Longer original comments are preserved privately; the current
+Wildcard records, unscoped comments, dangling and wrong-vacancy historical
+references, filename/payload vacancy mismatches, and every old snapshot remain
+quarantined with separate counts. The payload vacancy still must belong to
+the bound target profile; a mismatched filename is preserved as source evidence.
+Longer original comments are preserved privately; the current
 review editor's shorter limit applies only at a later explicit promotion. The importer does
 not populate the live candidate/seen/snapshot tables, create accepted manual
 or scheduled receipts, activate schedules, or publish data to the page. This
@@ -33,11 +35,11 @@ the old accumulated catalog and each snapshot into the new feed, including
 legacy scores and per-vacancy review state. Its acceptance evidence must come
 from the operator/source history rather than this import receipt.
 
-Counts distinguish wildcard candidates, quarantined snapshots, unbound seen
-rows, unbound snapshot members, unbound comments and global comments. Exact
-compatibility with the real GCP content remains unverified because a restricted
-read-only aggregate inspection did not locate the source directory; this PR
-therefore does not claim a successful real import.
+Counts distinguish wildcard candidates, quarantined snapshots, dangling and
+wrong-vacancy references in each family, filename mismatches and global
+comments. A read-only aggregate check of the old host confirmed that these
+anomaly classes occur in its files. Exact compatibility of a full private
+import remains unverified; this PR does not claim a successful real import.
 
 The [private backup and restore runbook](R-03-PRIVATE-BACKUP-RESTORE.md) covers
 that source-to-target byte check and final writer freeze. The public tests use

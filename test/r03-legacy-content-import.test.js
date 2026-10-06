@@ -8,8 +8,9 @@ import { SqliteRealHhCandidateState } from '../src/sqlite-real-hh-candidate-stat
 
 const profile = 'profile_invented';
 const vacancy = 'vacancy_invented';
+const secondVacancy = 'vacancy_second_owned';
 const otherVacancy = 'vacancy_elsewhere';
-const owned = (profileId, vacancyId) => profileId === profile && vacancyId === vacancy;
+const owned = (profileId, vacancyId) => profileId === profile && [vacancy, secondVacancy].includes(vacancyId);
 const bind = source => source === 'source_invented' ? profile : null;
 const copy = value => structuredClone(value);
 
@@ -31,7 +32,9 @@ function content() {
     globalComments: { resume_invented_wildcard: { text: 'Глобальная заметка без вакансии' } },
     expectedCounts: { allCandidates: 2, seenIds: 2, snapshots: 1, comments: 2,
       globalComments: 1, wildcardQuarantined: 1, quarantinedSnapshots: 1,
-      unboundSeen: 0, unboundSnapshotMembers: 0, unboundComments: 0, unboundReferences: 0 }
+      unboundSeen: 0, mismatchedSeen: 0, unboundSnapshotMembers: 0, mismatchedSnapshotMembers: 0,
+      snapshotFilenameMismatches: 0, unboundComments: 0, mismatchedComments: 0,
+      unboundReferences: 0 }
   };
   return withBytes(input);
 }
@@ -130,7 +133,6 @@ test('profile, vacancy, links, counts, duplicates and source filenames fail befo
       input.snapshots[0].payload.vacancy_id = otherVacancy; },
     input => { input.snapshots.push(copy(input.snapshots[0])); input.expectedCounts.snapshots++; },
     input => { input.snapshots[0].sourceFile = '../search-results-evil.json'; },
-    input => { input.snapshots[0].sourceFile = 'search-results-2026-10-03-vacancy_elsewhere.json'; },
     input => { input.comments[otherVacancy] = { resume_invented_bound: { text: 'Fake' } }; },
     input => { input.expectedCounts.seenIds = 1; }
   ];
@@ -139,6 +141,33 @@ test('profile, vacancy, links, counts, duplicates and source filenames fail befo
     assert.throws(() => importer.import(input));
   }
   assert.equal(importer.db.prepare('SELECT COUNT(*) AS count FROM r03_legacy_content_import').get().count, 0);
+});
+
+test('historical vacancy and snapshot filename mismatches stay quarantined with distinct counts', t => {
+  const { open } = fixture(t);
+  const importer = open();
+  const input = content();
+  input.seenIds[secondVacancy] = { resume_invented_bound: '2026-10-02' };
+  input.snapshots[0].payload.vacancy_id = secondVacancy;
+  input.comments[secondVacancy] = { resume_invented_bound: { text: 'Вымышленная заметка для другой вакансии' } };
+  input.expectedCounts.seenIds++;
+  input.expectedCounts.comments++;
+  input.expectedCounts.mismatchedSeen++;
+  input.expectedCounts.mismatchedSnapshotMembers++;
+  input.expectedCounts.snapshotFilenameMismatches++;
+  input.expectedCounts.mismatchedComments++;
+  withBytes(input);
+  const receipt = importer.import(input);
+  assert.equal(receipt.kind, 'imported');
+  assert.equal(receipt.counts.mismatchedSeen, 1);
+  assert.equal(receipt.counts.mismatchedSnapshotMembers, 1);
+  assert.equal(receipt.counts.snapshotFilenameMismatches, 1);
+  assert.equal(importer.db.prepare('SELECT vacancy_mismatch FROM r03_legacy_content_seen WHERE vacancy_id=?')
+    .get(secondVacancy).vacancy_mismatch, 1);
+  assert.deepEqual(importer.db.prepare('SELECT acceptance_status,vacancy_mismatch_references,filename_vacancy_mismatch FROM r03_legacy_content_snapshot').get(),
+    { acceptance_status: 'quarantined', vacancy_mismatch_references: 1, filename_vacancy_mismatch: 1 });
+  assert.equal(importer.db.prepare('SELECT vacancy_mismatch FROM r03_legacy_content_comment WHERE vacancy_id=?')
+    .get(secondVacancy).vacancy_mismatch, 1);
 });
 
 test('dangling historical references are preserved with quarantine markers', t => {
