@@ -137,6 +137,15 @@ test('failed one-candidate provider call remains unknown and cannot rerun', asyn
   assert.equal(receipt.outcomeClass, 'provider_http_error');
   assert.equal(receipt.providerHttpStatus, 503);
   assert.equal(JSON.stringify(receipt).includes('Вымышленное Имя'), false);
+  delete receipt.outcomeClass;
+  delete receipt.providerHttpStatus;
+  writeFileSync(join(f.outputDirectory, 'receipt.json'), JSON.stringify(receipt) + '\n', { mode: 0o600 });
+  const replay = await runPrivateOneAtsCanary({ ...f, mode: 'replay',
+    fetchImpl: async () => { throw new Error('legacy replay must not dispatch'); } });
+  assert.equal(replay.status, 'replayed');
+  assert.equal(replay.outcomeClass, 'legacy_unclassified');
+  assert.equal(replay.providerRequests, 0);
+  assert.deepEqual(p.calls(), { invented: 1, real: 1 });
   await assert.rejects(runPrivateOneAtsCanary({ ...f, mode: 'run',
     fetchImpl: async () => { throw new Error('must not dispatch'); } }));
 });
