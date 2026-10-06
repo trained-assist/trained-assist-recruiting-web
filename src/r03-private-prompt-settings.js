@@ -54,7 +54,8 @@ export function createR03PrivatePromptSettings({ loadBasePlan, queryOverrides, i
       return { status: 409, body: { error: 'query_revision_conflict',
         current_revision: current.body.query_revision,
         current_override_revision: current.body.override_revision } };
-    if (queries.length && JSON.stringify(queries) === JSON.stringify(current.body.queries))
+    if (queries.length && current.body.queries_manual &&
+        JSON.stringify(queries) === JSON.stringify(current.body.queries))
       return { status: 200, body: { ...current.body, queries_state: 'unchanged' } };
     let result;
     try { result = queryOverrides.save(context.profileId, command.vacancy_id,

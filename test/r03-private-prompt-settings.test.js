@@ -133,6 +133,14 @@ for (const sourceMode of ['missing', 'stale']) {
     assert.equal(reset.status, 200);
     assert.equal(ladderCalls, 1);
     assert.deepEqual(reset.body.queries, ['новый сгенерированный запрос']);
+    const pinGenerated = await prompt.save(context, { vacancy_id: vacancyId,
+      queries: 'новый сгенерированный запрос', expected_revision: reset.body.query_revision,
+      expected_override_revision: 2 });
+    assert.equal(pinGenerated.status, 200);
+    assert.equal(pinGenerated.body.queries_manual, true,
+      'explicit Save pins even unchanged generated text against later regeneration');
+    assert.equal(pinGenerated.body.override_revision, 3);
+    assert.equal(ladderCalls, 1);
     if (frozen) assert.equal(readFileSync(queryFile, 'utf8'), frozen);
     else assert.throws(() => readFileSync(queryFile), { code: 'ENOENT' });
   });
