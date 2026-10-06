@@ -33,7 +33,9 @@ function content() {
     expectedCounts: { allCandidates: 2, seenIds: 2, snapshots: 1, comments: 2,
       globalComments: 1, wildcardQuarantined: 1, quarantinedSnapshots: 1,
       unboundSeen: 0, mismatchedSeen: 0, unboundSnapshotMembers: 0, mismatchedSnapshotMembers: 0,
-      snapshotFilenameMismatches: 0, unboundComments: 0, mismatchedComments: 0,
+      unsafeSeenVacancyBuckets: 0, unsafeSeenRows: 0,
+      snapshotFilenameMismatches: 0, unboundVacancySnapshots: 0,
+      unboundComments: 0, mismatchedComments: 0,
       unboundReferences: 0 }
   };
   return withBytes(input);
@@ -168,6 +170,28 @@ test('historical vacancy and snapshot filename mismatches stay quarantined with 
     { acceptance_status: 'quarantined', vacancy_mismatch_references: 1, filename_vacancy_mismatch: 1 });
   assert.equal(importer.db.prepare('SELECT vacancy_mismatch FROM r03_legacy_content_comment WHERE vacancy_id=?')
     .get(secondVacancy).vacancy_mismatch, 1);
+});
+
+test('unsafe old seen bucket and snapshot without vacancy are retained only as private evidence', t => {
+  const { open } = fixture(t);
+  const importer = open();
+  const input = content();
+  input.seenIds['Вымышленная вакансия'] = { resume_invented_bound: '2026-10-01' };
+  input.snapshots[0].payload.vacancy_id = null;
+  input.expectedCounts.seenIds++;
+  input.expectedCounts.unsafeSeenVacancyBuckets++;
+  input.expectedCounts.unsafeSeenRows++;
+  input.expectedCounts.snapshotFilenameMismatches++;
+  input.expectedCounts.unboundVacancySnapshots++;
+  withBytes(input);
+  const receipt = importer.import(input);
+  assert.equal(receipt.kind, 'imported');
+  assert.equal(receipt.counts.unsafeSeenRows, 1);
+  assert.equal(receipt.counts.unboundVacancySnapshots, 1);
+  assert.equal(importer.db.prepare('SELECT unsafe_vacancy FROM r03_legacy_content_seen WHERE vacancy_id=?')
+    .get('Вымышленная вакансия').unsafe_vacancy, 1);
+  assert.deepEqual(importer.db.prepare('SELECT unbound_vacancy,acceptance_status FROM r03_legacy_content_snapshot').get(),
+    { unbound_vacancy: 1, acceptance_status: 'quarantined' });
 });
 
 test('dangling historical references are preserved with quarantine markers', t => {

@@ -24,7 +24,10 @@ Raw content stays in owner-only SQLite tables named `r03_legacy_content_*`.
 Wildcard records, unscoped comments, dangling and wrong-vacancy historical
 references, filename/payload vacancy mismatches, and every old snapshot remain
 quarantined with separate counts. The payload vacancy still must belong to
-the bound target profile; a mismatched filename is preserved as source evidence.
+the bound target profile when it is a valid scoped ID; a missing/unsafe payload
+vacancy is preserved without an inferred assignment. Unsafe old seen bucket
+names are also preserved without assigning them to a target vacancy. A
+mismatched filename is preserved as source evidence.
 Longer original comments are preserved privately; the current
 review editor's shorter limit applies only at a later explicit promotion. The importer does
 not populate the live candidate/seen/snapshot tables, create accepted manual
