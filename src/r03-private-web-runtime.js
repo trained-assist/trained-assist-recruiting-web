@@ -10,6 +10,7 @@ import { createR03AccumulatedRealFeedFromStores } from './r03-accumulated-real-f
 import { createR03RealProactiveActions } from './r03-real-proactive-actions.js';
 import { createPrivateWebAuth } from './r03-private-web-auth.js';
 import { createR03PrivatePromptSettings } from './r03-private-prompt-settings.js';
+import { createR03PrivateSeenImport } from './r03-private-seen-import.js';
 import { createRecruitingServer } from './server.js';
 
 // Constructing the server makes no provider request or public bind. The owner
@@ -46,12 +47,15 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
       isVacancyOwned: config.isVacancyOwned, clock });
     const prompt = createR03PrivatePromptSettings({ loadBasePlan: stack.loadBasePlan,
       queryOverrides: stack.queryOverrides, isVacancyOwned: config.isVacancyOwned, clock });
+    const seenImport = createR03PrivateSeenImport({ candidateState: candidates,
+      isVacancyOwned: config.isVacancyOwned, clock });
     const auth = createPrivateWebAuth({ legacySecret,
       resolveLegacyProfile: config.resolveLegacyProfile,
       isWebProfileMapped: config.isWebProfileMapped, publicOrigin,
       clock: () => clock().getTime() });
     const server = createRecruitingServer({ realProactiveFeed: feed,
       realProactiveActions: actions, realProactivePrompt: prompt,
+      realProactiveSeenImport: seenImport,
       resolveTrustedProfileContext: auth,
       resolveRealVacancyOwnership: (context, vacancyId) => config.isVacancyOwned(context.profileId, vacancyId),
       resolveRealDefaultVacancy: context => {
