@@ -5,7 +5,7 @@ export async function runHhBackgroundScoringTick({ state, profileId, vacancyId, 
       typeof evaluate !== 'function' || typeof currentCriteriaRevision !== 'function' || typeof now !== 'function') {
     throw new TypeError('scoring ports required');
   }
-  const pending = state.unassessedLatest({ profileId, vacancyId, limit });
+  const pending = state.unassessedLatest({ profileId, vacancyId, limit, at: now().toISOString() });
   if (expectedJobId !== null && pending.some(item => item.snapshot.jobId !== expectedJobId))
     return { pending: 0, written: 0, stale: pending.length, alreadyScored: 0, failed: 0 };
   const summary = { pending: pending.length, written: 0, stale: 0, alreadyScored: 0, failed: 0 };
@@ -20,6 +20,8 @@ export async function runHhBackgroundScoringTick({ state, profileId, vacancyId, 
         criteriaRevision: item.snapshot.criteriaRevision, inputRevision: item.inputRevision });
     } catch {
       // Never return evaluator errors: they may embed a resume or prompt.
+      state.recordAssessmentFailure?.({ profileId, vacancyId, jobId: item.snapshot.jobId,
+        candidateId: item.candidate.id, inputRevision: item.inputRevision, failedAt: now().toISOString() });
       summary.failed++;
       continue;
     }
@@ -31,6 +33,8 @@ export async function runHhBackgroundScoringTick({ state, profileId, vacancyId, 
         candidateId: item.candidate.id, inputRevision: item.inputRevision, assessment, assessedAt: now().toISOString() });
     } catch (error) {
       if (!(error instanceof TypeError)) throw error;
+      state.recordAssessmentFailure?.({ profileId, vacancyId, jobId: item.snapshot.jobId,
+        candidateId: item.candidate.id, inputRevision: item.inputRevision, failedAt: now().toISOString() });
       summary.failed++;
       continue;
     }

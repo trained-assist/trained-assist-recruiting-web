@@ -1,5 +1,6 @@
 // HH resume search boundary. No ambient fetch, profile files, or credentials are read here.
 const HH_RESUMES_URL = 'https://api.hh.ru/resumes';
+const MAX_PAGES = 40;
 const SAFE_ID = /^[a-zA-Z0-9_-]+$/;
 
 export class HhSearchError extends Error {
@@ -73,8 +74,13 @@ export function createHhResumeTransport({ loadVacancyContext, loadCredential, re
       const params = new URLSearchParams({ text: query, page: '0', per_page: '50', order_by: 'relevance' });
       for (const area of areas) params.append('area', area);
       let refreshed = false;
-      let retries = 0;
-      for (;;) {
+      const items = [];
+      let expectedPages = null;
+      let found = null;
+      for (let page = 0; page < (expectedPages ?? 1); page++) {
+        params.set('page', String(page));
+        let retries = 0;
+        for (;;) {
         let response;
         try {
           response = await fetchImpl(`${HH_RESUMES_URL}?${params}`, {
@@ -109,9 +115,21 @@ export function createHhResumeTransport({ loadVacancyContext, loadCredential, re
         let data;
         try { data = await response.json(); }
         catch { throw new HhSearchError('provider_invalid_response'); }
-        if (!data || !Array.isArray(data.items) || data.items.length > 50) throw new HhSearchError('provider_invalid_response');
-        return { profileId, vacancyId, areas, items: data.items, found: data.found ?? null, pages: data.pages ?? null };
+        if (!data || !Array.isArray(data.items) || data.items.length > 50 ||
+            data.pages !== undefined && (!Number.isSafeInteger(data.pages) || data.pages < 0) ||
+            data.found !== undefined && (!Number.isSafeInteger(data.found) || data.found < 0))
+          throw new HhSearchError('provider_invalid_response');
+        const pages = data.pages ?? 1;
+        if (pages === 0 && (page !== 0 || data.items.length !== 0)) throw new HhSearchError('provider_invalid_response');
+        if (pages > MAX_PAGES) throw new HhSearchError('provider_result_window_exceeded');
+        if (expectedPages !== null && pages !== expectedPages) throw new HhSearchError('provider_page_count_changed');
+        expectedPages = pages;
+        found ??= data.found ?? null;
+        items.push(...data.items);
+        break;
+        }
       }
+      return { profileId, vacancyId, areas, items, found, pages: expectedPages };
     }
   };
 }

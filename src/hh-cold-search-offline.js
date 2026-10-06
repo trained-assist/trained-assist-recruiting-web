@@ -60,14 +60,18 @@ export function createOfflineHhColdSearch({ loadSearchPlan, transport, candidate
         let page;
         try { page = await transport.search({ trustedContext, vacancyId, query, area: plan.area }); }
         catch { throw new HhColdSearchRunError('provider_search_failed'); }
-        if (page.profileId !== profileId || page.vacancyId !== vacancyId || !Array.isArray(page.areas) || !Array.isArray(page.items) || page.items.length > 50 ||
+        if (page.profileId !== profileId || page.vacancyId !== vacancyId || !Array.isArray(page.areas) || !Array.isArray(page.items) || page.items.length > 2000 ||
             (areas !== null && JSON.stringify(areas) !== JSON.stringify(page.areas))) throw new HhColdSearchRunError('provider_scope_or_area_mismatch');
         areas ??= page.areas;
-        let mapped;
-        try { mapped = mapHhResumePage(page.items, plan.atsConfig, vacancyId); }
-        catch { throw new HhColdSearchRunError('provider_mapping_failed'); }
+        const mappedCandidates = [];
+        try {
+          for (let offset = 0; offset < page.items.length; offset += 50) {
+            const mapped = mapHhResumePage(page.items.slice(offset, offset + 50), plan.atsConfig, vacancyId);
+            mappedCandidates.push(...mapped.candidates);
+          }
+        } catch { throw new HhColdSearchRunError('provider_mapping_failed'); }
         for (const item of page.items) collectedIds.add(item.id);
-        for (const candidate of mapped.candidates) if (!excluded.has(candidate.id) && !candidates.has(candidate.id)) candidates.set(candidate.id, candidate);
+        for (const candidate of mappedCandidates) if (!excluded.has(candidate.id) && !candidates.has(candidate.id)) candidates.set(candidate.id, candidate);
       }
       let current;
       try { current = validatedPlan(await loadSearchPlan(profileId, vacancyId), profileId, vacancyId, expectedCriteriaRevision, expectedQueryRevision); }
