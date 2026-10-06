@@ -21,6 +21,7 @@ import { createRecruitingServer } from './server.js';
 import { createControlPlaneConnectedAppClient, createRecruitingConnectedAppBff } from './connected-app-bff.js';
 import { SqliteConnectedAppBffStore } from './sqlite-connected-app-bff-store.js';
 import { createHhResponseRead } from './r01-live-responses.js';
+import { createHhResponseDetailRead } from './r01-live-response-detail.js';
 import { createPrivateVacancyAssignmentRead, createPrivateVacancyAssignmentSave } from './r01-private-vacancy-assignment.js';
 
 // Constructing the server makes no provider request or public bind. The owner
@@ -86,6 +87,9 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
     const liveResponseRead = connectedAppBff !== null || connectedBffConfig !== null
       ? createHhResponseRead({ ...stack.credentialBroker, fetchImpl,
         isVacancyOwned: config.isVacancyOwned, userAgent, clock }) : null;
+    const liveResponseDetailRead = connectedAppBff !== null || connectedBffConfig !== null
+      ? createHhResponseDetailRead({ ...stack.credentialBroker, fetchImpl,
+        isVacancyOwned: config.isVacancyOwned, userAgent, clock }) : null;
     const liveAssignmentRead = connectedAppBff !== null || connectedBffConfig !== null
       ? createPrivateVacancyAssignmentRead({ resolveProfileBinding: config.resolveProfileBinding,
         isVacancyOwned: config.isVacancyOwned }) : null;
@@ -121,6 +125,7 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
       realProactiveAiScore: aiScore,
       realProactiveManualCandidate: manualCandidate,
       liveResponseRead,
+      liveResponseDetailRead,
       liveAssignmentRead,
       liveAssignmentSave,
       resolveTrustedProfileContext: auth ?? (() => null), connectedAppBff,
