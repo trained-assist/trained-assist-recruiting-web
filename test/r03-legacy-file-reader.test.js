@@ -52,7 +52,7 @@ test('unscoped source, missing core file and symlinked source fail closed', t =>
   rmSync(join(input.proactiveDirectory, 'all-candidates.json'));
   assert.throws(() => readLegacyR03ProfileFiles(input), /missing_legacy_source_core_file/);
   symlinkSync(join(input.root, 'outside.json'), join(input.proactiveDirectory, 'all-candidates.json'));
-  assert.throws(() => readLegacyR03ProfileFiles(input), /invalid_legacy_source_file/);
+  assert.throws(() => readLegacyR03ProfileFiles(input), /legacy_source_file_unavailable/);
 });
 
 test('old unscoped snapshot filename is not silently omitted', t => {

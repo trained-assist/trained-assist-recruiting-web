@@ -1,5 +1,5 @@
 import { createHmac } from 'node:crypto';
-import { lstatSync, readFileSync, readdirSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { projectLegacyR03Sources } from './r03-legacy-source-projection.js';
 
@@ -10,13 +10,18 @@ function readJson(directory, name, kind, hmacKey, receipts) {
   if (typeof name !== 'string' || !/^[A-Za-z0-9_.:-]+\.json$/.test(name)) fail('invalid_legacy_source_filename');
   const filename = join(directory, name);
   let bytes;
+  let descriptor;
   try {
-    const info = lstatSync(filename);
+    descriptor = openSync(filename, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const info = fstatSync(descriptor);
     if (!info.isFile() || info.size > maxFileBytes) fail('invalid_legacy_source_file');
-    bytes = readFileSync(filename);
+    bytes = readFileSync(descriptor);
+    if (bytes.length > maxFileBytes || bytes.length !== info.size) fail('legacy_source_file_changed');
   } catch (error) {
-    if (error.message === 'invalid_legacy_source_file') throw error;
+    if (['invalid_legacy_source_file', 'legacy_source_file_changed'].includes(error.message)) throw error;
     fail('legacy_source_file_unavailable');
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
   }
   receipts.push({ kind,
     filename: name, bytes: bytes.length,
