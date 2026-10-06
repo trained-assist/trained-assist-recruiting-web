@@ -15,16 +15,24 @@ import { createR03PrivatePromptSettings } from './r03-private-prompt-settings.js
 import { createR03PrivateSeenImport } from './r03-private-seen-import.js';
 import { createR03PrivateAiScore } from './r03-private-ai-score.js';
 import { createR03PrivateManualCandidate } from './r03-private-manual-candidate.js';
+import { loadPrivateHistoricalRead } from './r03-private-historical-read.js';
 import { createRecruitingServer } from './server.js';
 
 // Constructing the server makes no provider request or public bind. The owner
 // explicitly supplies private config/credentials; the HTTP process owns its
 // SQLite handles and closes them with the server.
 export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImpl = globalThis.fetch,
-  clock = () => new Date(), publicOrigin = 'https://recruiter-assistant.ru' } = {}) {
+  clock = () => new Date(), publicOrigin = 'https://recruiter-assistant.ru',
+  historicalImportConfigFile, historicalReceiptFile, historicalReceiptSha256 } = {}) {
   if (typeof fetchImpl !== 'function' || typeof clock !== 'function')
     throw new TypeError('private_web_runtime_unavailable');
+  const historyOptions = [historicalImportConfigFile, historicalReceiptFile, historicalReceiptSha256];
+  if (historyOptions.some(value => value !== undefined) &&
+      historyOptions.some(value => value === undefined)) throw new TypeError('historical_receipt_binding_required');
   const config = loadPrivateHostConfig(configFile);
+  const historicalRead = historicalReceiptFile === undefined ? null : loadPrivateHistoricalRead({
+    importConfigFile: historicalImportConfigFile, receiptFile: historicalReceiptFile,
+    receiptSha256: historicalReceiptSha256, hostConfig: config });
   const legacySecret = loadPrivateHostSecret(secretsDirectory, 'legacy_page_secret');
   const encryptionKey = loadPrivateHostSecret(secretsDirectory, 'hh_encryption_key');
   if (!/^[a-fA-F0-9]{64}$/.test(encryptionKey)) throw new Error('invalid_private_encryption_key');
@@ -69,6 +77,7 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
       isWebProfileMapped: config.isWebProfileMapped, publicOrigin,
       clock: () => clock().getTime() });
     const server = createRecruitingServer({ realProactiveFeed: feed,
+      realProactiveHistoricalRead: historicalRead,
       realProactiveActions: actions, realProactivePrompt: prompt,
       realProactiveSeenImport: seenImport,
       realProactiveAiScore: aiScore,
@@ -98,6 +107,12 @@ function parseArgs(args) {
     else if (arg === '--config' && options.configFile === undefined) options.configFile = args[++i];
     else if (arg === '--secrets' && options.secretsDirectory === undefined) options.secretsDirectory = args[++i];
     else if (arg === '--port' && options.port === undefined) options.port = Number(args[++i]);
+    else if (arg === '--historical-import-config' && options.historicalImportConfigFile === undefined)
+      options.historicalImportConfigFile = args[++i];
+    else if (arg === '--historical-receipt' && options.historicalReceiptFile === undefined)
+      options.historicalReceiptFile = args[++i];
+    else if (arg === '--historical-receipt-sha256' && options.historicalReceiptSha256 === undefined)
+      options.historicalReceiptSha256 = args[++i];
     else throw new Error('invalid_private_web_arguments');
   }
   if (!options.liveExecution || !Number.isSafeInteger(options.port) || options.port < 1 || options.port > 65535)
