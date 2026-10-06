@@ -10,6 +10,8 @@ Archiving a vacancy disables its existing schedule in the same SQLite
 transaction as the flag update. Restoring it does not reactivate the schedule.
 Enabling an archived vacancy is rejected until the recruiter explicitly
 restores it. Candidate review status and vacancy flags are separate state.
+An occurrence already claimed before archive may finish; archive prevents new
+claims and does not discard an accepted result.
 The legacy source's page flags still need a private import decision; this slice
 does not infer them from the paused schedule definitions.
 
