@@ -2,6 +2,7 @@
 // used to establish the server-side profile session; requests carry no token.
 const root = document.querySelector('main[data-vacancy-id]');
 if (root) {
+  const profileId = root.dataset.profileId;
   const vacancyId = root.dataset.vacancyId;
   const status = document.getElementById('action-status');
   const manualStatus = document.getElementById('manual-status');
@@ -46,8 +47,8 @@ if (root) {
     status.textContent = 'Расписание выключено.';
   }));
 
-  const runStorageKey = `r03:manual-run:${vacancyId}`;
-  const requestStorageKey = `r03:manual-request:${vacancyId}`;
+  const runStorageKey = `r03:manual-run:${profileId}:${vacancyId}`;
+  const requestStorageKey = `r03:manual-request:${profileId}:${vacancyId}`;
   const stored = key => { try { return sessionStorage.getItem(key); } catch { return null; } };
   const remember = (key, value) => { try { sessionStorage.setItem(key, value); } catch { /* unavailable */ } };
   const forget = key => { try { sessionStorage.removeItem(key); } catch { /* unavailable */ } };

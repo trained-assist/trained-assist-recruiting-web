@@ -25,7 +25,7 @@ test('browser page uses profile cookie API, exact review revisions, idempotent m
   ]);
   const card = { dataset: { candidateId: 'invented_resume', reviewRevision: '2' },
     querySelector: selector => cardElements.get(selector) };
-  const root = { dataset: { vacancyId } };
+  const root = { dataset: { profileId: 'invented_profile_A', vacancyId } };
   let reloads = 0;
   let replaced = '';
   let polls = 0;
@@ -71,4 +71,35 @@ test('browser page uses profile cookie API, exact review revisions, idempotent m
   assert.equal(polls, 2);
   assert.equal(reloads, 3);
   assert.equal(session.size, 0);
+});
+
+test('switching signed profile on the same vacancy does not resume or reuse the first profile run', async () => {
+  const previousRunKey = `r03:manual-run:invented_profile_A:${vacancyId}`;
+  const session = new Map([[previousRunKey, 'run_A']]);
+  const handlers = new Map();
+  const elements = new Map(['action-status', 'manual-status', 'schedule-status', 'interval-hours',
+    'schedule-enable', 'schedule-disable', 'manual-search'].map(id => [id, { id,
+    value: id === 'interval-hours' ? '24' : '', textContent: '', disabled: false,
+    addEventListener: (_name, handler) => handlers.set(id, handler) }]));
+  const calls = [];
+  const fetch = async (path, options = {}) => {
+    calls.push({ path, options });
+    return { ok: true, status: 200, json: async () => path.includes('/schedule?') ? { schedules: [] } :
+      path.endsWith('/search') ? { run: { runId: 'run_B' } } : { run: { status: 'completed' } } };
+  };
+  runInNewContext(script, {
+    document: { querySelector: () => ({ dataset: { profileId: 'invented_profile_B', vacancyId } }),
+      getElementById: id => elements.get(id), querySelectorAll: () => [] },
+    location: { href: `https://recruiter-assistant.ru/hh/proactive?vacancy_id=${vacancyId}`, reload: () => {} },
+    history: { replaceState: () => {} }, crypto: { randomUUID: () => 'new_key_B' },
+    sessionStorage: { getItem: key => session.get(key) ?? null,
+      setItem: (key, value) => session.set(key, value), removeItem: key => session.delete(key) },
+    fetch, URL, setTimeout: callback => { callback(); return 1; }
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  await handlers.get('manual-search')({ currentTarget: elements.get('manual-search') });
+  assert.ok(calls.some(call => call.path === '/api/hh/proactive/search' && call.options.headers['Idempotency-Key'] === 'new_key_B'));
+  assert.ok(calls.every(call => !call.path.endsWith('/run_A')));
+  assert.equal(session.get(previousRunKey), 'run_A', 'other profile state remains isolated');
+  assert.equal(session.has(`r03:manual-run:invented_profile_B:${vacancyId}`), false);
 });

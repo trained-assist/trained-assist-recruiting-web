@@ -49,7 +49,9 @@ test('private web runtime accepts only exact old signed link then scopes session
   assert.equal((await fetch(`${base}/hh/proactive?username=other&token=${token}&vacancy_id=${vacancyId}`)).status, 401);
   const pageResponse = await fetch(link);
   assert.equal(pageResponse.status, 200);
-  assert.match(await pageResponse.text(), /Принятых результатов пока нет/);
+  const pageText = await pageResponse.text();
+  assert.match(pageText, /Принятых результатов пока нет/);
+  assert.match(pageText, /data-profile-id="invented_recruiter"/);
   const cookie = pageResponse.headers.get('set-cookie');
   assert.match(cookie, /HttpOnly; Secure; SameSite=Strict/);
   const auth = { Cookie: cookie.split(';')[0] };

@@ -9,7 +9,7 @@ const safeResumeUrl = value => {
   } catch { return null; }
 };
 
-export function renderRealProactivePage({ vacancyId, feed, listView = 'active' }) {
+export function renderRealProactivePage({ profileId = '', vacancyId, feed, listView = 'active' }) {
   if (!['active', 'starred', 'archived'].includes(listView)) throw new TypeError('invalid_list_view');
   const freshness = feed.freshness === 'latest_run_incomplete' ? 'Последний поиск не завершён; показаны ранее принятые кандидаты.' :
     feed.status === 'never_run' ? 'Принятых результатов пока нет.' : 'Показаны принятые результаты поиска.';
@@ -34,7 +34,7 @@ article{background:white;border:1px solid #d9e2ec;border-radius:10px;padding:1re
 .notice{padding:1rem;border-radius:8px;background:#fff4ce}.comment{white-space:pre-wrap}
 .controls{display:grid;gap:.5rem;margin-top:1rem;max-width:28rem}textarea{display:block;width:100%;min-height:4rem}
 nav a{margin-right:1rem}button{cursor:pointer}#action-status{min-height:1.5rem}
-</style><script src="/hh/proactive/app.js" defer></script></head><body><main data-vacancy-id="${escapeHtml(vacancyId)}"><h1>Кандидаты по вакансии ${escapeHtml(vacancyId)}</h1>
+</style><script src="/hh/proactive/app.js" defer></script></head><body><main data-profile-id="${escapeHtml(profileId)}" data-vacancy-id="${escapeHtml(vacancyId)}"><h1>Кандидаты по вакансии ${escapeHtml(vacancyId)}</h1>
 <p class="notice">${escapeHtml(freshness)}</p><p id="action-status" role="status" aria-live="polite"></p>
 <section><h2>Поиск</h2><p id="schedule-status">Загрузка расписания…</p>
 <label>Интервал, часы <input id="interval-hours" type="number" min="0.5" max="8760" step="0.5" value="24"></label>

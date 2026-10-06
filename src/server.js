@@ -309,7 +309,7 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
           else {
             if (path === '/hh/proactive') {
               type = mime.html;
-              body = renderRealProactivePage({ vacancyId: realVacancyId, feed: result.feed,
+              body = renderRealProactivePage({ profileId: context.profileId, vacancyId: realVacancyId, feed: result.feed,
                 listView: url.searchParams.get('list') ?? 'active' });
               res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'");
               res.setHeader('Referrer-Policy', 'no-referrer');
