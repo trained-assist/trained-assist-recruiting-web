@@ -150,7 +150,10 @@ export class R03LegacyContentImporter {
     }
     const counts = { allCandidates: candidates.length, seenIds: seen.length,
       snapshots: snapshots.length, comments: comments.length, globalComments: Object.keys(globalComments ?? {}).length,
-      wildcardQuarantined: wildcard, unboundReferences };
+      wildcardQuarantined: wildcard, quarantinedSnapshots: snapshots.length,
+      unboundSeen: seen.filter(row => row.unbound).length,
+      unboundSnapshotMembers: snapshots.reduce((sum, row) => sum + row.unbound, 0),
+      unboundComments: comments.filter(row => row.unbound).length, unboundReferences };
     if (Object.keys(input.expectedCounts).length !== Object.keys(counts).length ||
         Object.entries(counts).some(([key, value]) => input.expectedCounts[key] !== value))
       throw new Error('legacy_content_count_mismatch');

@@ -33,6 +33,12 @@ the old accumulated catalog and each snapshot into the new feed, including
 legacy scores and per-vacancy review state. Its acceptance evidence must come
 from the operator/source history rather than this import receipt.
 
+Counts distinguish wildcard candidates, quarantined snapshots, unbound seen
+rows, unbound snapshot members, unbound comments and global comments. Exact
+compatibility with the real GCP content remains unverified because a restricted
+read-only aggregate inspection did not locate the source directory; this PR
+therefore does not claim a successful real import.
+
 The [private backup and restore runbook](R-03-PRIVATE-BACKUP-RESTORE.md) covers
 that source-to-target byte check and final writer freeze. The public tests use
 invented names, IDs and comments. No source profile ID,

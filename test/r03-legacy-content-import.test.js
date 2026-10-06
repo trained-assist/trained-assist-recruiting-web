@@ -30,7 +30,8 @@ function content() {
     comments: { [vacancy]: { resume_invented_bound: { text: 'Вымышленный комментарий', updatedAt: '2026-10-03T07:00:00.000Z' } } },
     globalComments: { resume_invented_wildcard: { text: 'Глобальная заметка без вакансии' } },
     expectedCounts: { allCandidates: 2, seenIds: 2, snapshots: 1, comments: 2,
-      globalComments: 1, wildcardQuarantined: 1, unboundReferences: 0 }
+      globalComments: 1, wildcardQuarantined: 1, quarantinedSnapshots: 1,
+      unboundSeen: 0, unboundSnapshotMembers: 0, unboundComments: 0, unboundReferences: 0 }
   };
   return withBytes(input);
 }
@@ -147,6 +148,9 @@ test('dangling historical references are preserved with quarantine markers', t =
   input.comments[vacancy].resume_missing_old = { text: 'Старая вымышленная заметка' };
   input.expectedCounts.seenIds++;
   input.expectedCounts.comments++;
+  input.expectedCounts.unboundSeen++;
+  input.expectedCounts.unboundSnapshotMembers++;
+  input.expectedCounts.unboundComments++;
   input.expectedCounts.unboundReferences = 3;
   withBytes(input);
   assert.equal(importer.import(input).kind, 'imported');
