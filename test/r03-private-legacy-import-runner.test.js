@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { runPrivateLegacyImport } from '../src/r03-private-legacy-import-runner.js';
 import { createPrivateLegacyInventory } from '../src/r03-private-legacy-inventory.js';
+import { createPrivateLegacyBinding } from '../src/r03-private-legacy-binding.js';
 
 const sourceRef = 'invented_legacy_user';
 const profileId = 'invented_profile';
@@ -59,7 +60,7 @@ function fixture(t) {
     archivePath, archiveBytes: bytes.length, archiveSha256: sha256, manifestPath,
     targetDbPath: join(dbDir, 'candidate.sqlite'), scratchDirectory: scratch,
     receiptDirectory: receipts, profiles: [{ sourceProfileRef: sourceRef, profileId,
-      vacancyIds: [vacancyId], expectedCounts: counts }] };
+      vacancyIds: [vacancyId], quarantinedSourceVacancyIds: [], expectedCounts: counts }] };
   const saveConfig = value => writeFileSync(configFile, JSON.stringify(value), { mode: 0o600 });
   saveConfig(config);
   return { root, source, proactive, archivePath, manifestPath, configFile, config, saveConfig, receipts };
@@ -104,6 +105,99 @@ test('private inventory derives counts and leaves target identity unresolved', a
   assert.deepEqual(inventory.profiles[0].expectedCounts, counts);
   assert.deepEqual(await createPrivateLegacyInventory(command), first);
   assert.throws(() => statSync(f.config.targetDbPath), /ENOENT/);
+});
+
+test('agent-owned cron and context authority bind exact source scope with one reviewed exclusion', async t => {
+  const f = fixture(t);
+  const historical = 'invented_historical';
+  writeFileSync(join(f.proactive, 'seen-ids.json'), JSON.stringify({
+    [vacancyId]: { [resumeId]: '2026-10-01' },
+    [historical]: { [resumeId]: '2026-10-02' } }));
+  const context = join(f.source, 'users', sourceRef, 'contexts', 'hh');
+  mkdirSync(context, { recursive: true, mode: 0o700 });
+  writeFileSync(join(context, 'active_vacancies.json'), JSON.stringify({
+    value: [{ id: vacancyId }] }));
+  chmodSync(f.archivePath, 0o600);
+  const tar = spawnSync('tar', ['-cf', f.archivePath, '-C', f.source,
+    'agent-data/hh', 'agent-tokens', 'users'], { encoding: 'utf8' });
+  assert.equal(tar.status, 0, tar.stderr);
+  resign(f);
+  chmodSync(f.manifestPath, 0o600);
+  writeFileSync(f.manifestPath, JSON.stringify({ migrationId, kind: 'final_frozen',
+    bytes: f.config.archiveBytes, sha256: f.config.archiveSha256 }));
+  chmodSync(f.manifestPath, 0o400);
+  const inventoryFile = join(f.receipts, 'binding-inventory.json');
+  await createPrivateLegacyInventory({ archivePath: f.archivePath, manifestPath: f.manifestPath,
+    scratchDirectory: f.config.scratchDirectory, inventoryFile });
+  const cronDirectory = join(f.root, 'cron');
+  mkdirSync(cronDirectory, { mode: 0o700 });
+  const cronDbPath = join(cronDirectory, 'core.sqlite');
+  const cron = new Database(cronDbPath);
+  cron.exec('CREATE TABLE cron_jobs (profile_id TEXT, arguments_json TEXT, enabled INTEGER, last_status TEXT, action TEXT)');
+  const add = cron.prepare('INSERT INTO cron_jobs VALUES(?,?,?,?,?)');
+  for (let i = 0; i < 11; i++)
+    add.run(sourceRef, JSON.stringify({ vacancy_id: vacancyId }), 0,
+      i < 8 ? 'unknown' : 'failed', 'hh_proactive_search');
+  cron.close();
+  chmodSync(cronDbPath, 0o400);
+  const cronBytes = readFileSync(cronDbPath);
+  const cronManifestPath = join(cronDirectory, 'manifest.json');
+  writeFileSync(cronManifestPath, JSON.stringify({ kind: 'cron_frozen', bytes: cronBytes.length,
+    sha256: createHash('sha256').update(cronBytes).digest('hex'), hhCronDefinitions: 11,
+    enabled: 0, unknown: 8 }), { mode: 0o400 });
+  const outputFile = join(f.receipts, 'binding.json');
+  const args = { archivePath: f.archivePath, manifestPath: f.manifestPath,
+    inventoryFile, cronDbPath, cronManifestPath, targetDbPath: f.config.targetDbPath,
+    scratchDirectory: f.config.scratchDirectory, receiptDirectory: f.receipts,
+    outputFile, expectedExcludedVacancies: 1 };
+  await assert.rejects(createPrivateLegacyBinding({ ...args, expectedExcludedVacancies: 0 }),
+    /private_legacy_binding_unavailable/);
+  const result = await createPrivateLegacyBinding(args);
+  assert.equal(result.quarantinedSourceVacancyScopes, 1);
+  assert.equal(statSync(outputFile).mode & 0o077, 0);
+  const config = JSON.parse(readFileSync(outputFile, 'utf8'));
+  assert.deepEqual(config.profiles[0].vacancyIds, [vacancyId]);
+  assert.deepEqual(config.profiles[0].quarantinedSourceVacancyIds, [historical]);
+  const checked = await runPrivateLegacyImport({ mode: 'check', configFile: outputFile });
+  assert.equal(checked.quarantine.unownedSeenRows, 1);
+  assert.throws(() => statSync(f.config.targetDbPath), /ENOENT/);
+});
+
+test('reviewed historical-only vacancy requires exact exclusion and receives a raw receipt', async t => {
+  const f = fixture(t);
+  const historical = 'invented_historical';
+  writeFileSync(join(f.proactive, 'seen-ids.json'), JSON.stringify({
+    [vacancyId]: { [resumeId]: '2026-10-01' },
+    [historical]: { [resumeId]: '2026-10-02' } }));
+  writeFileSync(join(f.proactive, `search-results-2026-10-04-${historical}.json`), JSON.stringify({
+    vacancy_id: historical, searched_at: '2026-10-04T06:00:00.000Z',
+    candidates: [{ id: resumeId }] }));
+  chmodSync(f.archivePath, 0o600);
+  const tar = spawnSync('tar', ['-cf', f.archivePath, '-C', f.source,
+    'agent-data/hh', 'agent-tokens', 'users'], { encoding: 'utf8' });
+  assert.equal(tar.status, 0, tar.stderr);
+  resign(f);
+  const expected = { ...counts, seenIds: 2, snapshots: 2, quarantinedSnapshots: 2,
+    mismatchedSeen: 1, mismatchedSnapshotMembers: 1 };
+  f.config.profiles[0].expectedCounts = expected;
+  f.saveConfig(f.config);
+  await assert.rejects(runPrivateLegacyImport({ mode: 'check', configFile: f.configFile }),
+    /invalid_legacy_content_seen/);
+  f.config.profiles[0].quarantinedSourceVacancyIds = [historical];
+  f.saveConfig(f.config);
+  const checked = await runPrivateLegacyImport({ mode: 'check', configFile: f.configFile });
+  assert.deepEqual(checked.quarantine, { unownedVacancyScopes: 1, unownedSeenRows: 1,
+    unownedSnapshots: 1 });
+  assert.throws(() => statSync(f.config.targetDbPath), /ENOENT/);
+  const imported = await runPrivateLegacyImport({ mode: 'import', configFile: f.configFile, execute: true });
+  assert.equal(imported.importedProfiles, 1);
+  const receipt = JSON.parse(readFileSync(join(f.receipts, `${migrationId}.json`), 'utf8'));
+  assert.deepEqual(receipt.receipts[0].quarantine, { unownedVacancyIds: [historical],
+    unownedSeenRows: 1, unownedSnapshots: 1 });
+  const db = new Database(f.config.targetDbPath, { readonly: true });
+  t.after(() => db.close());
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM r03_legacy_content_seen WHERE unowned_vacancy=1').get().count, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM sqlite_master WHERE name=?').get('real_hh_seen').count, 0);
 });
 
 test('private inventory CLI runs from a release without SQLite or node_modules', t => {

@@ -92,14 +92,15 @@ test('two writers converge, reject cross-scope and invalid assessments, and hide
   assert.throws(() => b.recordAssessment({ ...input, assessment: { ...assessment, knockout: { status: 'failed', criteria: ['вымышленный стоп-фактор'] } } }), /invalid_real_hh_assessment/);
   a.recordCompletedSearch(search('job_synthetic_2', [candidate(1), candidate(2)]));
   const summary = await runHhBackgroundScoringTick({ state: b, profileId, vacancyId,
-    currentCriteriaRevision: async () => criteriaRevision, evaluate: async () => { throw new Error('synthetic private resume in error'); } });
+    currentCriteriaRevision: async () => criteriaRevision, evaluate: async () => { throw new Error('synthetic private resume in error'); },
+    now: () => new Date('2026-10-06T06:10:00.000Z') });
   assert.equal(summary.failed, 1);
   assert.equal(JSON.stringify(summary).includes('resume'), false);
   const invalid = await runHhBackgroundScoringTick({ state: b, profileId, vacancyId,
     currentCriteriaRevision: async () => criteriaRevision, evaluate: async () => ({ ...assessment, atsScore: 11 }),
-    now: () => new Date('2026-10-06T06:21:00.000Z') });
+    now: () => new Date('2026-10-06T06:30:00.000Z') });
   assert.equal(invalid.failed, 1);
-  assert.equal(b.unassessedLatest({ profileId, vacancyId, at: '2026-10-06T06:22:00.000Z' }).length, 0);
+  assert.equal(b.unassessedLatest({ profileId, vacancyId, at: '2026-10-06T06:31:00.000Z' }).length, 0);
 });
 
 test('failed assessment backs off durably and does not starve later candidates', async t => {

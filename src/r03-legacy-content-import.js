@@ -17,13 +17,16 @@ const sourceFile = value => typeof value === 'string' && /^search-results-[A-Za-
 // This is a private, quarantined content store. Import does not create an
 // occurrence, manual-run acceptance receipt or current-search snapshot.
 export class R03LegacyContentImporter {
-  constructor({ filename, bindProfile, isVacancyOwned, onStep = () => {} }) {
+  constructor({ filename, bindProfile, isVacancyOwned,
+    isQuarantinedSourceVacancy = () => false, onStep = () => {} }) {
     if (typeof filename !== 'string' || !filename || filename === ':memory:' ||
         statSync(dirname(filename)).mode & 0o077) throw new TypeError('private_import_filename_required');
-    if (typeof bindProfile !== 'function' || typeof isVacancyOwned !== 'function' || typeof onStep !== 'function')
+    if (typeof bindProfile !== 'function' || typeof isVacancyOwned !== 'function' ||
+        typeof isQuarantinedSourceVacancy !== 'function' || typeof onStep !== 'function')
       throw new TypeError('private_import_ports_required');
     this.bindProfile = bindProfile;
     this.isVacancyOwned = isVacancyOwned;
+    this.isQuarantinedSourceVacancy = isQuarantinedSourceVacancy;
     this.onStep = onStep;
     this.db = new Database(filename, { timeout: 5000 });
     chmodSync(filename, 0o600);
@@ -31,7 +34,8 @@ export class R03LegacyContentImporter {
     this.db.pragma('synchronous = FULL');
     this.db.exec(`CREATE TABLE IF NOT EXISTS r03_legacy_content_import (
       migration_id TEXT NOT NULL, profile_id TEXT NOT NULL, source_digest TEXT NOT NULL,
-      counts TEXT NOT NULL, source_receipts TEXT NOT NULL, PRIMARY KEY(migration_id, profile_id));
+      counts TEXT NOT NULL, source_receipts TEXT NOT NULL, quarantine TEXT NOT NULL,
+      PRIMARY KEY(migration_id, profile_id));
     CREATE TABLE IF NOT EXISTS r03_legacy_content_candidate (
       migration_id TEXT NOT NULL, profile_id TEXT NOT NULL, resume_id TEXT NOT NULL,
       vacancy_ids TEXT NOT NULL, wildcard_quarantined INTEGER NOT NULL, payload TEXT NOT NULL,
@@ -40,13 +44,14 @@ export class R03LegacyContentImporter {
       migration_id TEXT NOT NULL, profile_id TEXT NOT NULL, vacancy_id TEXT NOT NULL,
       resume_id TEXT NOT NULL, first_seen_at TEXT NOT NULL, unbound_reference INTEGER NOT NULL,
       vacancy_mismatch INTEGER NOT NULL, unsafe_vacancy INTEGER NOT NULL,
+      unowned_vacancy INTEGER NOT NULL,
       PRIMARY KEY(migration_id, profile_id, vacancy_id, resume_id));
     CREATE TABLE IF NOT EXISTS r03_legacy_content_snapshot (
       migration_id TEXT NOT NULL, profile_id TEXT NOT NULL, source_file TEXT NOT NULL,
       vacancy_id TEXT NOT NULL, searched_at TEXT NOT NULL, candidate_ids TEXT NOT NULL,
       payload TEXT NOT NULL, unbound_references INTEGER NOT NULL,
       vacancy_mismatch_references INTEGER NOT NULL, filename_vacancy_mismatch INTEGER NOT NULL,
-      unbound_vacancy INTEGER NOT NULL,
+      unbound_vacancy INTEGER NOT NULL, unowned_vacancy INTEGER NOT NULL,
       acceptance_status TEXT NOT NULL CHECK(acceptance_status='quarantined'),
       PRIMARY KEY(migration_id, profile_id, source_file));
     CREATE TABLE IF NOT EXISTS r03_legacy_content_comment (
@@ -55,11 +60,11 @@ export class R03LegacyContentImporter {
       payload TEXT NOT NULL, unbound_reference INTEGER NOT NULL, vacancy_mismatch INTEGER NOT NULL,
       scope_status TEXT NOT NULL,
       PRIMARY KEY(migration_id, profile_id, vacancy_id, resume_id));`);
-    this.lookup = this.db.prepare('SELECT source_digest,counts,source_receipts FROM r03_legacy_content_import WHERE migration_id=? AND profile_id=?');
-    this.addImport = this.db.prepare('INSERT INTO r03_legacy_content_import VALUES(?,?,?,?,?)');
+    this.lookup = this.db.prepare('SELECT source_digest,counts,source_receipts,quarantine FROM r03_legacy_content_import WHERE migration_id=? AND profile_id=?');
+    this.addImport = this.db.prepare('INSERT INTO r03_legacy_content_import VALUES(?,?,?,?,?,?)');
     this.addCandidate = this.db.prepare('INSERT INTO r03_legacy_content_candidate VALUES(?,?,?,?,?,?)');
-    this.addSeen = this.db.prepare('INSERT INTO r03_legacy_content_seen VALUES(?,?,?,?,?,?,?,?)');
-    this.addSnapshot = this.db.prepare('INSERT INTO r03_legacy_content_snapshot VALUES(?,?,?,?,?,?,?,?,?,?,?,?)');
+    this.addSeen = this.db.prepare('INSERT INTO r03_legacy_content_seen VALUES(?,?,?,?,?,?,?,?,?)');
+    this.addSnapshot = this.db.prepare('INSERT INTO r03_legacy_content_snapshot VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)');
     this.addComment = this.db.prepare('INSERT INTO r03_legacy_content_comment VALUES(?,?,?,?,?,?,?,?,?,?)');
   }
 
@@ -80,6 +85,8 @@ export class R03LegacyContentImporter {
     const profileId = this.bindProfile(input.sourceProfileRef);
     if (!safeId(profileId)) throw new Error('legacy_content_profile_binding_denied');
     const owned = vacancyId => safeId(vacancyId) && this.isVacancyOwned(profileId, vacancyId);
+    const quarantinedSource = vacancyId => safeId(vacancyId) &&
+      this.isQuarantinedSourceVacancy(profileId, vacancyId) && !owned(vacancyId);
     const candidates = [];
     const candidateById = new Map();
     let wildcard = 0;
@@ -104,37 +111,46 @@ export class R03LegacyContentImporter {
     let unboundReferences = 0;
     const seen = [];
     let unsafeSeenVacancyBuckets = 0;
+    const unownedVacancyIds = new Set();
+    let unownedSeenRows = 0;
     for (const [vacancyId, bucket] of Object.entries(input.seenIds)) {
       const unsafeVacancy = !safeId(vacancyId);
-      if (!object(bucket) || !unsafeVacancy && !owned(vacancyId)) throw new Error('invalid_legacy_content_seen');
+      const unownedVacancy = !unsafeVacancy && !owned(vacancyId);
+      if (!object(bucket) || unownedVacancy && !quarantinedSource(vacancyId))
+        throw new Error('invalid_legacy_content_seen');
       if (unsafeVacancy) unsafeSeenVacancyBuckets++;
+      if (unownedVacancy) unownedVacancyIds.add(vacancyId);
       for (const [id, firstSeenAt] of Object.entries(bucket)) {
         if (!safeId(id) || !validDate(firstSeenAt))
           throw new Error('invalid_legacy_content_seen');
         const status = unsafeVacancy ? 'unsafe_vacancy' : referenceStatus(id, vacancyId);
         if (status === 'missing') unboundReferences++;
-        seen.push({ vacancyId, id, firstSeenAt, status });
+        if (unownedVacancy) unownedSeenRows++;
+        seen.push({ vacancyId, id, firstSeenAt, status, unownedVacancy });
       }
     }
     const snapshots = [];
     const files = new Set();
+    let unownedSnapshots = 0;
     for (const entry of input.snapshots) {
       const payload = entry?.payload;
       const vacancyId = String(payload?.vacancy_id ?? '');
       const unboundVacancy = !safeId(vacancyId);
+      const unownedVacancy = !unboundVacancy && !owned(vacancyId);
       if (!sourceFile(entry?.sourceFile) || files.has(entry.sourceFile) || !object(payload) ||
-          !unboundVacancy && !owned(vacancyId) ||
+          unownedVacancy && !quarantinedSource(vacancyId) ||
           !validDate(payload.searched_at) || !bound(payload.candidates, 20_000) ||
           payload.candidates.some(candidate => !object(candidate) || !safeId(candidate.id)) ||
           new Set(payload.candidates.map(candidate => candidate.id)).size !== payload.candidates.length ||
           Buffer.byteLength(JSON.stringify(payload)) > 32 * 1024 * 1024)
         throw new Error('invalid_legacy_content_snapshot');
       files.add(entry.sourceFile);
+      if (unownedVacancy) { unownedVacancyIds.add(vacancyId); unownedSnapshots++; }
       const unbound = payload.candidates.filter(candidate => !candidateById.has(candidate.id)).length;
       const mismatch = unboundVacancy ? 0 : payload.candidates.filter(candidate => referenceStatus(candidate.id, vacancyId) === 'mismatch').length;
       unboundReferences += unbound;
       snapshots.push({ sourceFile: entry.sourceFile, vacancyId, payload, unbound, mismatch,
-        filenameMismatch: !entry.sourceFile.endsWith(`-${vacancyId}.json`), unboundVacancy });
+        filenameMismatch: !entry.sourceFile.endsWith(`-${vacancyId}.json`), unboundVacancy, unownedVacancy });
     }
     const comments = [];
     for (const [vacancyId, bucket] of Object.entries(input.comments)) {
@@ -198,41 +214,47 @@ export class R03LegacyContentImporter {
       sourceReceipts.push({ file, bytes: bytes.length,
         sha256: createHash('sha256').update(bytes).digest('hex') });
     }
+    const quarantine = { unownedVacancyIds: [...unownedVacancyIds].sort(),
+      unownedSeenRows, unownedSnapshots };
     return { migrationId: input.migrationId, profileId,
-      sourceDigest: digest([content, sourceReceipts]), sourceReceipts, counts,
+      sourceDigest: digest([content, sourceReceipts, quarantine]), sourceReceipts, counts, quarantine,
       candidates, seen, snapshots, comments };
   }
 
   import(input) {
     const plan = this.plan(input);
-    const { migrationId, profileId, sourceDigest, sourceReceipts, counts } = plan;
+    const { migrationId, profileId, sourceDigest, sourceReceipts, counts, quarantine } = plan;
     return this.db.transaction(() => {
       const previous = this.lookup.get(migrationId, profileId);
       if (previous) return previous.source_digest === sourceDigest
         ? { kind: 'replayed', migrationId, profileId, sourceDigest, counts: JSON.parse(previous.counts),
-          sourceReceipts: JSON.parse(previous.source_receipts) }
+          sourceReceipts: JSON.parse(previous.source_receipts), quarantine: JSON.parse(previous.quarantine) }
         : { kind: 'conflict', migrationId, profileId };
       for (const { id, record, vacancyIds } of plan.candidates) {
         this.addCandidate.run(migrationId, profileId, id, JSON.stringify(vacancyIds),
           vacancyIds.length === 0 ? 1 : 0, JSON.stringify(record));
       }
       this.onStep('candidates');
-      for (const { vacancyId, id, firstSeenAt, status } of plan.seen)
+      for (const { vacancyId, id, firstSeenAt, status, unownedVacancy } of plan.seen)
         this.addSeen.run(migrationId, profileId, vacancyId, id, firstSeenAt,
-          status === 'missing' ? 1 : 0, status === 'mismatch' ? 1 : 0, status === 'unsafe_vacancy' ? 1 : 0);
+          status === 'missing' ? 1 : 0, status === 'mismatch' ? 1 : 0,
+          status === 'unsafe_vacancy' ? 1 : 0, unownedVacancy ? 1 : 0);
       this.onStep('seen');
-      for (const { sourceFile, vacancyId, payload, unbound, mismatch, filenameMismatch, unboundVacancy } of plan.snapshots)
+      for (const { sourceFile, vacancyId, payload, unbound, mismatch,
+        filenameMismatch, unboundVacancy, unownedVacancy } of plan.snapshots)
         this.addSnapshot.run(migrationId, profileId, sourceFile, vacancyId, payload.searched_at,
           JSON.stringify(payload.candidates.map(candidate => candidate.id)), JSON.stringify(payload),
-          unbound, mismatch, filenameMismatch ? 1 : 0, unboundVacancy ? 1 : 0, 'quarantined');
+          unbound, mismatch, filenameMismatch ? 1 : 0, unboundVacancy ? 1 : 0,
+          unownedVacancy ? 1 : 0, 'quarantined');
       this.onStep('snapshots');
       for (const { vacancyId, id, row, status, scopeStatus } of plan.comments)
         this.addComment.run(migrationId, profileId, vacancyId, id, row.text, row.updatedAt ?? null,
           JSON.stringify(row),
           status === 'missing' ? 1 : 0, status === 'mismatch' ? 1 : 0, scopeStatus);
       this.onStep('comments');
-      this.addImport.run(migrationId, profileId, sourceDigest, JSON.stringify(counts), JSON.stringify(sourceReceipts));
-      return { kind: 'imported', migrationId, profileId, sourceDigest, counts, sourceReceipts };
+      this.addImport.run(migrationId, profileId, sourceDigest, JSON.stringify(counts),
+        JSON.stringify(sourceReceipts), JSON.stringify(quarantine));
+      return { kind: 'imported', migrationId, profileId, sourceDigest, counts, sourceReceipts, quarantine };
     }).immediate();
   }
 }
