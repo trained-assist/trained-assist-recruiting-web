@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 
 const safeId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+export const manualJobIdForRun = runId => `hh_manual_${hash(runId).slice(0, 32)}`;
 const parse = row => row ? JSON.parse(row.payload) : null;
 
 function publicRun(run) {
@@ -94,7 +95,7 @@ export class SqliteRealHhManualRuns {
       return { kind: 'search_plan_unavailable' };
     const now = this.clock().toISOString();
     const runId = `manual_${hash([profileId, idempotencyKey]).slice(0, 32)}`;
-    const jobId = `hh_manual_${hash(runId).slice(0, 32)}`;
+    const jobId = manualJobIdForRun(runId);
     const row = { runId, jobId, profileId, vacancyId: request.vacancyId, idempotencyKey, requestHash,
       criteriaRevision: request.criteriaRevision, queryRevision: request.queryRevision,
       status: 'running', phase: 'search', pagesCompleted: 0, totalPages: plan.queryCache.queries.length,
@@ -164,7 +165,7 @@ export class SqliteRealHhManualRuns {
     if (rows.length > 1000) throw new Error('manual_receipt_capacity_exceeded');
     return rows.flatMap(row => {
       if (row.status !== 'completed' || row.profileId !== profileId || row.vacancyId !== vacancyId ||
-          !safeId(row.jobId) || row.jobId !== `hh_manual_${hash(row.runId).slice(0, 32)}` ||
+          !safeId(row.jobId) || row.jobId !== manualJobIdForRun(row.runId) ||
           !/^[a-f0-9]{24}$/.test(row.resultRevision ?? '')) return [];
       const snapshot = this.candidateState.resultPage({ profileId, vacancyId, jobId: row.jobId, limit: 1 })?.snapshot;
       if (!snapshot || snapshot.source !== 'manual' || snapshot.profileId !== profileId ||
