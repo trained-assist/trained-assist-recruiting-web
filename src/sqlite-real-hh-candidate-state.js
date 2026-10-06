@@ -95,6 +95,10 @@ export class SqliteRealHhCandidateState {
       resume_id TEXT NOT NULL, input_revision TEXT NOT NULL, assessment TEXT NOT NULL,
       assessed_at TEXT NOT NULL,
       PRIMARY KEY (profile_id, vacancy_id, job_id, resume_id));
+    CREATE TABLE IF NOT EXISTS real_hh_assessment_failure (
+      profile_id TEXT NOT NULL, vacancy_id TEXT NOT NULL, resume_id TEXT NOT NULL,
+      input_revision TEXT NOT NULL, failures INTEGER NOT NULL, retry_at TEXT NOT NULL,
+      PRIMARY KEY (profile_id, vacancy_id, resume_id, input_revision));
     CREATE TABLE IF NOT EXISTS real_hh_candidate_overlay (
       profile_id TEXT NOT NULL, vacancy_id TEXT NOT NULL, resume_id TEXT NOT NULL,
       revision INTEGER NOT NULL, status TEXT NOT NULL, comment TEXT,
@@ -129,6 +133,14 @@ export class SqliteRealHhCandidateState {
     this.reusableAssessment = this.db.prepare(`SELECT assessment, assessed_at FROM real_hh_assessment
       WHERE profile_id=? AND vacancy_id=? AND resume_id=? AND input_revision=?
       ORDER BY assessed_at DESC, job_id DESC LIMIT 1`);
+    this.assessmentFailure = this.db.prepare(`SELECT failures,retry_at FROM real_hh_assessment_failure
+      WHERE profile_id=? AND vacancy_id=? AND resume_id=? AND input_revision=?`);
+    this.upsertAssessmentFailure = this.db.prepare(`INSERT INTO real_hh_assessment_failure
+      (profile_id,vacancy_id,resume_id,input_revision,failures,retry_at) VALUES(?,?,?,?,?,?)
+      ON CONFLICT(profile_id,vacancy_id,resume_id,input_revision) DO UPDATE SET
+      failures=excluded.failures,retry_at=excluded.retry_at`);
+    this.clearAssessmentFailure = this.db.prepare(`DELETE FROM real_hh_assessment_failure
+      WHERE profile_id=? AND vacancy_id=? AND resume_id=? AND input_revision=?`);
     this.overlayById = this.db.prepare(`SELECT revision,status,comment,exclude_from_search FROM real_hh_candidate_overlay
       WHERE profile_id=? AND vacancy_id=? AND resume_id=?`);
     this.upsertOverlay = this.db.prepare(`INSERT INTO real_hh_candidate_overlay(profile_id,vacancy_id,resume_id,revision,status,comment,exclude_from_search)
@@ -213,9 +225,9 @@ export class SqliteRealHhCandidateState {
   assessmentInputRevision(snapshot, candidate) {
     return hash([snapshot.criteriaRevision, snapshot.sourceRevision, candidate]).slice(0, 32);
   }
-  unassessedLatest({ profileId, vacancyId, limit = 10 }) {
+  unassessedLatest({ profileId, vacancyId, limit = 10, at = new Date().toISOString() }) {
     this.assertScope(profileId, vacancyId);
-    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new TypeError('invalid_assessment_limit');
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100 || !isoTime(at)) throw new TypeError('invalid_assessment_limit');
     const snapshot = this.latestSnapshot(profileId, vacancyId);
     if (!snapshot) return [];
     const pending = [];
@@ -223,10 +235,31 @@ export class SqliteRealHhCandidateState {
       const candidate = JSON.parse(row.projection);
       const inputRevision = this.assessmentInputRevision(snapshot, candidate);
       if (row.input_revision === inputRevision) continue;
+      const failure = this.assessmentFailure.get(profileId, vacancyId, candidate.id, inputRevision);
+      if (failure && failure.retry_at > at) continue;
       pending.push({ snapshot, candidate, inputRevision });
       if (pending.length === limit) break;
     }
     return pending;
+  }
+  recordAssessmentFailure({ profileId, vacancyId, jobId, candidateId, inputRevision, failedAt }) {
+    this.assertScope(profileId, vacancyId);
+    if (![jobId, candidateId].every(safeId) || !/^[a-f0-9]{32}$/.test(inputRevision) || !isoTime(failedAt))
+      throw new TypeError('invalid_assessment_failure');
+    return this.db.transaction(() => {
+      const snapshot = this.latestSnapshot(profileId, vacancyId);
+      if (!snapshot || snapshot.jobId !== jobId) return { kind: 'stale' };
+      const member = this.memberById.get(profileId, vacancyId, jobId, candidateId);
+      if (!member || this.assessmentInputRevision(snapshot, JSON.parse(member.projection)) !== inputRevision ||
+          this.assessmentById.get(profileId, vacancyId, jobId, candidateId)?.input_revision === inputRevision)
+        return { kind: 'stale' };
+      const prior = this.assessmentFailure.get(profileId, vacancyId, candidateId, inputRevision);
+      const failures = Math.min((prior?.failures ?? 0) + 1, 20);
+      const delayMs = Math.min(15 * 60_000 * 2 ** (failures - 1), 24 * 60 * 60_000);
+      const retryAt = new Date(Date.parse(failedAt) + delayMs).toISOString();
+      this.upsertAssessmentFailure.run(profileId, vacancyId, candidateId, inputRevision, failures, retryAt);
+      return { kind: 'deferred', failures, retryAt };
+    }).immediate();
   }
   recordAssessment({ profileId, vacancyId, jobId, candidateId, inputRevision, assessment, assessedAt }) {
     this.assertScope(profileId, vacancyId);
@@ -248,6 +281,7 @@ export class SqliteRealHhCandidateState {
       const prior = this.assessmentById.get(profileId, vacancyId, jobId, candidateId);
       if (prior) return prior.input_revision === inputRevision ? { kind: 'already_scored' } : { kind: 'stale' };
       this.insertAssessment.run(profileId, vacancyId, jobId, candidateId, inputRevision, JSON.stringify(assessment), assessedAt);
+      this.clearAssessmentFailure.run(profileId, vacancyId, candidateId, inputRevision);
       return { kind: 'written' };
     }).immediate();
   }
