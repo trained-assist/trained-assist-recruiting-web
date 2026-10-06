@@ -178,7 +178,17 @@ test('private response entry requests one step-up scope, real HTTP reader and ow
   assert.equal(assignmentPage.status, 200);
   const assignmentHtml = await assignmentPage.text();
   assert.match(assignmentHtml, /Сохранённый пример &lt;script&gt; &amp; ответ/);
+  assert.doesNotMatch(assignmentHtml, /id="assignment-review"/);
+  assert.match(assignmentHtml, /from=assignment&amp;vacancy_id=vacancy_A/);
   assert.doesNotMatch(assignmentHtml, /<script>/);
+  const assignmentApp = await fetch(`${base}/hh/assignment/app.js`, { headers: { cookie: login.session } });
+  assert.equal(assignmentApp.status, 200);
+  assert.equal(assignmentApp.headers.get('cache-control'), 'no-store');
+  const assignmentAppSource = await assignmentApp.text();
+  assert.match(assignmentAppSource, /\/auth\/connected\/session/);
+  assert.match(assignmentAppSource, /x-csrf-token/);
+  assert.match(assignmentAppSource, /recruiting\.assignment\.review/);
+  assert.match(assignmentAppSource, /assignment-add-stage/);
   assert.equal((await fetch(`${base}/api/v1/ui/vacancy-assignment?vacancyId=vacancy_B`,
     { headers: { cookie: login.session } })).status, 404);
   assert.equal((await fetch(`${base}/hh/responses`, { headers: { cookie: login.session } })).status, 200);
@@ -231,12 +241,22 @@ test('reviewed assignment save is exact, immutable, profile-owned and fail-close
   const before = await (await fetch(url, { headers: { cookie: login.session } })).json();
   assert.equal(before.reviewStatus, 'legacy_draft_requires_review');
   assert.equal(before.draftPlan.stages[0].material, before.materials[0].material);
+  const page = await fetch(`${base}/hh/assignment?vacancy_id=vacancy_A`, { headers: { cookie: login.session } });
+  assert.equal(page.status, 200);
+  const form = await page.text();
+  assert.match(form, /Сохранить проверенный сценарий/);
+  assert.match(form, /Исходный дословный материал должен сохраниться/);
+  assert.match(form, /data-source-sha256="[a-f0-9]{64}"/);
+  assert.equal((await fetch(`${base}/hh/assignment/app.js`, { headers: { cookie: login.session } })).status, 200);
   const request = { sourceSha256: before.sourceSha256, plan: before.draftPlan, reviewed: true };
   const post = (payload = request, extra = {}) => fetch(url, { method: 'POST', body: JSON.stringify(payload),
     headers: { cookie: login.session, origin, 'x-csrf-token': csrf, 'content-type': 'application/json', ...extra } });
   assert.equal((await post(request, { 'x-csrf-token': 'wrong' })).status, 401);
   assert.equal((await post({ ...request, reviewed: false })).status, 400);
   assert.equal((await post({ ...request, sourceSha256: '0'.repeat(64) })).status, 409);
+  const alteredMaterial = structuredClone(request);
+  alteredMaterial.plan.stages[0].material = 'изменённый текст';
+  assert.equal((await post(alteredMaterial)).status, 409, 'the exact imported source must remain in the reviewed plan');
   assert.equal((await fetch(`${base}/api/v1/ui/vacancy-assignment?vacancyId=vacancy_B`,
     { method: 'POST', body: JSON.stringify(request), headers: { cookie: login.session, origin,
       'x-csrf-token': csrf, 'content-type': 'application/json' } })).status, 404);
