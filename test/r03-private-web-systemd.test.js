@@ -32,11 +32,12 @@ test('BFF unit uses service credentials and separate private SQLite without lega
   assert.match(bffNginx, /^\s*access_log off;$/m);
 });
 
-test('unapplied cutover snippet routes the page, its script and all proactive API calls together', () => {
+test('unapplied cutover snippet routes the page, history, script and all proactive API calls together', () => {
   assert.match(nginx, /^location = \/hh\/proactive \{$/m);
   assert.match(nginx, /^location = \/hh\/proactive\/app\.js \{$/m);
+  assert.match(nginx, /^location = \/hh\/proactive\/history \{$/m);
   assert.match(nginx, /^location \^~ \/api\/hh\/proactive\/ \{$/m);
-  assert.equal((nginx.match(/proxy_pass http:\/\/127\.0\.0\.1:18083;/g) ?? []).length, 3);
+  assert.equal((nginx.match(/proxy_pass http:\/\/127\.0\.0\.1:18083;/g) ?? []).length, 4);
   assert.doesNotMatch(nginx, /proxy_pass https?:\/\/(?!127\.0\.0\.1:18083)/);
   assert.match(nginx, /Do not include until the cutover gate passes/);
 });
