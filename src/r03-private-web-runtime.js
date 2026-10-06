@@ -22,6 +22,8 @@ import { createControlPlaneConnectedAppClient, createRecruitingConnectedAppBff }
 import { SqliteConnectedAppBffStore } from './sqlite-connected-app-bff-store.js';
 import { createHhResponseRead } from './r01-live-responses.js';
 import { createHhResponseDetailRead } from './r01-live-response-detail.js';
+import { createHhResponseConversationRead } from './r01-live-response-conversation.js';
+import { SqliteResponseConversationAudit } from './sqlite-response-conversation-audit.js';
 import { createPrivateVacancyAssignmentRead, createPrivateVacancyAssignmentSave } from './r01-private-vacancy-assignment.js';
 
 // Constructing the server makes no provider request or public bind. The owner
@@ -43,6 +45,7 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
     importConfigFile: historicalImportConfigFile, receiptFile: historicalReceiptFile,
     receiptSha256: historicalReceiptSha256, hostConfig: config });
   let bffStore = null;
+  let conversationAudit = null;
   const legacySecret = connectedAppBff === null && connectedBffConfig === null
     ? loadPrivateHostSecret(secretsDirectory, 'legacy_page_secret') : null;
   const encryptionKey = loadPrivateHostSecret(secretsDirectory, 'hh_encryption_key');
@@ -90,6 +93,10 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
     const liveResponseDetailRead = connectedAppBff !== null || connectedBffConfig !== null
       ? createHhResponseDetailRead({ ...stack.credentialBroker, fetchImpl,
         isVacancyOwned: config.isVacancyOwned, userAgent, clock }) : null;
+    const liveResponseConversationRead = connectedAppBff !== null || connectedBffConfig !== null
+      ? createHhResponseConversationRead({ ...stack.credentialBroker, fetchImpl,
+        isVacancyOwned: config.isVacancyOwned, userAgent, clock,
+        conversationAudit: (conversationAudit = new SqliteResponseConversationAudit({ filename: config.dbPath })) }) : null;
     const liveAssignmentRead = connectedAppBff !== null || connectedBffConfig !== null
       ? createPrivateVacancyAssignmentRead({ resolveProfileBinding: config.resolveProfileBinding,
         isVacancyOwned: config.isVacancyOwned }) : null;
@@ -126,6 +133,7 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
       realProactiveManualCandidate: manualCandidate,
       liveResponseRead,
       liveResponseDetailRead,
+      liveResponseConversationRead,
       liveAssignmentRead,
       liveAssignmentSave,
       resolveTrustedProfileContext: auth ?? (() => null), connectedAppBff,
@@ -136,12 +144,14 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
         return ids.length === 1 ? ids[0] : null;
       }, listRealVacancies: context => config.vacancyIdsForProfile(context.profileId),
       privateProactiveOnly: true });
-    server.on('close', () => { manualRuns.close(); candidates.close(); schedules.close(); bffStore?.close(); });
+    server.on('close', () => { manualRuns.close(); candidates.close(); schedules.close();
+      conversationAudit?.close(); bffStore?.close(); });
     return server;
   } catch (error) {
     manualRuns?.close();
     candidates?.close();
     schedules.close();
+    conversationAudit?.close();
     bffStore?.close();
     throw error;
   }

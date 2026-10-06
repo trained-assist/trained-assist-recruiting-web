@@ -15,6 +15,7 @@ import { renderPrivateVacancyPicker } from './r03-private-vacancy-picker.js';
 import { renderR03HistoricalPage } from './r03-historical-page.js';
 import { createRealProactiveRead } from './r03-real-proactive-read.js';
 import { ConnectedAppIntrospectionUnavailable } from './connected-app-bff.js';
+import { createHhResponseConversationRead } from './r01-live-response-conversation.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
@@ -36,7 +37,13 @@ function renderLiveResponsePage(data) {
 }
 function renderLiveResponseDetailPage(data) {
   const back = `/hh/responses?vacancy_id=${encodeURIComponent(data.vacancyId)}`;
-  return `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Статус отклика HH</title><main><h1>Отклик ${escapeResponseHtml(data.negotiationId)}</h1><p><a href="${back}">К откликам</a></p><p>Текущий статус HH: ${escapeResponseHtml(data.state)}. Получено: ${escapeResponseHtml(data.fetchedAt)}.</p><p>Переписка здесь не открывается: HH может отметить отклик прочитанным при запросе сообщений.</p></main></html>`;
+  const conversation = `/hh/response-conversation?vacancy_id=${encodeURIComponent(data.vacancyId)}&negotiation_id=${encodeURIComponent(data.negotiationId)}`;
+  return `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Статус отклика HH</title><main><h1>Отклик ${escapeResponseHtml(data.negotiationId)}</h1><p><a href="${back}">К откликам</a></p><p>Текущий статус HH: ${escapeResponseHtml(data.state)}. Получено: ${escapeResponseHtml(data.fetchedAt)}.</p><p>Открытие переписки может отметить отклик просмотренным в HH. Нажмите ссылку ниже, если хотите загрузить историю сообщений.</p><p><a href="${conversation}">Открыть переписку с возможным статусом «просмотрено»</a></p></main></html>`;
+}
+function renderLiveResponseConversationPage(data) {
+  const messages = data.messages.map(item => `<article><p><strong>${escapeResponseHtml(item.type)}</strong> <small>${escapeResponseHtml(item.createdAt)}</small></p>${item.text !== undefined ? `<p>${escapeResponseHtml(item.text)}</p>` : ''}${item.attachments?.length ? `<ul>${item.attachments.map(file => `<li>${escapeResponseHtml(file.title)} (${escapeResponseHtml(file.contentType)})</li>`).join('')}</ul>` : ''}${item.movedParticipant ? '<p>Изменился состав участников чата.</p>' : ''}</article>`).join('');
+  const older = data.hasMore ? '<p>Показаны последние 50 сообщений. История продолжается; более ранние сообщения здесь не загружались.</p>' : '';
+  return `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Переписка HH</title><main><h1>Переписка по отклику ${escapeResponseHtml(data.negotiationId)}</h1><p><a href="/hh/responses?vacancy_id=${encodeURIComponent(data.vacancyId)}">К откликам</a></p><p role="note">Вы открыли переписку. HH может отметить отклик просмотренным. История получена по явному действию рекрутера; автоматически сообщения не загружаются.</p><p>Получено: ${escapeResponseHtml(data.fetchedAt)} · показано ${data.messages.length} сообщений из одной страницы максимум 50.</p>${older}<section>${messages || '<p>Сообщений нет.</p>'}</section></main></html>`;
 }
 function renderAssignmentPage(data) {
   const items = data.materials.map(item => `<section><h2>${escapeResponseHtml(item.title)}</h2><pre>${escapeResponseHtml(item.material)}</pre><p>SHA-256: ${item.sha256}</p></section>`).join('');
@@ -179,7 +186,7 @@ function validReportAction(value) {
   return isPlainObject(value) && Object.keys(value).sort().join(',') === 'expectedReportRevision' && isReportRevision(value.expectedReportRevision);
 }
 
-export function createRecruitingServer({ resolveTrustedProfileContext = () => null, connectedAppBff = null, resolveLegacyOpenTab = null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, candidateSearchJobStore = null, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), scheduleLeaseMs = 5 * 60_000, maxCandidateSearchJobs = 100, publicationAdapter, realProactiveFeed = null, realProactiveHistoricalRead = null, realProactiveActions = null, realProactivePrompt = null, realProactiveSeenImport = null, realProactiveAiScore = null, realProactiveManualCandidate = null, liveResponseRead = null, liveResponseDetailRead = null, liveAssignmentRead = null, liveAssignmentSave = null, acceptedReportSourceRead = null, resolveRealVacancyOwnership = null, resolveRealDefaultVacancy = () => null, listRealVacancies = () => [], privateProactiveOnly = false, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
+export function createRecruitingServer({ resolveTrustedProfileContext = () => null, connectedAppBff = null, resolveLegacyOpenTab = null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, candidateSearchJobStore = null, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), scheduleLeaseMs = 5 * 60_000, maxCandidateSearchJobs = 100, publicationAdapter, realProactiveFeed = null, realProactiveHistoricalRead = null, realProactiveActions = null, realProactivePrompt = null, realProactiveSeenImport = null, realProactiveAiScore = null, realProactiveManualCandidate = null, liveResponseRead = null, liveResponseDetailRead = null, liveResponseConversationRead = null, liveAssignmentRead = null, liveAssignmentSave = null, acceptedReportSourceRead = null, resolveRealVacancyOwnership = null, resolveRealDefaultVacancy = () => null, listRealVacancies = () => [], privateProactiveOnly = false, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
   if (realProactiveFeed !== null && (typeof realProactiveFeed.read !== 'function' || typeof resolveRealVacancyOwnership !== 'function'))
     throw new TypeError('real proactive feed and trusted vacancy ownership ports required');
   if (realProactiveActions !== null && realProactiveFeed === null) throw new TypeError('real actions require real feed mode');
@@ -278,6 +285,7 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
         !(connectedAppBff !== null && (liveResponseRead !== null &&
           (path === '/hh/responses' || path === '/api/v1/ui/hh-responses') ||
           liveResponseDetailRead !== null && (path === '/hh/response-detail' || path === '/api/v1/ui/hh-response-detail') ||
+          liveResponseConversationRead !== null && path === '/hh/response-conversation' ||
           liveAssignmentRead !== null &&
           (path === '/hh/assignment' || path === '/hh/assignment/app.js' || path === '/api/v1/ui/vacancy-assignment')))) {
       status = 404;
@@ -404,6 +412,35 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
           status = result.status; body = result.body;
           if (status === 200 && pageRoute) { type = mime.html; body = renderLiveResponseDetailPage(body); }
         } catch { status = 503; body = { error: 'response_detail_unavailable' }; }
+      }
+    } else if (path === '/hh/response-conversation' && liveResponseConversationRead !== null && connectedAppBff !== null) {
+      let context;
+      try { context = await trustedReadResolver(req, url, res); }
+      catch (error) { status = 503; body = { error: error instanceof ConnectedAppIntrospectionUnavailable
+        ? 'connected_app_introspection_unavailable' : 'trusted_profile_unavailable' }; }
+      const keys = [...url.searchParams.keys()];
+      const vacancyId = url.searchParams.get('vacancy_id'); const negotiationId = url.searchParams.get('negotiation_id');
+      const valid = keys.length === 2 && new Set(keys).size === 2 && keys.every(key =>
+        ['vacancy_id', 'negotiation_id'].includes(key)) &&
+        /^[A-Za-z0-9_-]{1,128}$/.test(vacancyId ?? '') && /^[A-Za-z0-9_-]{1,128}$/.test(negotiationId ?? '');
+      if (status === 200 && (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes))) {
+        if (valid) {
+          const start = new URL('/auth/connected/start', 'http://localhost');
+          start.searchParams.set('from', 'responses'); start.searchParams.set('vacancy_id', vacancyId);
+          res.writeHead(303, { Location: start.pathname + start.search, 'Cache-Control': 'no-store',
+            'Referrer-Policy': 'no-referrer' }); res.end(); return;
+        }
+        status = 401; body = { error: 'trusted_profile_context_required' };
+      } else if (status === 200 && !context.scopes.includes('recruiting.responses.read')) {
+        status = 403; body = { error: 'response_scope_required' };
+      } else if (status === 200 && !valid) {
+        status = 400; body = { error: 'invalid_response_conversation_request' };
+      } else if (status === 200) {
+        try {
+          const result = await liveResponseConversationRead(context, { vacancyId, negotiationId });
+          status = result.status; body = result.body;
+          if (status === 200) { type = mime.html; body = renderLiveResponseConversationPage(body); }
+        } catch { status = 503; body = { error: 'response_conversation_unavailable' }; }
       }
     } else if ((path === '/api/v1/ui/hh-responses' ||
         path === '/hh/responses' && connectedAppBff !== null) && liveResponseRead !== null) {
