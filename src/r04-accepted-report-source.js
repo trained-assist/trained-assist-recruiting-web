@@ -62,7 +62,9 @@ export function createAcceptedReportSourceRead({ feed, candidateState, loadBaseP
         sourceRevision, sourceKind: 'accepted_cold_search', publication: 'disabled',
         clientDraftFields: { candidateName: name, position: candidate.title, vacancyTitle,
           experience: candidate.experience.map(row => ({ role: row.position, company: row.company,
-            period: row.end ? `${row.start} — ${row.end}` : `${row.start} — настоящее время` })) },
+            period: row.end ? `${row.start} — ${row.end}` : `${row.start} — настоящее время` })),
+          education: [], courses: [], skills: [], languages: [],
+          location: short(candidate.area, 200) || null },
         internalAssessment: { atsScore: assessment.assessment.atsScore,
           atsTag: assessment.assessment.atsTag, reviewStatus: candidate.review.status,
           reviewRevision: candidate.review.revision, criteriaRevision: snapshot.criteriaRevision } } };

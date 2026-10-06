@@ -9,7 +9,7 @@ const profileId = 'profile_demo_001';
 const vacancyId = 'vac_demo_001';
 const candidateId = 'candidate_demo_001';
 const candidate = { id: candidateId, vacancyId, jobId: 'job_demo_001', firstName: 'Test', lastName: 'Person',
-  title: 'Engineer', experience: [{ position: 'Developer', company: 'Example', start: '2020', end: null }],
+  title: 'Engineer', area: 'Synthetic region', experience: [{ position: 'Developer', company: 'Example', start: '2020', end: null }],
   review: { status: 'starred', revision: 2 }, atsScore: 8, atsTag: 'PASS',
   comment: 'INTERNAL_ONLY', salary: { amount: 999999 }, hhUrl: 'https://hh.ru/resume/private' };
 const snapshot = { jobId: 'job_demo_001', resultRevision: 'snapshot-r1', criteriaRevision: 'criteria-r1' };
@@ -27,6 +27,9 @@ test('accepted current assessment gives only allowlisted proposal fields with re
   const result = await read({ profileId }, { vacancyId, candidateId });
   assert.equal(result.status, 200);
   assert.equal(result.body.clientDraftFields.candidateName, 'Test Person');
+  assert.deepEqual(result.body.clientDraftFields.education, []);
+  assert.deepEqual(result.body.clientDraftFields.skills, []);
+  assert.equal(result.body.clientDraftFields.location, 'Synthetic region');
   assert.equal(result.body.internalAssessment.atsScore, 8);
   assert.equal(result.body.publication, 'disabled');
   assert.equal(JSON.stringify(result.body).includes('INTERNAL_ONLY'), false);

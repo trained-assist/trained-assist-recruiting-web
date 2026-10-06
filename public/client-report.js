@@ -6,6 +6,11 @@ const positionNode = document.querySelector('#position');
 const vacancyTitleNode = document.querySelector('#vacancy-title');
 const summaryNodeEditor = document.querySelector('#summary');
 const conclusionNode = document.querySelector('#conclusion');
+const locationNode = document.querySelector('#location');
+const educationNode = document.querySelector('#education');
+const coursesNode = document.querySelector('#courses');
+const skillsNode = document.querySelector('#skills');
+const languagesNode = document.querySelector('#languages');
 const experienceNode = document.querySelector('#experience-editor');
 const fitNode = document.querySelector('#fit-editor');
 const fieldProvenanceNode = document.querySelector('#field-provenance');
@@ -82,7 +87,8 @@ function renderFieldProvenance(value = {}) {
   fieldProvenanceNode.replaceChildren();
   const title = document.createElement('strong'); title.textContent = 'Источник полей: '; fieldProvenanceNode.append(title);
   const labels = { candidateName: 'имя', position: 'должность', vacancyTitle: 'вакансия',
-    experience: 'опыт', summary: 'краткое описание', fit: 'соответствие требованиям', conclusion: 'вывод' };
+    experience: 'опыт', education: 'образование', courses: 'курсы', skills: 'навыки',
+    languages: 'языки', location: 'локация', summary: 'краткое описание', fit: 'соответствие требованиям', conclusion: 'вывод' };
   const kinds = { source: 'принятый источник', recruiter: 'правка рекрутера', generated: 'сформировано' };
   const entries = Object.entries(value);
   if (!entries.length) { fieldProvenanceNode.append(document.createTextNode('источник ещё не указан')); return; }
@@ -103,6 +109,14 @@ function renderPreviousApproved(report) {
   const heading = document.createElement('h3'); heading.textContent = `${fields.candidateName} · ${fields.vacancyTitle}`;
   previousApprovedContent.append(heading);
   if (fields.summary) { const summary = document.createElement('p'); summary.textContent = fields.summary; previousApprovedContent.append(summary); }
+  for (const [key, title] of [['location', 'Локация'], ['education', 'Образование'], ['courses', 'Курсы'], ['skills', 'Навыки'], ['languages', 'Языки']]) {
+    const values = key === 'location' ? (fields.location ? [fields.location] : []) : fields[key] ?? [];
+    if (!values.length) continue;
+    const sectionTitle = document.createElement('h4'); sectionTitle.textContent = title;
+    const list = document.createElement('ul');
+    for (const value of values) { const row = document.createElement('li'); row.textContent = value; list.append(row); }
+    previousApprovedContent.append(sectionTitle, list);
+  }
   if (fields.experience?.length) {
     const title = document.createElement('h4'); title.textContent = 'Опыт'; previousApprovedContent.append(title);
     const list = document.createElement('ul');
@@ -277,6 +291,11 @@ function fitRow(value = { requirement: '', status: 'partial', comment: '' }) {
 function renderEditor(fields) {
   summaryNodeEditor.value = fields.summary ?? '';
   conclusionNode.value = fields.conclusion ?? '';
+  locationNode.value = fields.location ?? '';
+  educationNode.value = (fields.education ?? []).join('\n');
+  coursesNode.value = (fields.courses ?? []).join('\n');
+  skillsNode.value = (fields.skills ?? []).join('\n');
+  languagesNode.value = (fields.languages ?? []).join('\n');
   positionNode.value = fields.position;
   vacancyTitleNode.value = fields.vacancyTitle;
   experienceNode.replaceChildren();
@@ -289,6 +308,8 @@ function renderEditor(fields) {
 function setEditorEnabled(enabled) {
   positionNode.disabled = !enabled; vacancyTitleNode.disabled = !enabled;
   summaryNodeEditor.disabled = !enabled; conclusionNode.disabled = !enabled;
+  locationNode.disabled = !enabled; educationNode.disabled = !enabled; coursesNode.disabled = !enabled;
+  skillsNode.disabled = !enabled; languagesNode.disabled = !enabled;
   experienceNode.querySelectorAll('input,textarea,button').forEach(node => { node.disabled = !enabled; });
   fitNode.querySelectorAll('input,select,textarea,button').forEach(node => { node.disabled = !enabled; });
   addExperienceButton.disabled = !enabled;
@@ -306,6 +327,9 @@ function syncReviewControls() {
 
 function editedFields() {
   return { position: positionNode.value.trim(), vacancyTitle: vacancyTitleNode.value.trim(),
+    location: locationNode.value.trim() || null,
+    education: lines(educationNode.value), courses: lines(coursesNode.value),
+    skills: lines(skillsNode.value), languages: lines(languagesNode.value),
     summary: summaryNodeEditor.value.trim(), conclusion: conclusionNode.value.trim(),
     experience: [...experienceNode.querySelectorAll('fieldset')].map(row => Object.fromEntries(
       [...row.querySelectorAll('[data-experience-field]')].map(input => [input.dataset.experienceField, input.value.trim()])).concat([
@@ -473,6 +497,8 @@ fitNode.addEventListener('input', () => { saveEditsButton.disabled = false; });
 fitNode.addEventListener('change', () => { saveEditsButton.disabled = false; });
 summaryNodeEditor.addEventListener('input', () => { saveEditsButton.disabled = false; });
 conclusionNode.addEventListener('input', () => { saveEditsButton.disabled = false; });
+for (const node of [locationNode, educationNode, coursesNode, skillsNode, languagesNode])
+  node.addEventListener('input', () => { saveEditsButton.disabled = false; });
 
 saveEditsButton.addEventListener('click', async () => {
   if (!report || report.reviewState === 'approved') return;

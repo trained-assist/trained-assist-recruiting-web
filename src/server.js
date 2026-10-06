@@ -208,13 +208,18 @@ function validAcceptedReportRegenerate(value) {
 }
 
 function projectAcceptedClientFields(value) {
-  if (!isPlainObject(value) || Object.keys(value).sort().join(',') !== 'candidateName,experience,position,vacancyTitle' ||
+  if (!isPlainObject(value) || Object.keys(value).some(key => !['candidateName', 'experience', 'position', 'vacancyTitle', 'education', 'courses', 'skills', 'languages', 'location'].includes(key)) ||
       !['candidateName', 'position', 'vacancyTitle'].every(key => typeof value[key] === 'string' && value[key].length > 0 && value[key].length <= 300) ||
       !Array.isArray(value.experience) || value.experience.length > 5 ||
       !value.experience.every(row => isPlainObject(row) && Object.keys(row).sort().join(',') === 'company,period,role' &&
-        ['company', 'period', 'role'].every(key => typeof row[key] === 'string' && row[key].length > 0 && row[key].length <= 500))) return null;
+        ['company', 'period', 'role'].every(key => typeof row[key] === 'string' && row[key].length > 0 && row[key].length <= 500)) ||
+      ![['education', 10, 300], ['courses', 20, 300], ['skills', 30, 100], ['languages', 20, 150]].every(([key, maxItems, maxLength]) =>
+        value[key] === undefined || Array.isArray(value[key]) && value[key].length <= maxItems && value[key].every(item => typeof item === 'string' && item.trim() && item.length <= maxLength)) ||
+      value.location !== undefined && value.location !== null && (typeof value.location !== 'string' || value.location.length > 200)) return null;
   return { candidateName: value.candidateName, position: value.position, vacancyTitle: value.vacancyTitle,
-    experience: value.experience.map(row => ({ role: row.role, company: row.company, period: row.period })) };
+    experience: value.experience.map(row => ({ role: row.role, company: row.company, period: row.period })),
+    education: value.education ?? [], courses: value.courses ?? [], skills: value.skills ?? [],
+    languages: value.languages ?? [], location: value.location ?? null };
 }
 
 function validReportClientPatch(value) {

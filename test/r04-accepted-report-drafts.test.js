@@ -26,6 +26,8 @@ const sourceBase = {
   clientDraftFields: {
     candidateName: 'Synthetic Candidate', position: 'Platform Engineer', vacancyTitle: 'Staff Platform Engineer',
     experience: [{ role: 'Engineer', company: 'Example Works', period: '2021 — 2025' }],
+    education: ['Synthetic university, 2020'], courses: ['Synthetic course'],
+    skills: ['<img src=x onerror=synthetic>'], languages: ['English — C1'], location: 'Synthetic region',
   },
   internalAssessment: { atsScore: 9, atsTag: 'PASS', reviewStatus: 'starred',
     internalComment: 'INTERNAL_PRIVATE_COMMENT', criteriaRevision: 'CRITERIA_PRIVATE' },
@@ -120,6 +122,8 @@ test('accepted report UI uses real BFF handlers, profile-owned source, private d
   assert.match(reportPageHtml, /Кратко о кандидате/);
   assert.match(reportPageHtml, /Соответствие требованиям вакансии/);
   assert.match(reportPageHtml, /Вывод рекрутера/);
+  for (const fieldId of ['location', 'education', 'courses', 'skills', 'languages'])
+    assert.match(reportPageHtml, new RegExp(`id="${fieldId}"`), `client report editor includes ${fieldId}`);
 
   // Missing Origin/CSRF is rejected before the source or draft handler can run.
   const unauthorized = await fetch(`${base}/api/v1/ui/accepted-report-drafts`, { method: 'POST',
@@ -151,6 +155,8 @@ test('accepted report UI uses real BFF handlers, profile-owned source, private d
   assert.equal(draft.reviewState, 'unreviewed');
   assert.equal(draft.fieldProvenance.candidateName.kind, 'source');
   assert.equal(draft.fieldProvenance.position.sourceRevision, sourceRevision);
+  assert.deepEqual(draft.clientFields.education, ['Synthetic university, 2020']);
+  assert.deepEqual(draft.fieldProvenance.skills, { kind: 'source', sourceRevision });
   assert.equal('summary' in draft.fieldProvenance, false, 'empty narrative fields are not presented as source-backed');
   assert.equal(JSON.stringify(draft).includes('INTERNAL_PRIVATE_COMMENT'), false);
   assert.equal(JSON.stringify(draft).includes('candidate@example.invalid'), false);
@@ -189,6 +195,11 @@ test('accepted report UI uses real BFF handlers, profile-owned source, private d
     position: { kind: 'recruiter', editedAt: edited.updatedAt },
     vacancyTitle: { kind: 'source', sourceRevision },
     experience: { kind: 'recruiter', editedAt: edited.updatedAt },
+    education: { kind: 'source', sourceRevision },
+    courses: { kind: 'source', sourceRevision },
+    skills: { kind: 'source', sourceRevision },
+    languages: { kind: 'source', sourceRevision },
+    location: { kind: 'source', sourceRevision },
     summary: { kind: 'recruiter', editedAt: edited.updatedAt },
     fit: { kind: 'recruiter', editedAt: edited.updatedAt },
     conclusion: { kind: 'recruiter', editedAt: edited.updatedAt },
@@ -204,6 +215,9 @@ test('accepted report UI uses real BFF handlers, profile-owned source, private d
   assert.equal(editedPreviewResponse.status, 200);
   assert.match(editedPreview.html, /&lt;img src=x onerror=synthetic&gt;/);
   assert.match(editedPreview.html, /Кратко о кандидате/);
+  assert.match(editedPreview.html, /Synthetic region/);
+  assert.match(editedPreview.html, /Synthetic university, 2020/);
+  assert.match(editedPreview.html, /&lt;img src=x onerror=synthetic&gt;/);
   assert.match(editedPreview.html, /Соответствие вакансии/);
   assert.match(editedPreview.html, /Вывод рекрутера/);
   assert.match(editedPreview.html, /Designed synthetic APIs/);
@@ -698,7 +712,9 @@ test('HH response source reaches the shared report draft over real BFF/HTTP with
       return { status: 200, body: { profileId: profileOne, vacancyId, resumeId,
         sourceRevision: resumeRevision, resume: { firstName: 'Response', lastName: 'Candidate',
           title: 'Platform Engineer', experience: [{ position: 'Engineer', company: 'Example Works',
-            start: '2021', end: '2025' }], email: 'private@example.invalid', alternateUrl: 'https://hh.ru/private' },
+            start: '2021', end: '2025' }], education: ['Synthetic university'], courses: ['Synthetic course'],
+          skills: ['TypeScript'], languages: ['English — C1'], location: 'Synthetic region',
+          email: 'private@example.invalid', alternateUrl: 'https://hh.ru/private' },
         candidateProjection: { id: resumeId, vacancyId, title: 'Platform Engineer' } } };
     },
     async loadBasePlan(profileId, requestedVacancy) {
@@ -741,7 +757,12 @@ test('HH response source reaches the shared report draft over real BFF/HTTP with
   sourceUrl.searchParams.set('sourceKind', 'accepted_hh_response');
   const currentSource = await fetch(sourceUrl, { headers: { cookie: connected.cookie } });
   assert.equal(currentSource.status, 200);
-  const source = await currentSource.json();
+  const currentSourceBody = await currentSource.json();
+  assert.deepEqual(currentSourceBody.clientDraftFields.education, ['Synthetic university']);
+  assert.deepEqual(currentSourceBody.clientDraftFields.skills, ['TypeScript']);
+  assert.equal(currentSourceBody.clientDraftFields.location, 'Synthetic region');
+  assert.equal(JSON.stringify(currentSourceBody).includes('private@example.invalid'), false);
+  const source = currentSourceBody;
   assert.equal(source.sourceKind, 'accepted_hh_response');
   assert.equal(source.clientDraftFields.candidateName, 'Response Candidate');
   assert.equal(JSON.stringify(source).includes('private@example.invalid'), false);
