@@ -6,6 +6,7 @@ const unit = readFileSync(new URL('../infra/systemd/trained-recruiting-hh-web.se
 const bffUnit = readFileSync(new URL('../infra/systemd/trained-recruiting-hh-web-bff.service', import.meta.url), 'utf8');
 const nginx = readFileSync(new URL('../infra/nginx/recruiting-proactive.locations.conf', import.meta.url), 'utf8');
 const bffNginx = readFileSync(new URL('../infra/nginx/recruiting-connected-bff.locations.conf', import.meta.url), 'utf8');
+const runtimeSource = readFileSync(new URL('../src/r03-private-web-runtime.js', import.meta.url), 'utf8');
 
 test('private web service stays opt-in, loopback-only and credential-scoped', () => {
   assert.match(unit, /^User=trained-recruiting$/m);
@@ -25,6 +26,12 @@ test('BFF unit uses service credentials and separate private SQLite without lega
   assert.match(bffUnit, /^UMask=0077$/m);
   assert.match(bffUnit, /^LoadCredential=cp_service_key:/m);
   assert.match(bffUnit, /^LoadCredential=bff_encryption_key:/m);
+  assert.match(bffUnit, /^LoadCredential=hh_user_agent:/m);
+  const requiredSecrets = [...runtimeSource.matchAll(/loadPrivateHostSecret\(secretsDirectory, '([^']+)'\)/g)]
+    .map(match => match[1]).filter(name => name !== 'legacy_page_secret');
+  for (const name of requiredSecrets) {
+    assert.match(bffUnit, new RegExp(`^LoadCredential=${name}:`, 'm'));
+  }
   assert.doesNotMatch(bffUnit, /^LoadCredential=legacy_page_secret:/m);
   assert.match(bffUnit, /--connected-bff --cp-issuer \$\{CP_ISSUER\} --public-origin https:\/\/recruiter-assistant\.ru --bff-db \/var\/lib\/trained-assist\/recruiting-web\/bff\.sqlite/);
   assert.match(bffUnit, /^ReadWritePaths=\/var\/lib\/trained-assist\/recruiting-web$/m);
