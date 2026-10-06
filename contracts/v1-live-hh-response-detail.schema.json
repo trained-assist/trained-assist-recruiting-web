@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-live-hh-response-detail.schema.json",
+  "title": "Trusted-profile exact HH response status",
+  "type": "object",
+  "required": ["domainApiVersion", "profileId", "vacancyId", "negotiationId", "resumeId", "state", "updatedAt", "fetchedAt", "freshness"],
+  "properties": {
+    "domainApiVersion": { "const": "v1" },
+    "profileId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+    "vacancyId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+    "negotiationId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+    "resumeId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+    "state": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+    "updatedAt": { "type": ["string", "null"], "format": "date-time" },
+    "fetchedAt": { "type": "string", "format": "date-time" },
+    "freshness": { "const": "live_at_request" }
+  },
+  "additionalProperties": false
+}
