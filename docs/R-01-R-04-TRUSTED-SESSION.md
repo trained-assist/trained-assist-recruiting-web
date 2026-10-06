@@ -4,9 +4,11 @@
 
 The R-01 HTTP route requires `recruiting.responses.read`; the R-04 source route requires `recruiting.reports.read`. The R-03 signed-link cookie carries only `recruiting.candidateSearch` and is never consumed by this adapter. The source read remains a proposal, not an approved or published report. This module is not mounted in the private R-03 process or production manifest.
 
-## Agent-owned integration contract still needed
+## Agent-owned context contract and runtime gap
 
-The retiring agent currently has its own web JWT cookie and in-memory run tokens. Neither has the audience, scopes, external session validation and profile-switch/revocation contract needed here. The new agent/control plane must define an issuer or introspection endpoint that returns verified `iss`, `aud`, `sub`, `profileId`, `sessionId`, `nbf`, `exp` and scopes, then implement `isProfileBound` against its current profile/session authority. Browser handoff needs a short-lived code exchange or equivalent so the token is not placed in a URL or exposed to third-party scripts. The relay needs a separate authorization grant for each operation. Only after this contract and real profile mapping are in place should the host mount R-01/R-04 routes and test a real HH read and report source canary.
+The Agent-owned Profile Context v1 contract is pinned at Agent revision `4a60c2e4c45eca9de1b84bba55e38bb83e1478c8`, and the CP identity contract pins the same revision. It defines authenticated principal, current profile, Agent session and monotonic profile generation; the Recruiting consumer pins both contracts and their schemas. The Agent artifact is explicitly `contract_only`, and the CP production resolver remains `not_wired`.
+
+The retiring Agent web JWT cookie and browser-readable `web_current` selector do not prove a human principal, Agent-owned membership or a current profile generation. They cannot implement this contract. The remaining integration needs an existing trusted Agent user/session and membership source, an Agent-side resolver wired to it, current-session revalidation in CP, and explicit host-side membership provisioning. Do not create a new login provider or adapt the legacy cookies. Browser handoff still needs a short-lived code exchange so app tokens never appear in URLs or third-party scripts. Only after real identity mapping and revocation are available should the host mount R-01/R-04 routes and test a real HH read and report-source canary.
 
 Offline tests use invented claims and a fake verifier. They prove the local validation and route scope separation, not issuer cryptography, real session revocation, browser handoff or live HH access.
 

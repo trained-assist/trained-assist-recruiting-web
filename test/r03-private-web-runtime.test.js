@@ -6,7 +6,7 @@ import { chmodSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { createPrivateWebRuntime } from '../src/r03-private-web-runtime.js';
+import { createPrivateWebRuntime, parsePrivateWebArgs } from '../src/r03-private-web-runtime.js';
 import { createPrivateWebAuth } from '../src/r03-private-web-auth.js';
 import { renderRealProactivePage } from '../src/r03-real-proactive-page.js';
 
@@ -23,9 +23,11 @@ function fixture(t, vacancyIds = [vacancyId], runtimeOptions = {}) {
   const proactive = privateDir('proactive');
   const tokens = privateDir('tokens');
   const secrets = privateDir('secrets');
-  for (const [name, value] of Object.entries({ ...(runtimeOptions.connectedAppBff ? {} : { legacy_page_secret: secret }),
+  for (const [name, value] of Object.entries({ ...(runtimeOptions.connectedAppBff || runtimeOptions.connectedBffConfig ? {} : { legacy_page_secret: secret }),
     hh_encryption_key: 'a'.repeat(64), hh_client_id: 'invented-client',
     hh_client_secret: 'invented-client-secret', ladder_token: 'invented-ladder',
+    ...(runtimeOptions.connectedBffConfig ? { cp_service_key: 'invented-service-key-32-characters-minimum',
+      bff_encryption_key: 'b'.repeat(64) } : {}),
     hh_user_agent: 'invented-recruiting/1.0 (contact@example.test)' }))
     writeFileSync(join(secrets, name), value, { mode: 0o600 });
   const configFile = join(directory, 'config.json');
@@ -34,7 +36,9 @@ function fixture(t, vacancyIds = [vacancyId], runtimeOptions = {}) {
       contextDirectory: contexts, proactiveDirectory: proactive, tokenDirectory: tokens }] }), { mode: 0o600 });
   const server = createPrivateWebRuntime({ configFile, secretsDirectory: secrets,
     fetchImpl: async () => { throw new Error('unexpected_provider_call'); },
-    clock: () => new Date('2026-10-06T08:00:00.000Z'), ...runtimeOptions });
+    clock: () => new Date('2026-10-06T08:00:00.000Z'), ...runtimeOptions,
+    ...(runtimeOptions.connectedBffConfig ? { connectedBffConfig: {
+      ...runtimeOptions.connectedBffConfig, dbPath: join(directory, 'bff.sqlite') } } : {}) });
   server.listen(0, '127.0.0.1');
   t.after(async () => { await new Promise(resolve => server.close(resolve)); rmSync(directory, { recursive: true, force: true }); });
   const token = createHmac('sha256', secret).update(legacyUsername).digest('hex').slice(0, 16);
@@ -50,6 +54,113 @@ test('private runtime can use injected Connected App BFF without legacy page sec
   assert.equal((await fetch(`${base}/hh/proactive?vacancy_id=${vacancyId}`)).status, 200);
   assert.equal((await fetch(`${base}/api/hh/proactive/candidates?vacancy_id=${vacancyId}`)).status, 200);
   assert.equal((await fetch(`${base}/hh/proactive?username=${legacyUsername}&token=deadbeef&vacancy_id=${vacancyId}`)).status, 400);
+});
+
+test('private CLI keeps BFF opt-in and requires exact issuer, origin and durable path together', () => {
+  const common = ['--live-execution', '--config', '/private/config.json', '--secrets', '/private/secrets', '--port', '18083'];
+  assert.equal(parsePrivateWebArgs(common).connectedBffConfig, undefined);
+  assert.throws(() => parsePrivateWebArgs([...common, '--connected-bff']));
+  assert.throws(() => parsePrivateWebArgs([...common, '--cp-issuer', 'https://cp.example.invalid']));
+  const args = parsePrivateWebArgs([...common, '--connected-bff', '--cp-issuer', 'https://cp.example.invalid',
+    '--public-origin', 'https://recruiter-assistant.ru', '--bff-db', '/private/bff.sqlite']);
+  assert.deepEqual(args.connectedBffConfig, { issuer: 'https://cp.example.invalid',
+    publicOrigin: 'https://recruiter-assistant.ru', dbPath: '/private/bff.sqlite' });
+});
+
+test('private BFF persists browser session across web restart, rejects replay, CSRF, outage and profile switch', async t => {
+  const issuer = 'https://cp.example.invalid';
+  const origin = 'https://recruiter-assistant.ru';
+  const now = Date.parse('2026-10-06T08:00:00.000Z');
+  const token = 'a'.repeat(64);
+  let claims = { active: true, iss: issuer, aud: 'recruiting-web', sub: 'invented_user',
+    profileId, sessionId: 'invented_session', nbf: now / 1000 - 1, exp: now / 1000 + 300,
+    scopes: ['recruiting.candidateSearch'] };
+  let exchanges = 0;
+  const fetchImpl = async (url, options) => {
+    assert.equal(options.redirect, 'manual');
+    assert.equal(options.headers.authorization, 'Bearer invented-service-key-32-characters-minimum');
+    if (url === `${issuer}/v1/connected-app-sessions/exchange`) {
+      exchanges++;
+      return { ok: true, json: async () => ({ token, expiresAt: now / 1000 + 300 }) };
+    }
+    if (url === `${issuer}/v1/connected-app-sessions/introspect`) {
+      if (claims === null) throw new Error('cp unavailable');
+      return { ok: true, json: async () => claims };
+    }
+    throw new Error('unexpected outbound call');
+  };
+  const f = fixture(t, [vacancyId, 'second_vacancy'], { connectedBffConfig: { issuer, publicOrigin: origin }, fetchImpl });
+  await once(f.server, 'listening');
+  const base = `http://127.0.0.1:${f.server.address().port}`;
+  const direct = await fetch(`${base}/hh/proactive?vacancy_id=${vacancyId}`, { redirect: 'manual' });
+  assert.equal(direct.status, 303);
+  assert.equal(direct.headers.get('location'), `/auth/connected/start?from=proactive&vacancy_id=${vacancyId}`);
+  const start = await fetch(`${base}${direct.headers.get('location')}`, { redirect: 'manual' });
+  assert.equal(start.status, 303);
+  const pending = start.headers.getSetCookie().find(x => x.startsWith('__Host-recruiting-oauth-pending=')).split(';')[0];
+  const state = new URL(start.headers.get('location')).searchParams.get('state');
+  const callback = `${base}/auth/connected/callback?code=${'c'.repeat(64)}&state=${state}&iss=${encodeURIComponent(issuer)}`;
+  const accepted = await fetch(callback, { redirect: 'manual', headers: { cookie: pending } });
+  assert.equal(accepted.status, 303);
+  assert.equal(accepted.headers.get('location'), `${origin}/hh/proactive?vacancy_id=${vacancyId}`);
+  assert.equal(exchanges, 1);
+  const session = accepted.headers.getSetCookie().find(x => x.startsWith('__Host-recruiting-app-session=')).split(';')[0];
+  assert.equal((await fetch(callback, { redirect: 'manual', headers: { cookie: pending } })).status, 401);
+  assert.equal(exchanges, 1);
+  assert.equal((await fetch(`${base}/hh/proactive?vacancy_id=${vacancyId}`, { headers: { cookie: session } })).status, 200);
+  const picker = await fetch(`${base}/hh/proactive`, { headers: { cookie: session } });
+  assert.equal(picker.status, 200);
+  const pickerHtml = await picker.text();
+  assert.match(pickerHtml, /vacancy_id=invented_vacancy/);
+  assert.match(pickerHtml, /vacancy_id=second_vacancy/);
+  assert.doesNotMatch(pickerHtml, /candidate|token-secret|other_profile/);
+  assert.equal((await fetch(`${base}/hh/proactive?vacancy_id=foreign_vacancy`,
+    { headers: { cookie: session } })).status, 404);
+  const chooser = await fetch(`${base}/auth/connected/start?from=proactive`, { redirect: 'manual' });
+  const chooserPending = chooser.headers.getSetCookie().find(x => x.startsWith('__Host-recruiting-oauth-pending=')).split(';')[0];
+  const chooserState = new URL(chooser.headers.get('location')).searchParams.get('state');
+  const chooserCallback = await fetch(`${base}/auth/connected/callback?code=${'d'.repeat(64)}&state=${chooserState}&iss=${encodeURIComponent(issuer)}`,
+    { redirect: 'manual', headers: { cookie: chooserPending } });
+  assert.equal(chooserCallback.headers.get('location'), `${origin}/hh/proactive`);
+  const sessionInfo = await (await fetch(`${base}/auth/connected/session`, { headers: { cookie: session } })).json();
+  const command = () => fetch(`${base}/api/hh/proactive/vacancy-state`, { method: 'POST',
+    headers: { cookie: session, origin, 'content-type': 'application/json' },
+    body: JSON.stringify({ vacancy_id: vacancyId, enabled: false }) });
+  assert.equal((await command()).status, 401);
+  const acceptedCommand = await fetch(`${base}/api/hh/proactive/vacancy-state`, { method: 'POST',
+    headers: { cookie: session, origin, 'x-csrf-token': sessionInfo.csrfToken,
+      'content-type': 'application/json' },
+    body: JSON.stringify({ vacancy_id: vacancyId, action: 'disable' }) });
+  assert.notEqual(acceptedCommand.status, 401);
+  await new Promise(resolve => f.server.close(resolve));
+  const restarted = createPrivateWebRuntime({ configFile: join(f.dbPath, '..', 'config.json'),
+    secretsDirectory: join(f.dbPath, '..', 'secrets'), fetchImpl,
+    clock: () => new Date(now), connectedBffConfig: { issuer, publicOrigin: origin,
+      dbPath: join(f.dbPath, '..', 'bff.sqlite') } });
+  restarted.listen(0, '127.0.0.1');
+  t.after(() => new Promise(resolve => restarted.close(resolve)));
+  await once(restarted, 'listening');
+  const restartedBase = `http://127.0.0.1:${restarted.address().port}`;
+  assert.equal((await fetch(`${restartedBase}/hh/proactive?vacancy_id=${vacancyId}`,
+    { headers: { cookie: session } })).status, 200);
+  claims = null;
+  assert.equal((await fetch(`${restartedBase}/hh/proactive?vacancy_id=${vacancyId}`,
+    { headers: { cookie: session } })).status, 503);
+  claims = { active: true, ...claims, iss: issuer, aud: 'recruiting-web', sub: 'invented_user',
+    profileId: 'other_profile', sessionId: 'invented_session', nbf: now / 1000 - 1,
+    exp: now / 1000 + 300, scopes: ['recruiting.candidateSearch'] };
+  assert.equal((await fetch(`${restartedBase}/hh/proactive?vacancy_id=${vacancyId}`,
+    { headers: { cookie: session }, redirect: 'manual' })).status, 303);
+  const wrongStart = await fetch(`${restartedBase}/auth/connected/start?from=proactive`, { redirect: 'manual' });
+  const wrongPending = wrongStart.headers.getSetCookie().find(x => x.startsWith('__Host-recruiting-oauth-pending=')).split(';')[0];
+  const wrongState = new URL(wrongStart.headers.get('location')).searchParams.get('state');
+  const wrongCallback = await fetch(`${restartedBase}/auth/connected/callback?code=${'e'.repeat(64)}&state=${wrongState}&iss=${encodeURIComponent(issuer)}`,
+    { redirect: 'manual', headers: { cookie: wrongPending } });
+  const wrongSession = wrongCallback.headers.getSetCookie().find(x => x.startsWith('__Host-recruiting-app-session=')).split(';')[0];
+  assert.equal((await fetch(`${restartedBase}/hh/proactive`, { headers: { cookie: wrongSession } })).status, 404);
+  assert.equal((await fetch(`${restartedBase}/hh/proactive?vacancy_id=${vacancyId}`,
+    { headers: { cookie: wrongSession } })).status, 404);
+  assert.ok(sessionInfo.csrfToken);
 });
 
 test('private web runtime accepts only exact old signed link then scopes session to configured vacancy', async t => {
