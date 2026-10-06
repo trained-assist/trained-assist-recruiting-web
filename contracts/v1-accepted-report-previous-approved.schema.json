@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-accepted-report-previous-approved.schema.json",
+  "title": "Previous profile-owned approved candidate report",
+  "type": "object",
+  "required": ["domainApiVersion", "report"],
+  "properties": {
+    "domainApiVersion": { "const": "v1" },
+    "report": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": ["reportRef", "reportRevision", "candidateId", "vacancyId", "approvedAt", "clientFields", "fieldProvenance"],
+          "properties": {
+            "reportRef": { "type": "string", "pattern": "^report_[a-f0-9]{32}$" },
+            "reportRevision": { "type": "string", "pattern": "^report-r[1-9][0-9]*$" },
+            "candidateId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+            "vacancyId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+            "approvedAt": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[^ ]+Z$" },
+            "clientFields": { "$ref": "v1-accepted-report-draft.schema.json#/properties/clientFields" },
+            "fieldProvenance": { "$ref": "v1-accepted-report-draft.schema.json#/properties/fieldProvenance" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  },
+  "additionalProperties": false
+}

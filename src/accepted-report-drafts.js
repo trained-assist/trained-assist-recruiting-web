@@ -123,6 +123,20 @@ generateFields = null, generateTimeoutMs = 30_000, clock = () => new Date() } = 
   }
 
   return {
+    async previousApproved(context, candidateId, vacancyId, excludeReportRef = null) {
+      if (!safeId(context?.profileId) || !safeId(candidateId) || !safeId(vacancyId) ||
+          excludeReportRef !== null && !/^report_[a-f0-9]{32}$/.test(excludeReportRef) ||
+          typeof store.listApprovedVersions !== 'function') return { kind: 'invalid_request' };
+      let records;
+      try { records = await store.listApprovedVersions(context.profileId, candidateId, vacancyId, 20); }
+      catch { return { kind: 'store_unavailable' }; }
+      const record = records.find(item => item.candidateId === candidateId && item.vacancyId === vacancyId &&
+        item.reportRef !== excludeReportRef && item.reviewState === 'approved');
+      return { kind: 'found', report: record ? { reportRef: record.reportRef,
+        reportRevision: revisionOf(record.revision), candidateId, vacancyId,
+        approvedAt: record.updatedAt, clientFields: structuredClone(record.clientFields),
+        fieldProvenance: structuredClone(record.fieldProvenance ?? {}) } : null };
+    },
     async create(context, key, request) {
       const sourceKind = request?.sourceKind ?? 'accepted_cold_search';
       if (!safeId(context?.profileId) || !safeId(request?.candidateId) || !safeId(request?.vacancyId) ||
@@ -324,6 +338,7 @@ generateFields = null, generateTimeoutMs = 30_000, clock = () => new Date() } = 
 
 export function createMemoryAcceptedReportDraftStore() {
   const byRef = new Map(); const byKey = new Map();
+  const approvedVersions = [];
   const policies = new Map();
   const instructionRecords = new Map();
   const instructionKey = (profileId, scopeType, scopeId) => JSON.stringify([profileId, scopeType, scopeId]);
@@ -390,8 +405,16 @@ export function createMemoryAcceptedReportDraftStore() {
       if (current.revision !== expectedRevision) return { kind: 'stale_report', record: publicReport(current) };
       const policyRevision = policies.get(JSON.stringify([profileId, next.candidateId, next.vacancyId]))?.revision ?? 0;
       if (policyRevision !== next.policyRevision) return { kind: 'stale_policy' };
+      if (next.reviewState === 'approved' && current.reviewState !== 'approved')
+        approvedVersions.push(structuredClone(next));
       byRef.get(ref).record = structuredClone(next);
       return { kind: 'updated', record: structuredClone(next) };
+    },
+    listApprovedVersions(profileId, candidateId, vacancyId, limit = 20) {
+      return approvedVersions.filter(record => record.profileId === profileId && record.candidateId === candidateId &&
+        record.vacancyId === vacancyId && record.reviewState === 'approved')
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.revision - a.revision)
+        .slice(0, limit).map(record => structuredClone(record));
     },
   };
 }

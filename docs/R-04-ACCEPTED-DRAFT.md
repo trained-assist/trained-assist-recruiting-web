@@ -6,6 +6,7 @@ This slice connects profile/vacancy-owned accepted candidate sources to a real H
 
 - `GET /hh/candidate-report?vacancy_id=…&candidate_id=…[&source_kind=accepted_hh_response]` — connected-profile page. The default source kind is `accepted_cold_search`. A missing session enters the app's report step-up, which requests `recruiting.reports.read`, `recruiting.reports.create`, `recruiting.reports.edit` and `recruiting.reports.review`.
 - `GET /api/v1/ui/accepted-report-client-source?...` — current client-safe source projection for the browser; internal assessment is stripped server-side.
+- `GET /api/v1/ui/accepted-report-previous-approved?candidateId=…&vacancyId=…[&excludeReportRef=…]` — latest immutable approved client-field snapshot for the authenticated profile and exact candidate/vacancy. A missing version returns `report: null`.
 - `GET /api/v1/ui/accepted-report-policy?...` and CSRF-protected `PUT /api/v1/ui/accepted-report-policy` — read or revise profile/candidate/vacancy-bound exact forbidden phrases. The policy revision is returned by the [policy schema](../contracts/v1-accepted-report-policy.schema.json); updates require `recruiting.reports.edit` and the current revision.
 - `POST /api/v1/ui/accepted-report-drafts` — create/replay an idempotent private draft. Identity comes only from BFF introspection; source revision and vacancy ownership are rechecked server-side.
 - `GET /api/v1/ui/accepted-report-drafts/{reportRef}` and `/preview` — profile-owned state and escaped HTML, both fail closed if the accepted-source revision changes.
@@ -19,7 +20,7 @@ The private policy record is encrypted in the report SQLite store, keyed by keye
 
 ## Storage and privacy
 
-`SqliteAcceptedReportDraftStore` is injected explicitly; there is no default mount. It requires an absolute database path in a private (0700) directory, a separate 32-byte hex encryption key, and a 0600 SQLite file. Every draft and audit record is AES-256-GCM encrypted. Owner and idempotency keys are keyed hashes; writes use immediate SQLite transactions and expected-revision checks. The private key must come from the deployment secret store and must never be written into config or logs.
+`SqliteAcceptedReportDraftStore` is injected explicitly; there is no default mount. It requires an absolute database path in a private (0700) directory, a separate 32-byte hex encryption key, and a 0600 SQLite file. Every draft, approved-version snapshot, and audit record is AES-256-GCM encrypted. Owner, report-scope, and idempotency keys are keyed hashes; approval snapshots are immutable and inserted in the same transaction as the review-state update. Writes use immediate SQLite transactions and expected-revision checks. The private key must come from the deployment secret store and must never be written into config or logs.
 
 The page uses a restrictive CSP and renders the preview in a sandboxed iframe. Unsafe HTTP requests go through the Connected App BFF's exact Origin and CSRF checks. The BFF session resolves the profile from current Control Plane introspection; browser-supplied profile IDs are ignored. The UI requires an explicit confirmation before saving review state. That confirmation is not permission to publish or send.
 

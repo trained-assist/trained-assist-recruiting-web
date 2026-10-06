@@ -350,12 +350,14 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
       (path === acceptedReportDraftRoot || new RegExp(`^${acceptedReportDraftRoot}/report_[a-f0-9]{32}(?:/preview|/review|/edit|/regenerate)?$`).test(path));
     const acceptedReportPolicyPath = acceptedReportPolicies !== null && path === '/api/v1/ui/accepted-report-policy';
     const acceptedReportInstructionsPath = acceptedReportInstructions !== null && path === '/api/v1/ui/accepted-report-instructions';
+    const acceptedReportPreviousPath = acceptedReportDrafts !== null && path === '/api/v1/ui/accepted-report-previous-approved';
     const acceptedReportRouteMethodAllowed = isAcceptedReportDraftPath &&
       (['GET', 'HEAD'].includes(req.method) && path !== acceptedReportDraftRoot ||
         req.method === 'POST' && (path === acceptedReportDraftRoot || /\/(review|regenerate)$/.test(path)) ||
         req.method === 'PATCH' && /\/edit$/.test(path)) ||
       acceptedReportPolicyPath && (req.method === 'GET' || req.method === 'PUT') ||
-      acceptedReportInstructionsPath && (req.method === 'GET' || req.method === 'PUT');
+      acceptedReportInstructionsPath && (req.method === 'GET' || req.method === 'PUT') ||
+      acceptedReportPreviousPath && ['GET', 'HEAD'].includes(req.method);
     const isAcceptedReportPagePath = acceptedReportDrafts !== null &&
       (path === '/hh/candidate-report' || path === '/hh/candidate-report/app.js' ||
         path === '/api/v1/ui/accepted-report-source' || path === '/api/v1/ui/accepted-report-client-source');
@@ -370,14 +372,16 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
           liveResponseConversationRead !== null && (path === '/hh/response-conversation' || path === '/hh/response-conversation/app.js') ||
           liveAssignmentRead !== null &&
           (path === '/hh/assignment' || path === '/hh/assignment/app.js' || path === '/api/v1/ui/vacancy-assignment') ||
-          isAcceptedReportDraftPath || acceptedReportPolicyPath || acceptedReportInstructionsPath || isAcceptedReportPagePath))) {
+          isAcceptedReportDraftPath || acceptedReportPolicyPath || acceptedReportInstructionsPath ||
+          acceptedReportPreviousPath || isAcceptedReportPagePath))) {
       status = 404;
       body = { error: 'not_found' };
-    } else if (isAcceptedReportDraftPath && !acceptedReportRouteMethodAllowed ||
+    } else if ((isAcceptedReportDraftPath || acceptedReportPreviousPath) && !acceptedReportRouteMethodAllowed ||
         req.method !== 'GET' && req.method !== 'HEAD' && !(req.method === 'POST' && (isCandidateSearchPath || isReportDraftPath || isAcceptedReportDraftPath || path === '/api/v1/ui/vacancy-assignment' && liveAssignmentSave !== null || path === '/hh/response-conversation' && liveResponseConversationRead !== null || path === '/api/hh/proactive/vacancy-state' || path === '/api/hh/proactive/search' || realProactiveFeed !== null && path.startsWith('/api/hh/proactive/'))) && !(req.method === 'PATCH' && (isReportDraftPath || isAcceptedReportDraftPath)) && !((acceptedReportPolicyPath || acceptedReportInstructionsPath) && req.method === 'PUT')) {
       status = 405;
       body = { error: 'method_not_allowed' };
       res.setHeader('Allow', isAcceptedReportDraftPath ? 'GET, HEAD, POST, PATCH' :
+        acceptedReportPreviousPath ? 'GET, HEAD' :
         acceptedReportPolicyPath || acceptedReportInstructionsPath ? 'GET, PUT' :
           isCandidateSearchPath || isReportDraftPath ? 'GET, HEAD, POST, PATCH' :
             path === '/api/v1/ui/vacancy-assignment' && liveAssignmentSave !== null ? 'GET, HEAD, POST' : 'GET, HEAD');
@@ -1147,6 +1151,26 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
             else { status = 503; body = { error: 'report_source_unavailable' }; }
           }
         }
+      }
+    } else if (acceptedReportPreviousPath) {
+      let context;
+      try { context = await trustedReadResolver(req, url, res); }
+      catch (error) { status = 503; body = { error: error instanceof ConnectedAppIntrospectionUnavailable
+        ? 'connected_app_introspection_unavailable' : 'trusted_profile_unavailable' }; }
+      if (status === 200 && (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes))) {
+        status = 401; body = { error: 'trusted_profile_context_required' };
+      }
+      else if (status === 200 && !context.scopes.includes('recruiting.reports.read')) { status = 403; body = { error: 'report_scope_required' }; }
+      else if (status === 200 && ([...url.searchParams.keys()].some(key => !['candidateId', 'vacancyId', 'excludeReportRef'].includes(key)) ||
+          url.searchParams.getAll('candidateId').length !== 1 || url.searchParams.getAll('vacancyId').length !== 1 ||
+          url.searchParams.getAll('excludeReportRef').length > 1)) {
+        status = 400; body = { error: 'invalid_previous_report_query' };
+      } else if (status === 200) {
+        const result = await acceptedReportDrafts.previousApproved(context,
+          url.searchParams.get('candidateId'), url.searchParams.get('vacancyId'), url.searchParams.get('excludeReportRef'));
+        if (result.kind === 'found') body = { domainApiVersion: 'v1', report: result.report };
+        else if (result.kind === 'invalid_request') { status = 400; body = { error: 'invalid_previous_report_query' }; }
+        else { status = 503; body = { error: 'report_store_unavailable' }; }
       }
     } else if (isAcceptedReportDraftPath) {
       let context;

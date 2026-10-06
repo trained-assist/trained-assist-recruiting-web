@@ -9,6 +9,9 @@ const conclusionNode = document.querySelector('#conclusion');
 const experienceNode = document.querySelector('#experience-editor');
 const fitNode = document.querySelector('#fit-editor');
 const fieldProvenanceNode = document.querySelector('#field-provenance');
+const previousApprovedSection = document.querySelector('#previous-approved-section');
+const previousApprovedDate = document.querySelector('#previous-approved-date');
+const previousApprovedContent = document.querySelector('#previous-approved-content');
 const regenerateButton = document.querySelector('#regenerate-report');
 const replaceEditedFieldsNode = document.querySelector('#replace-edited-fields');
 const addExperienceButton = document.querySelector('#add-experience');
@@ -89,6 +92,34 @@ function renderFieldProvenance(value = {}) {
     item.textContent = `${labels[field] ?? field}: ${kinds[provenance.kind] ?? 'неизвестно'}`;
     fieldProvenanceNode.append(item);
   });
+}
+
+function renderPreviousApproved(report) {
+  previousApprovedSection.hidden = !report;
+  previousApprovedContent.replaceChildren();
+  if (!report) return;
+  previousApprovedDate.textContent = `Подтверждена рекрутером ${new Date(report.approvedAt).toLocaleString('ru-RU')} · ${report.reportRevision}`;
+  const fields = report.clientFields;
+  const heading = document.createElement('h3'); heading.textContent = `${fields.candidateName} · ${fields.vacancyTitle}`;
+  previousApprovedContent.append(heading);
+  if (fields.summary) { const summary = document.createElement('p'); summary.textContent = fields.summary; previousApprovedContent.append(summary); }
+  if (fields.experience?.length) {
+    const title = document.createElement('h4'); title.textContent = 'Опыт'; previousApprovedContent.append(title);
+    const list = document.createElement('ul');
+    for (const item of fields.experience) {
+      const row = document.createElement('li');
+      row.textContent = `${item.role} · ${item.company} · ${item.period}${item.details?.length ? ` — ${item.details.join('; ')}` : ''}`;
+      list.append(row);
+    }
+    previousApprovedContent.append(list);
+  }
+  if (fields.fit?.length) {
+    const title = document.createElement('h4'); title.textContent = 'Соответствие требованиям'; previousApprovedContent.append(title);
+    const list = document.createElement('ul');
+    for (const item of fields.fit) { const row = document.createElement('li'); row.textContent = `${item.status}: ${item.requirement} — ${item.comment}`; list.append(row); }
+    previousApprovedContent.append(list);
+  }
+  if (fields.conclusion) { const title = document.createElement('h4'); title.textContent = 'Вывод'; const conclusion = document.createElement('p'); conclusion.textContent = fields.conclusion; previousApprovedContent.append(title, conclusion); }
 }
 
 const instructionFields = [
@@ -354,6 +385,16 @@ async function load() {
     });
     report = await createResponse.json();
     if (!createResponse.ok) { showStatus(reportError(createResponse, report)); return; }
+    const previousUrl = new URL('/api/v1/ui/accepted-report-previous-approved', location.origin);
+    previousUrl.searchParams.set('candidateId', candidateId);
+    previousUrl.searchParams.set('vacancyId', vacancyId);
+    previousUrl.searchParams.set('excludeReportRef', report.reportRef);
+    try {
+      const previousResponse = await request(previousUrl.pathname + previousUrl.search);
+      const previous = await previousResponse.json();
+      if (previousResponse.ok) renderPreviousApproved(previous.report);
+      else { previousApprovedSection.hidden = false; previousApprovedContent.textContent = 'Не удалось проверить историю одобренных версий.'; }
+    } catch { previousApprovedSection.hidden = false; previousApprovedContent.textContent = 'Не удалось проверить историю одобренных версий.'; }
     try { await loadReportInstructions(); }
     catch { instructionSection.hidden = false; instructionStatusNode.textContent = 'Не удалось загрузить инструкции. Проверьте соединение перед оформлением отчёта.'; }
     if (!await refreshPreview()) return;

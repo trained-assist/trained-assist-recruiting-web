@@ -44,6 +44,18 @@ export class SqliteAcceptedReportDraftStore {
       revision INTEGER NOT NULL CHECK(revision > 0),
       sealed_record TEXT NOT NULL
     )`);
+    this.db.exec(`CREATE TABLE IF NOT EXISTS accepted_report_approved_version (
+      version_key TEXT PRIMARY KEY,
+      owner_hash TEXT NOT NULL,
+      scope_hash TEXT NOT NULL,
+      report_ref TEXT NOT NULL,
+      revision INTEGER NOT NULL CHECK(revision > 0),
+      approved_at TEXT NOT NULL,
+      sealed_record TEXT NOT NULL,
+      UNIQUE(owner_hash, report_ref, revision)
+    )`);
+    this.listApproved = this.db.prepare(`SELECT * FROM accepted_report_approved_version
+      WHERE owner_hash=? AND scope_hash=? ORDER BY approved_at DESC, revision DESC LIMIT ?`);
     this.findByKey = this.db.prepare('SELECT * FROM accepted_report_draft WHERE owner_hash=? AND idempotency_hash=?');
     this.findByRef = this.db.prepare('SELECT * FROM accepted_report_draft WHERE report_ref=? AND owner_hash=?');
     this.insert = this.db.prepare(`INSERT INTO accepted_report_draft
@@ -73,6 +85,16 @@ export class SqliteAcceptedReportDraftStore {
 
   instructionKey(profileId, scopeType, scopeId) {
     return hmac(this.key, 'report-instructions', `${profileId}\0${scopeType}\0${scopeId}`);
+  }
+
+  reportScopeHash(profileId, candidateId, vacancyId) {
+    return hmac(this.key, 'approved-report-scope', `${profileId}\0${candidateId}\0${vacancyId}`);
+  }
+
+  listApprovedVersions(profileId, candidateId, vacancyId, limit = 20) {
+    const ownerHash = this.ownerHash(profileId);
+    const rows = this.listApproved.all(ownerHash, this.reportScopeHash(profileId, candidateId, vacancyId), limit);
+    return rows.map(row => this.open(row));
   }
 
   getReportInstructions(profileId, scopeType, scopeId) {
@@ -200,6 +222,13 @@ export class SqliteAcceptedReportDraftStore {
       const result = this.replace.run(next.revision, this.seal(reportRef, ownerHash, next),
         reportRef, ownerHash, expectedRevision);
       if (result.changes !== 1) return { kind: 'stale_report', record: this.get(profileId, reportRef) };
+      if (next.reviewState === 'approved' && current.reviewState !== 'approved') {
+        const versionKey = `${reportRef}:r${next.revision}`;
+        this.db.prepare(`INSERT INTO accepted_report_approved_version
+          (version_key,owner_hash,scope_hash,report_ref,revision,approved_at,sealed_record) VALUES (?,?,?,?,?,?,?)`)
+          .run(versionKey, ownerHash, this.reportScopeHash(profileId, next.candidateId, next.vacancyId),
+            reportRef, next.revision, next.updatedAt, this.seal(reportRef, ownerHash, next));
+      }
       return { kind: 'updated', record: structuredClone(next) };
     }).immediate();
   }

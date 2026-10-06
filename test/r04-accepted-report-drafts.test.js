@@ -116,6 +116,7 @@ test('accepted report UI uses real BFF handlers, profile-owned source, private d
   assert.match(reportPageHtml, /Черновик отчёта кандидата/);
   assert.match(reportPageHtml, /Сохранённые инструкции к отчётам/);
   assert.match(reportPageHtml, /regenerate-report/);
+  assert.match(reportPageHtml, /previous-approved-section/);
   assert.match(reportPageHtml, /Кратко о кандидате/);
   assert.match(reportPageHtml, /Соответствие требованиям вакансии/);
   assert.match(reportPageHtml, /Вывод рекрутера/);
@@ -251,6 +252,28 @@ test('accepted report UI uses real BFF handlers, profile-owned source, private d
   const approved = await review.json();
   assert.equal(approved.reviewState, 'approved');
   assert.equal(approved.sourceRevision, sourceRevision);
+  const priorUrl = new URL('/api/v1/ui/accepted-report-previous-approved', base);
+  priorUrl.searchParams.set('candidateId', candidateId);
+  priorUrl.searchParams.set('vacancyId', vacancyId);
+  priorUrl.searchParams.set('excludeReportRef', draft.reportRef);
+  const priorResponse = await fetch(priorUrl, { headers: { cookie: connected.cookie } });
+  assert.equal(priorResponse.status, 200);
+  assert.deepEqual(await priorResponse.json(), { domainApiVersion: 'v1', report: null });
+  priorUrl.searchParams.delete('excludeReportRef');
+  const justApprovedResponse = await fetch(priorUrl, { headers: { cookie: connected.cookie } });
+  const justApproved = await justApprovedResponse.json();
+  assert.equal(justApprovedResponse.status, 200);
+  assert.equal(justApproved.report.reportRef, draft.reportRef);
+  assert.equal(justApproved.report.reportRevision, approved.reportRevision);
+  const priorSchema = JSON.parse(await readFile(new URL('../contracts/v1-accepted-report-previous-approved.schema.json', import.meta.url), 'utf8'));
+  const priorAjv = new Ajv2020();
+  priorAjv.addSchema(JSON.parse(await readFile(new URL('../contracts/v1-accepted-report-draft.schema.json', import.meta.url), 'utf8')));
+  const validatePrior = priorAjv.compile(priorSchema);
+  assert.equal(validatePrior(justApproved), true, JSON.stringify(validatePrior.errors));
+  const foreignPrior = await fetch(`${base}/api/v1/ui/accepted-report-previous-approved?candidateId=${candidateId}&vacancyId=${vacancyId}`,
+    { headers: { cookie: foreign.cookie } });
+  assert.equal(foreignPrior.status, 200);
+  assert.deepEqual(await foreignPrior.json(), { domainApiVersion: 'v1', report: null });
   assert.equal(sendCalls + publishCalls + hhCalls + modelCalls, 0);
   const lockedEdit = await fetch(`${base}/api/v1/ui/accepted-report-drafts/${draft.reportRef}/edit`, { method: 'PATCH',
     headers: { cookie: connected.cookie, origin: publicOrigin, 'x-csrf-token': connected.csrfToken,
@@ -490,6 +513,12 @@ test('SQLite report drafts survive restart, encrypt candidate fields at rest, an
   const approved = await secondDomain.review(context, regenerated.report.reportRef, 'report-r2', 'approved');
   assert.equal(approved.kind, 'reviewed');
   assert.equal(approved.report.reviewState, 'approved');
+  const archived = await secondDomain.previousApproved(context, candidateId, vacancyId, ref);
+  assert.equal(archived.kind, 'found');
+  assert.equal(archived.report.reportRef, regenerated.report.reportRef);
+  assert.equal(archived.report.reportRevision, 'report-r3');
+  assert.equal(archived.report.clientFields.position, 'Reviewed Synthetic Role');
+  assert.equal((await secondDomain.previousApproved({ profileId: profileTwo }, candidateId, vacancyId)).report, null);
   assert.equal((await secondDomain.review(context, regenerated.report.reportRef, 'report-r2', 'approved')).kind, 'stale_report');
   assert.equal((await secondDomain.edit(context, regenerated.report.reportRef, 'report-r3', { position: 'Forbidden' })).kind, 'not_editable');
 
