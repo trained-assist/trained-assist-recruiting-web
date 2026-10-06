@@ -68,3 +68,71 @@ the authenticated private page/API for both profiles, ATS backlog progress,
 and no calls to the old GCP VM. Resolve or explicitly dispose of each of the
 eight unknown legacy outcomes before enabling imported schedules. The
 partial canary above proves only the bounded timer/provider/replay path.
+
+## Full-query disposable one-shot, executed 2026-10-06
+
+`ops/r03-full-timer-canary.mjs` has separate `preflight` and `run`
+phases. The private selection receipt is the earlier successful full
+discovery for the same owned scope. Its profile/vacancy IDs stay out of the
+unit and journal. The wrapper requires the current seven-query plan,
+`estimatedRequests<=80`, and `rawItemUpperBound<=3000`. The underlying
+full-discovery module independently checks the same receipt is under 15
+minutes old and enforces per-query pages, total requests and raw-item caps
+at dispatch. It has no ATS/LLM evaluator in this run.
+
+- Fresh page-zero preflight: 7 HH GET, 7 queries, estimated 56 full GET,
+  raw upper bound 2,619, status `ready`.
+- A second transient one-shot systemd timer fired at 09:14:20 UTC. Its
+  service completed all seven queries with 56 real HH GET and 0 ATS/LLM
+  requests. The new disposable DB has one successful occurrence, 1,687
+  candidates, 1,390 new candidates relative to that copy, and
+  `disposableDiscoveryComplete=true`, `published=false`.
+- A fresh process returned `replayed` with 0 HH/ATS requests. The
+  disposable DB passes SQLite integrity check. All 12 schedules in this
+  copy are disabled after the run; the 11 imported definitions and eight
+  unknown outcomes remain quarantined.
+- The migrated source and disabled schedule-stage main-file SHA-256 values
+  stayed at the two values listed above. The transient timer was stopped.
+  The staged web unit remains disabled and inactive; no Recruiting timer
+  is installed. The public route was not touched.
+
+This proves full query/page discovery, bounded provider egress, atomic
+disposable result and replay after process restart on the RU host. It
+does not prove an imported schedule's natural cadence, public morning
+delivery, profile login, production data activation, ATS completion or
+absence of every legacy dependency.
+
+## Imported cadence and next natural gate
+
+`ops/r03-imported-cadence-audit.mjs` read the actual 11 staged definitions
+without mutating them or printing profile/vacancy IDs. At fixed clocks
+2026-10-06 00:00 and 2026-10-08 01:00 UTC, all 11 passed the
+`nextOccurrenceAfter` and `latestDueSlot` monotonic/coalescing
+invariants. Ten plans have a 24-hour interval and one has a 30-minute
+interval, all in `Europe/Moscow`. At 09:16:08 UTC on 2026-10-06, the
+next natural 24-hour slots ranged from 10:04 UTC that day through 08:06
+UTC the next day; the 30-minute test slot was 09:23 UTC. The rarest
+required interval is thus 24 hours in this frozen set.
+
+The safe natural-cycle experiment requires an operator-reviewed one of the
+ten owned 24-hour scopes and its exact import/history disposition. Clone
+the verified stage DB once more; preserve all 11 imported rows in the
+source, and enable only the reviewed row in the new copy with its natural
+`nextRunAt` unchanged. Prepare a fresh page-zero preflight no more than
+15 minutes before that slot. Install a **one-shot** transient timer for
+that exact slot against the disposable DB, with one scope allowlisted,
+full-discovery caps enforced, ATS disabled and an automatic timeout.
+Record the timer trigger, due timestamp, occurrence unique key, full
+HH page count, atomic snapshot, next due cursor, process restart/replay,
+source/stage SHA equality and private page/API read. Stop the transient
+timer and retain the private receipt. If the selected row has an unknown
+historical effect, obtain an explicit disposition before enabling even
+its copy; never replay the old occurrence.
+
+That experiment would prove the host clock reaches one real required
+24-hour slot and the reviewed scope's schedule, search and persistence
+path works through one process restart. It would not authorize the
+remaining schedules, resolve the other unknown outcomes, prove all
+vacancies or both profiles, publish the route, or satisfy the final
+GCP-stop gate by itself. The production timer and public route remain
+off until their separate acceptance.
