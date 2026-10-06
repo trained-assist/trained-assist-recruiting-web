@@ -61,6 +61,7 @@ export function loadPrivateHostConfig(filename) {
       return row ? { profileId: row.profileId, contextDirectory: row.contextDirectory,
         proactiveDirectory: row.proactiveDirectory, tokenDirectory: row.tokenDirectory } : null;
     },
+    vacancyIdsForProfile: profileId => [...(bindings.get(profileId)?.vacancyIds ?? [])],
     isVacancyOwned: (profileId, vacancyId) => bindings.get(profileId)?.vacancyIds.has(vacancyId) === true
   };
 }

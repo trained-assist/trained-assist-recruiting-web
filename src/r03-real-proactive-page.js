@@ -1,6 +1,13 @@
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
 })[char]);
+const safeResumeUrl = value => {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && (url.hostname === 'hh.ru' || url.hostname.endsWith('.hh.ru')) &&
+      /^\/resume\/[A-Za-z0-9_-]+\/?$/.test(url.pathname) && !url.username && !url.password ? url.href : null;
+  } catch { return null; }
+};
 
 export function renderRealProactivePage({ vacancyId, feed }) {
   const freshness = feed.freshness === 'latest_run_incomplete' ? 'Последний поиск не завершён; показаны ранее принятые кандидаты.' :
@@ -9,7 +16,7 @@ export function renderRealProactivePage({ vacancyId, feed }) {
     <p>${escapeHtml(item.firstName)} ${escapeHtml(item.lastName)} · ${escapeHtml(item.area)}</p>
     <p>ATS: ${item.atsScore === null ? 'ожидает оценки' : escapeHtml(item.atsScore)} · ${escapeHtml(item.review.status)}</p>
     ${item.comment ? `<p class="comment">${escapeHtml(item.comment)}</p>` : ''}
-    <a href="${escapeHtml(item.hhUrl)}" target="_blank" rel="noopener noreferrer">Резюме HH</a></article>`).join('');
+    ${safeResumeUrl(item.hhUrl) ? `<a href="${escapeHtml(safeResumeUrl(item.hhUrl))}" target="_blank" rel="noopener noreferrer">Резюме HH</a>` : ''}</article>`).join('');
   return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Холодный поиск — ${escapeHtml(vacancyId)}</title><style>
 body{font:16px/1.5 system-ui,sans-serif;max-width:960px;margin:2rem auto;padding:0 1rem;color:#172033;background:#f8fafc}
