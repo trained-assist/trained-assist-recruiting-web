@@ -140,6 +140,28 @@ test('private runtime composes accepted HH response source, encrypted draft, BFF
   const sessionCookie = cookie(callback, '__Host-recruiting-app-session');
   const session = await (await fetch(base + '/auth/connected/session', { headers: { cookie: sessionCookie } })).json();
 
+  const coldSourceUrl = new URL('/api/v1/ui/accepted-report-client-source', base);
+  coldSourceUrl.searchParams.set('candidateId', resumeId);
+  coldSourceUrl.searchParams.set('vacancyId', vacancyId);
+  coldSourceUrl.searchParams.set('sourceKind', 'accepted_cold_search');
+  const coldSourceResponse = await fetch(coldSourceUrl, { headers: { cookie: sessionCookie } });
+  assert.equal(coldSourceResponse.status, 200);
+  const coldSource = await coldSourceResponse.json();
+  assert.equal(coldSource.sourceKind, 'accepted_cold_search');
+  assert.equal(coldSource.clientDraftFields.candidateName, 'Синтетический Кандидат');
+  assert.equal(JSON.stringify(coldSource).includes('private@example.test'), false);
+  const coldCreate = await fetch(base + '/api/v1/ui/accepted-report-drafts', { method: 'POST',
+    headers: { cookie: sessionCookie, origin, 'x-csrf-token': session.csrfToken,
+      'content-type': 'application/json', 'Idempotency-Key': 'runtime-cold-search-report-001' },
+    body: JSON.stringify({ candidateId: resumeId, vacancyId, sourceKind: 'accepted_cold_search',
+      expectedSourceRevision: coldSource.sourceRevision, expectedPolicyRevision: 0 }) });
+  assert.equal(coldCreate.status, 201);
+  const coldDraft = await coldCreate.json();
+  const coldPreview = await fetch(base + '/api/v1/ui/accepted-report-drafts/' + coldDraft.reportRef + '/preview',
+    { headers: { cookie: sessionCookie } });
+  assert.equal(coldPreview.status, 200);
+  assert.match((await coldPreview.json()).html, /Синтетический Кандидат/);
+
   const sourceUrl = new URL('/api/v1/ui/accepted-report-client-source', base);
   sourceUrl.searchParams.set('candidateId', negotiationId);
   sourceUrl.searchParams.set('vacancyId', vacancyId);
@@ -204,7 +226,7 @@ test('private runtime composes accepted HH response source, encrypted draft, BFF
   assert.equal(preview.status, 200);
   assert.match((await preview.json()).html, /Синтетический Кандидат/);
   assert.equal(statSync(reportDb).mode & 0o777, 0o600);
-  assert.equal(messageCalls, 0, 'report creation and preview do not read the conversation');
+  assert.equal(messageCalls, 0, 'cold-search and response report creation/preview do not read the conversation');
   assert.ok(responseReads >= 2 && resumeReads >= 2);
 
   const conversationStart = await fetch(base + '/auth/connected/start?from=conversation&vacancy_id=' +
