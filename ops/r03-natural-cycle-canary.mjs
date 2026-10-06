@@ -59,6 +59,12 @@ try {
         host.resolveLegacyProfile(legacy.profile_id) !== selected.profileId ||
         JSON.parse(legacy.arguments_json)?.vacancy_id !== selected.vacancyId ||
         JSON.stringify(legacyCronToPlan(legacy.schedule)) !== JSON.stringify(selected.plan)) fail();
+    // `cron_jobs.last_status=succeeded` can hide an earlier ambiguous effect.
+    // An unknown historical occurrence requires a separate explicit
+    // disposition; this wrapper never silently promotes that schedule.
+    const history = cron.prepare(`SELECT status,COUNT(*) AS n FROM action_executions
+      WHERE cron_id=? GROUP BY status`).all(selected.legacyJobId);
+    if (history.some(row => row.status !== 'succeeded')) fail();
   } finally { staged.close(); cron.close(); }
   const { createPrivateBaseSearchPlan } = await import(pathToFileURL(
     join(releaseDirectory, 'src/r03-private-base-plan.js')).href);
