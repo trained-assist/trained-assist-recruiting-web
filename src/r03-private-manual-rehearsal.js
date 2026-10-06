@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { lstatSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
@@ -36,6 +36,29 @@ export async function runPrivateManualRehearsal({ hostConfigFile, stageReceiptFi
   privateDirectory(dirname(stage.stagedDbPath));
   const dbInfo = lstatSync(stage.stagedDbPath);
   if (!dbInfo.isFile() || dbInfo.mode & 0o077 || dbInfo.uid !== process.getuid()) fail();
+  const receiptFile = join(dirname(stageReceiptFile), 'manual-rehearsal-receipt.json');
+  if (existsSync(receiptFile)) {
+    const prior = readPrivateJson(receiptFile, 1024 * 1024);
+    if (prior?.version !== 'r03-private-manual-rehearsal-v1' ||
+        prior.disposition !== 'disposable_only' || prior.migrationId !== stage.migrationId ||
+        prior.sourceArchiveSha256 !== stage.sourceArchiveSha256 || prior.cronSha256 !== stage.cronSha256 ||
+        prior.profileId !== profileId || prior.vacancyId !== vacancyId ||
+        prior.stagedDbPath !== stage.stagedDbPath ||
+        JSON.stringify(prior.limits) !== JSON.stringify({ queries: 1, pages: 1, perPage: 1, attempts: 1 })) fail();
+    const db = new Database(stage.stagedDbPath, { readonly: true, fileMustExist: true });
+    try {
+      const run = db.prepare('SELECT status FROM real_hh_manual_run WHERE run_id=? AND profile_id=? AND vacancy_id=?')
+        .get(prior.runId, profileId, vacancyId);
+      const snapshot = db.prepare('SELECT candidate_count,new_count FROM real_hh_snapshot WHERE job_id=? AND profile_id=? AND vacancy_id=?')
+        .get(prior.resultJobId, profileId, vacancyId);
+      if (run?.status !== prior.status || prior.status === 'completed' &&
+          (!snapshot || snapshot.candidate_count !== prior.candidateCount || snapshot.new_count !== prior.newCount) ||
+          prior.status !== 'completed' && snapshot) fail();
+    } finally { db.close(); }
+    return { status: 'replayed', originalStatus: prior.status, providerRequests: 0,
+      queryBudget: 1, pageBudget: 1, perPage: 1,
+      candidateCount: prior.candidateCount, newCount: prior.newCount, disposableOnly: true };
+  }
   const readonly = new Database(stage.stagedDbPath, { readonly: true, fileMustExist: true });
   try {
     const rows = readonly.prepare('SELECT payload,enabled,blocked_by_unknown_occurrence_id FROM cold_search_schedules').all();
@@ -100,7 +123,7 @@ export async function runPrivateManualRehearsal({ hostConfigFile, stageReceiptFi
       plan.criteriaRevision, plan.queryCache.revision]).slice(0, 32)}`;
     const started = await manual.start(context, idempotencyKey, { vacancyId,
       criteriaRevision: plan.criteriaRevision, queryRevision: plan.queryCache.revision });
-    if (!['created', 'replay'].includes(started.kind)) fail();
+    if (started.kind !== 'created') fail(); // no receipt: investigate, never redispatch
     let current = started.run;
     for (let attempt = 0; attempt < 160 && current.status === 'running'; attempt++) {
       await wait(250);
@@ -121,7 +144,6 @@ export async function runPrivateManualRehearsal({ hostConfigFile, stageReceiptFi
       limits: { queries: 1, pages: 1, perPage: 1, attempts: 1 },
       providerRequests, providerPages, candidateCount: snapshot?.candidateCount ?? 0,
       newCount: snapshot?.newCount ?? 0, disposition: 'disposable_only' };
-    const receiptFile = join(dirname(stageReceiptFile), 'manual-rehearsal-receipt.json');
     writeFileSync(receiptFile, JSON.stringify(receipt) + '\n', { flag: 'wx', mode: 0o600 });
     return { status: current.status, providerRequests, queryBudget: 1, pageBudget: 1,
       perPage: 1, candidateCount: receipt.candidateCount, newCount: receipt.newCount,
@@ -148,7 +170,8 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   try {
     const result = await runPrivateManualRehearsal(args(process.argv.slice(2)));
     process.stdout.write(JSON.stringify({ event: 'r03.private_manual_rehearsal', ...result }) + '\n');
-    if (result.status !== 'completed') process.exitCode = 2;
+    if (result.status !== 'completed' &&
+        !(result.status === 'replayed' && result.originalStatus === 'completed')) process.exitCode = 2;
   } catch {
     process.stdout.write(JSON.stringify({ event: 'r03.private_manual_rehearsal', status: 'failed',
       code: 'private_manual_rehearsal_unavailable' }) + '\n');

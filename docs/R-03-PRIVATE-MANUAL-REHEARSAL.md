@@ -14,7 +14,10 @@ read only through its first page. The existing manual search handler writes
 its run and snapshot receipts to the disposable DB only; its owner-only
 receipt records the request budget, response page count and aggregate result
 counts. An error after dispatch leaves an `outcome_unknown` rehearsal row and
-never automatically retries.
+never automatically retries. An exact repeated invocation verifies the
+private file receipt against the durable manual run and snapshot and returns
+`replayed` with zero provider requests. If the run exists but the file receipt
+is missing, it fails closed without redispatch and requires investigation.
 
 This intentionally partial rehearsal snapshot must never be copied into the
 migration DB or treated as morning freshness. The purpose is to test the

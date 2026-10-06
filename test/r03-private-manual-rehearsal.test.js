@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync,
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, unlinkSync,
   writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -84,6 +84,17 @@ test('one query, page, request and resume write only to disposable SQLite', asyn
   assert.equal(receipt.disposition, 'disposable_only');
   assert.equal(receipt.providerPages, 106);
   assert.deepEqual(receipt.limits, { queries: 1, pages: 1, perPage: 1, attempts: 1 });
+  const replay = await runPrivateManualRehearsal({ ...f, execute: true,
+    fetchImpl: async () => { throw new Error('provider must not repeat'); } });
+  assert.deepEqual(replay, { status: 'replayed', originalStatus: 'completed', providerRequests: 0,
+    queryBudget: 1, pageBudget: 1, perPage: 1, candidateCount: 1,
+    newCount: 1, disposableOnly: true });
+  unlinkSync(join(f.root, 'disposable', 'manual-rehearsal-receipt.json'));
+  let redispatches = 0;
+  await assert.rejects(runPrivateManualRehearsal({ ...f, execute: true,
+    fetchImpl: async () => { redispatches++; throw new Error('provider must not repeat'); } }),
+  /private_manual_rehearsal_unavailable/);
+  assert.equal(redispatches, 0, 'a lost file receipt cannot trigger a second provider call');
 });
 
 test('provider 429 makes one attempt and leaves no accepted snapshot', async t => {
