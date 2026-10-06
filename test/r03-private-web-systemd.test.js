@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const unit = readFileSync(new URL('../infra/systemd/trained-recruiting-hh-web.service', import.meta.url), 'utf8');
+const bffUnit = readFileSync(new URL('../infra/systemd/trained-recruiting-hh-web-bff.service', import.meta.url), 'utf8');
 const nginx = readFileSync(new URL('../infra/nginx/recruiting-proactive.locations.conf', import.meta.url), 'utf8');
+const bffNginx = readFileSync(new URL('../infra/nginx/recruiting-connected-bff.locations.conf', import.meta.url), 'utf8');
 
 test('private web service stays opt-in, loopback-only and credential-scoped', () => {
   assert.match(unit, /^User=trained-recruiting$/m);
@@ -16,6 +18,18 @@ test('private web service stays opt-in, loopback-only and credential-scoped', ()
   assert.match(unit, /--secrets \$\{CREDENTIALS_DIRECTORY\}/);
   assert.doesNotMatch(unit, /(?:AGENT_SECRET|Bearer |[A-Fa-f0-9]{64})/);
   assert.doesNotMatch(unit, /^ExecStart=.*(?:0\.0\.0\.0|--host)/m);
+});
+
+test('BFF unit uses service credentials and separate private SQLite without legacy secret', () => {
+  assert.match(bffUnit, /^User=trained-recruiting$/m);
+  assert.match(bffUnit, /^UMask=0077$/m);
+  assert.match(bffUnit, /^LoadCredential=cp_service_key:/m);
+  assert.match(bffUnit, /^LoadCredential=bff_encryption_key:/m);
+  assert.doesNotMatch(bffUnit, /^LoadCredential=legacy_page_secret:/m);
+  assert.match(bffUnit, /--connected-bff --cp-issuer \$\{CP_ISSUER\} --public-origin https:\/\/recruiter-assistant\.ru --bff-db \/var\/lib\/trained-assist\/recruiting-web\/bff\.sqlite/);
+  assert.match(bffUnit, /^ReadWritePaths=\/var\/lib\/trained-assist\/recruiting-web$/m);
+  assert.match(bffNginx, /^location \^~ \/auth\/connected\/ \{$/m);
+  assert.match(bffNginx, /^\s*access_log off;$/m);
 });
 
 test('unapplied cutover snippet routes the page, its script and all proactive API calls together', () => {

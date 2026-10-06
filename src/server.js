@@ -11,6 +11,7 @@ import { createCandidateSearchJobs } from './candidate-search-jobs.js';
 import { createCandidateState, createMemoryCandidateStateStore } from './candidate-state.js';
 import { createColdSearchScheduleHandler, InMemoryColdSearchScheduleRepository, validSearchContext } from './cold-search-schedules.js';
 import { renderRealProactivePage } from './r03-real-proactive-page.js';
+import { renderPrivateVacancyPicker } from './r03-private-vacancy-picker.js';
 import { renderR03HistoricalPage } from './r03-historical-page.js';
 import { createRealProactiveRead } from './r03-real-proactive-read.js';
 import { ConnectedAppIntrospectionUnavailable } from './connected-app-bff.js';
@@ -154,7 +155,7 @@ function validReportAction(value) {
   return isPlainObject(value) && Object.keys(value).sort().join(',') === 'expectedReportRevision' && isReportRevision(value.expectedReportRevision);
 }
 
-export function createRecruitingServer({ resolveTrustedProfileContext = () => null, connectedAppBff = null, resolveLegacyOpenTab = null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, candidateSearchJobStore = null, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), scheduleLeaseMs = 5 * 60_000, maxCandidateSearchJobs = 100, publicationAdapter, realProactiveFeed = null, realProactiveHistoricalRead = null, realProactiveActions = null, realProactivePrompt = null, realProactiveSeenImport = null, realProactiveAiScore = null, realProactiveManualCandidate = null, liveResponseRead = null, acceptedReportSourceRead = null, resolveRealVacancyOwnership = null, resolveRealDefaultVacancy = () => null, privateProactiveOnly = false, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
+export function createRecruitingServer({ resolveTrustedProfileContext = () => null, connectedAppBff = null, resolveLegacyOpenTab = null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, candidateSearchJobStore = null, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), scheduleLeaseMs = 5 * 60_000, maxCandidateSearchJobs = 100, publicationAdapter, realProactiveFeed = null, realProactiveHistoricalRead = null, realProactiveActions = null, realProactivePrompt = null, realProactiveSeenImport = null, realProactiveAiScore = null, realProactiveManualCandidate = null, liveResponseRead = null, acceptedReportSourceRead = null, resolveRealVacancyOwnership = null, resolveRealDefaultVacancy = () => null, listRealVacancies = () => [], privateProactiveOnly = false, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
   if (realProactiveFeed !== null && (typeof realProactiveFeed.read !== 'function' || typeof resolveRealVacancyOwnership !== 'function'))
     throw new TypeError('real proactive feed and trusted vacancy ownership ports required');
   if (realProactiveActions !== null && realProactiveFeed === null) throw new TypeError('real actions require real feed mode');
@@ -353,6 +354,20 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
       if (status !== 200) {
         // A failing trusted resolver must not enter a profile-scoped handler.
       } else if (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes)) {
+        if (connectedAppBff !== null && path === '/hh/proactive' && req.method === 'GET' &&
+            [...url.searchParams.keys()].every(key => ['vacancy_id', 'list'].includes(key)) &&
+            url.searchParams.getAll('vacancy_id').length <= 1 &&
+            url.searchParams.getAll('list').length <= 1 &&
+            (!url.searchParams.has('vacancy_id') || isRealProactiveVacancy(url.searchParams.get('vacancy_id'))) &&
+            (!url.searchParams.has('list') || ['active', 'starred', 'archived'].includes(url.searchParams.get('list')))) {
+          const start = new URL('/auth/connected/start', 'http://localhost');
+          start.searchParams.set('from', 'proactive');
+          if (url.searchParams.has('vacancy_id')) start.searchParams.set('vacancy_id', url.searchParams.get('vacancy_id'));
+          res.writeHead(303, { Location: start.pathname + start.search, 'Cache-Control': 'no-store',
+            'Referrer-Policy': 'no-referrer' });
+          res.end();
+          return;
+        }
         status = 401;
         body = { error: 'trusted_profile_context_required' };
       } else if (!context.scopes.includes('recruiting.candidateSearch')) {
@@ -498,7 +513,21 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
           body = { error: 'vacancy_id_required' };
         } else {
           const realVacancyId = url.searchParams.get('vacancy_id') ?? resolveRealDefaultVacancy(context);
-          if (!isRealProactiveVacancy(realVacancyId)) { status = 400; body = { error: 'vacancy_id_required' }; }
+          if (!isRealProactiveVacancy(realVacancyId)) {
+            if (connectedAppBff !== null && path === '/hh/proactive' && !url.searchParams.has('vacancy_id')) {
+              try {
+                const owned = listRealVacancies(context);
+                if (!Array.isArray(owned) || owned.length === 0) {
+                  status = 404; body = { error: 'vacancy_not_found' };
+                } else {
+                  type = mime.html;
+                  body = renderPrivateVacancyPicker(owned);
+                  res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+                  res.setHeader('Referrer-Policy', 'no-referrer');
+                }
+              } catch { status = 503; body = { error: 'vacancy_picker_unavailable' }; }
+            } else { status = 400; body = { error: 'vacancy_id_required' }; }
+          }
           else {
           const result = await realProactiveRead(context, realVacancyId);
           if (result.kind === 'not_found') { status = 404; body = { error: 'vacancy_not_found' }; }
