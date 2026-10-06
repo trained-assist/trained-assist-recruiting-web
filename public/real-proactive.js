@@ -18,11 +18,12 @@ if (root) {
   const command = (path, body, headers = {}) => request(path, { method: 'POST',
     headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
   const message = error => error instanceof Error ? error.message : 'action_unavailable';
+  let manualBlocked = false;
   const run = async (button, action) => {
     button.disabled = true;
     status.textContent = '';
     try { await action(); } catch (error) { status.textContent = `Действие не выполнено: ${message(error)}`; }
-    finally { button.disabled = false; }
+    finally { button.disabled = button.id === 'manual-search' && manualBlocked; }
   };
   const refreshSchedule = async () => {
     const result = await request(`/api/hh/proactive/schedule?vacancy_id=${encodeURIComponent(vacancyId)}`);
@@ -58,8 +59,9 @@ if (root) {
       const state = polled.run.status;
       if (state === 'completed') { forget(runStorageKey); location.reload(); return; }
       if (state === 'outcome_unknown') {
-        forget(runStorageKey);
         manualStatus.textContent = 'Исход поиска неизвестен. Повторный запуск требует разбирательства.';
+        manualBlocked = true;
+        document.getElementById('manual-search').disabled = true;
         return;
       }
       if (state !== 'running') {
@@ -73,6 +75,7 @@ if (root) {
   };
   const rememberedRun = stored(runStorageKey);
   if (rememberedRun) pollManual(rememberedRun).catch(error => {
+    if (message(error) === 'run_not_found') forget(runStorageKey);
     manualStatus.textContent = `Статус поиска недоступен: ${message(error)}`;
   });
   document.getElementById('manual-search').addEventListener('click', event => run(event.currentTarget, async () => {
