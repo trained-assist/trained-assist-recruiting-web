@@ -29,6 +29,7 @@ test('pinned control-plane identity contract matches the Recruiting consumer', a
     'recruiting.candidateSearch']);
   assert.equal(scopes.includes('recruiting.reports.publish'), false);
   assert.equal(scopes.includes('recruiting.reports.revoke'), false);
+  assert.equal(contract.audiences['crm-web'].includes('crm.deals.create'), true);
   assert.equal(scopes.some(scope => contract.audiences['crm-web'].includes(scope)), false);
   const resolver = createRecruitingReadSessionResolver({ verifyToken: async () => null,
     isProfileBound: async () => false, issuer: 'https://agent.example.invalid',
