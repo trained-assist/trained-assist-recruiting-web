@@ -17,6 +17,7 @@ function publicReport(record) {
     vacancyId: record.vacancyId, sourceRevision: record.sourceRevision,
     reportRevision: revisionOf(record.revision), status: record.status,
     reviewState: record.reviewState, clientFields: structuredClone(record.clientFields),
+    fieldProvenance: structuredClone(record.fieldProvenance ?? {}),
     policyRevision: `policy-r${record.policyRevision}`,
     createdAt: record.createdAt, updatedAt: record.updatedAt,
   };
@@ -70,9 +71,31 @@ function validClientEdits(value) {
 
 // Drafts contain only the allowlisted client projection. The internal ATS
 // assessment returned alongside the source is never copied to the store/API.
-export function createAcceptedReportDrafts({ sourceRead, store, clock = () => new Date() } = {}) {
+const isPlainObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+function validGeneratedFields(value, source) {
+  if (!isPlainObject(value) || Object.keys(value).length === 0 ||
+      Object.keys(value).some(key => !['summary', 'fit', 'conclusion', 'experienceDetails'].includes(key))) return false;
+  if ('summary' in value && (typeof value.summary !== 'string' || value.summary.length > 3000)) return false;
+  if ('conclusion' in value && (typeof value.conclusion !== 'string' || value.conclusion.length > 1500)) return false;
+  if ('fit' in value && (!Array.isArray(value.fit) || value.fit.length > 20 || !value.fit.every(item => isPlainObject(item) &&
+      Object.keys(item).every(key => ['requirement', 'status', 'comment'].includes(key)) &&
+      ['requirement', 'status', 'comment'].every(key => key in item) && typeof item.requirement === 'string' && item.requirement.length <= 300 &&
+      ['yes', 'partial', 'no'].includes(item.status) && typeof item.comment === 'string' && item.comment.length <= 1000))) return false;
+  if ('experienceDetails' in value && (!Array.isArray(value.experienceDetails) ||
+      value.experienceDetails.length !== source.experience.length || value.experienceDetails.length > 5 ||
+      !value.experienceDetails.every(details => Array.isArray(details) && details.length <= 10 &&
+        details.every(item => typeof item === 'string' && item.length <= 500)))) return false;
+  return true;
+}
+
+export function createAcceptedReportDrafts({ sourceRead, store, readInstructions = async () => ({ kind: 'found', body: {
+  effective: { includeGuidance: [], styleGuidance: [], recruiterNotes: [] }, scopes: [] } }),
+generateFields = null, generateTimeoutMs = 30_000, clock = () => new Date() } = {}) {
   if (typeof sourceRead !== 'function' || !store ||
       !['create', 'get', 'update', 'getPolicy'].every(method => typeof store[method] === 'function') ||
+      typeof readInstructions !== 'function' || generateFields !== null && typeof generateFields !== 'function' ||
+      !Number.isSafeInteger(generateTimeoutMs) || generateTimeoutMs < 1 || generateTimeoutMs > 120_000 ||
       typeof clock !== 'function') throw new TypeError('accepted_report_draft_ports_required');
 
   async function currentSource(context, record) {
@@ -133,6 +156,8 @@ export function createAcceptedReportDrafts({ sourceRead, store, clock = () => ne
         candidateId: request.candidateId, vacancyId: request.vacancyId,
         sourceRevision: source.sourceRevision, policyRevision, revision: 1, status: 'draft', reviewState: 'unreviewed',
         clientFields: { ...structuredClone(source.clientDraftFields), experience: source.clientDraftFields.experience.map(item => ({ ...item, details: [] })), summary: '', fit: [], conclusion: '' }, createdAt: now, updatedAt: now,
+        fieldProvenance: Object.fromEntries(['candidateName', 'position', 'vacancyTitle', 'experience'].map(field =>
+          [field, { kind: 'source', sourceRevision: source.sourceRevision }])),
         audit: [{ action: 'draft_created', revision: 1, actorProfileId: context.profileId, at: now, sourceRevision: source.sourceRevision }],
       };
       const created = await store.create({ profileId: context.profileId, idempotencyKey: key,
@@ -189,21 +214,110 @@ export function createAcceptedReportDrafts({ sourceRead, store, clock = () => ne
       if (expectedReportRevision !== revisionOf(record.revision)) return { kind: 'stale_report', report: publicReport(record) };
       const clientFields = { ...record.clientFields, ...structuredClone(clientEdits) };
       if (!validClientFields(clientFields)) return { kind: 'invalid_request' };
+      const changedFields = Object.keys(clientEdits).filter(field =>
+        JSON.stringify(record.clientFields[field]) !== JSON.stringify(clientFields[field]));
+      if (!changedFields.length) return { kind: 'edited', report: publicReport(record) };
       const violations = checkReportPolicy(clientFields, current.policy ?? { forbiddenPhrases: [] });
       if (violations.length) return { kind: 'policy_violation', violations,
         policyRevision: current.policyRevision };
       const now = clock().toISOString();
-      const updated = { ...record, clientFields, policyRevision: current.policyRevision, revision: record.revision + 1,
+      const fieldProvenance = structuredClone(record.fieldProvenance ?? {});
+      for (const field of changedFields) fieldProvenance[field] = { kind: 'recruiter',
+        editedAt: now };
+      const updated = { ...record, clientFields, fieldProvenance, policyRevision: current.policyRevision, revision: record.revision + 1,
         reviewState: 'unreviewed', updatedAt: now,
         audit: [...record.audit, { action: 'client_fields_edited', revision: record.revision + 1,
           actorProfileId: context.profileId, at: now, sourceRevision: record.sourceRevision,
-          fields: Object.keys(clientEdits).sort() }] };
+          fields: changedFields.sort() }] };
       const result = await store.update(context.profileId, ref, record.revision, updated);
       if (result.kind === 'stale_policy') {
         const latest = await store.getPolicy(context.profileId, record.candidateId, record.vacancyId);
         return { kind: 'stale_policy', policyRevision: latest?.revision ?? 0 };
       }
       return result.kind === 'updated' ? { kind: 'edited', report: publicReport(result.record) } : result;
+    },
+    async regenerate(context, ref, expectedReportRevision, { replaceRecruiterEditedFields = false } = {}) {
+      if (!safeId(context?.profileId) || !/^report_[a-f0-9]{32}$/.test(ref ?? '') ||
+          !/^report-r[1-9][0-9]*$/.test(expectedReportRevision ?? '') || typeof replaceRecruiterEditedFields !== 'boolean')
+        return { kind: 'invalid_request' };
+      const record = await store.get(context.profileId, ref);
+      if (!record) return { kind: 'not_found' };
+      if (record.status !== 'draft' || record.reviewState === 'approved') return { kind: 'not_editable', report: publicReport(record) };
+      if (expectedReportRevision !== revisionOf(record.revision)) return { kind: 'stale_report', report: publicReport(record) };
+      if (typeof generateFields !== 'function') return { kind: 'generation_unavailable' };
+      const current = await currentSource(context, record);
+      if (current.kind !== 'current') return { kind: current.kind, report: publicReport(record) };
+      let applicable;
+      try { applicable = await readInstructions(context, { candidateId: record.candidateId,
+        vacancyId: record.vacancyId, sourceKind: record.sourceKind,
+        reportRef: record.reportRef, reportRevision: revisionOf(record.revision) }); }
+      catch { return { kind: 'instructions_unavailable' }; }
+      if (applicable?.kind !== 'found') return { kind: applicable?.kind === 'stale_report' ? 'stale_report' : 'instructions_unavailable' };
+      const provenance = record.fieldProvenance ?? {};
+      const previouslyEdited = new Set(Object.entries(provenance)
+        .filter(([, value]) => value?.kind === 'recruiter').map(([field]) => field));
+      // Old drafts predate provenance. Preserve non-empty hand-authored text by default.
+      for (const field of ['summary', 'fit', 'conclusion']) if (!(field in provenance) &&
+          (field === 'fit' ? record.clientFields.fit?.length > 0 : Boolean(record.clientFields[field]?.trim()))) previouslyEdited.add(field);
+      if (!('experience' in provenance) && record.clientFields.experience.some(item => item.details?.length)) previouslyEdited.add('experience');
+      const candidates = ['summary', 'fit', 'conclusion', 'experienceDetails'];
+      const fieldsToGenerate = candidates.filter(field => {
+        const editedField = field === 'experienceDetails' ? 'experience' : field;
+        return replaceRecruiterEditedFields || !previouslyEdited.has(editedField);
+      });
+      if (!fieldsToGenerate.length) return { kind: 'no_fields_to_regenerate', report: publicReport(record) };
+      const request = {
+        sourceRevision: current.source.sourceRevision,
+        source: structuredClone(current.source.clientDraftFields),
+        previousFields: structuredClone(record.clientFields),
+        fieldsToGenerate,
+        instructions: structuredClone(applicable.body.effective),
+        forbiddenPhrases: [...(current.policy?.forbiddenPhrases ?? [])],
+      };
+      let generated;
+      const controller = new AbortController();
+      let timeout;
+      try {
+        const expired = new Promise((_, reject) => { timeout = setTimeout(() => {
+          controller.abort(); reject(new Error('report_generation_timeout'));
+        }, generateTimeoutMs); });
+        generated = await Promise.race([generateFields({ ...request, signal: controller.signal }), expired]);
+      } catch { return { kind: 'generation_unavailable' }; }
+      finally { clearTimeout(timeout); }
+      if (!validGeneratedFields(generated, current.source.clientDraftFields) ||
+          Object.keys(generated).some(field => !fieldsToGenerate.includes(field))) return { kind: 'generation_invalid' };
+      const clientFields = { ...record.clientFields };
+      for (const field of ['summary', 'fit', 'conclusion']) if (field in generated) clientFields[field] = structuredClone(generated[field]);
+      if ('experienceDetails' in generated) clientFields.experience = clientFields.experience.map((item, index) =>
+        ({ ...item, details: [...generated.experienceDetails[index]] }));
+      if (!validClientFields(clientFields)) return { kind: 'generation_invalid' };
+      const violations = checkReportPolicy(clientFields, current.policy ?? { forbiddenPhrases: [] });
+      if (violations.length) return { kind: 'policy_violation', violations, policyRevision: current.policyRevision };
+      const latestSource = await currentSource(context, record);
+      if (latestSource.kind !== 'current') return { kind: latestSource.kind, report: publicReport(record) };
+      let latestInstructions;
+      try { latestInstructions = await readInstructions(context, { candidateId: record.candidateId,
+        vacancyId: record.vacancyId, sourceKind: record.sourceKind,
+        reportRef: record.reportRef, reportRevision: revisionOf(record.revision) }); }
+      catch { return { kind: 'instructions_unavailable' }; }
+      if (latestInstructions?.kind !== 'found' || JSON.stringify(latestInstructions.body.scopes.map(item => [item.scopeType, item.revision])) !==
+          JSON.stringify(applicable.body.scopes.map(item => [item.scopeType, item.revision]))) return { kind: 'stale_instructions' };
+      const now = clock().toISOString();
+      const fieldProvenance = structuredClone(provenance);
+      const instructionRevisions = Object.fromEntries(applicable.body.scopes.map(item => [item.scopeType, item.revision]));
+      for (const field of Object.keys(generated)) fieldProvenance[field === 'experienceDetails' ? 'experience' : field] = {
+        kind: 'generated', sourceRevision: record.sourceRevision, generatedAt: now, instructionRevisions };
+      const updated = { ...record, clientFields, fieldProvenance, policyRevision: latestSource.policyRevision,
+        revision: record.revision + 1, reviewState: 'unreviewed', updatedAt: now,
+        audit: [...record.audit, { action: 'report_regenerated', revision: record.revision + 1,
+          actorProfileId: context.profileId, at: now, sourceRevision: record.sourceRevision,
+          fields: Object.keys(generated).sort(), instructionRevisions }] };
+      const saved = await store.update(context.profileId, ref, record.revision, updated);
+      if (saved.kind === 'stale_policy') {
+        const latestPolicy = await store.getPolicy(context.profileId, record.candidateId, record.vacancyId);
+        return { kind: 'stale_policy', policyRevision: latestPolicy?.revision ?? 0 };
+      }
+      return saved.kind === 'updated' ? { kind: 'regenerated', report: publicReport(saved.record) } : saved;
     },
   };
 }

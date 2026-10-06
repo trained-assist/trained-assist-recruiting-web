@@ -8,6 +8,9 @@ const summaryNodeEditor = document.querySelector('#summary');
 const conclusionNode = document.querySelector('#conclusion');
 const experienceNode = document.querySelector('#experience-editor');
 const fitNode = document.querySelector('#fit-editor');
+const fieldProvenanceNode = document.querySelector('#field-provenance');
+const regenerateButton = document.querySelector('#regenerate-report');
+const replaceEditedFieldsNode = document.querySelector('#replace-edited-fields');
 const addExperienceButton = document.querySelector('#add-experience');
 const addFitButton = document.querySelector('#add-fit');
 const saveEditsButton = document.querySelector('#save-edits');
@@ -53,6 +56,10 @@ function reportError(response, payload) {
     report_scope_required: 'У профиля нет нужного доступа к отчётам.',
     stale_report_revision: 'Черновик изменился в другой вкладке. Перезагрузите его перед правкой.',
     report_not_editable: 'Этот черновик уже подтверждён и больше не редактируется.',
+    report_generator_unavailable: 'Составитель отчётов сейчас недоступен. Черновик не менялся.',
+    report_generation_invalid: 'Составитель вернул неподдерживаемый формат. Черновик не менялся.',
+    stale_report_instructions: 'Инструкции изменились во время составления. Повторите после обновления страницы.',
+    report_has_no_fields_to_regenerate: 'Все доступные поля сохранены как ваши ручные правки. Снимите отметку, если хотите заменить их.',
   };
   return known[payload?.error] ?? `Запрос не выполнен (${response.status}).`;
 }
@@ -66,6 +73,22 @@ function renderPolicy() {
     remove.addEventListener('click', () => savePolicy(policy.forbiddenPhrases.filter((_, i) => i !== index)));
     item.append(remove); policyListNode.append(item);
   }
+}
+
+function renderFieldProvenance(value = {}) {
+  fieldProvenanceNode.replaceChildren();
+  const title = document.createElement('strong'); title.textContent = 'Источник полей: '; fieldProvenanceNode.append(title);
+  const labels = { candidateName: 'имя', position: 'должность', vacancyTitle: 'вакансия',
+    experience: 'опыт', summary: 'краткое описание', fit: 'соответствие требованиям', conclusion: 'вывод' };
+  const kinds = { source: 'принятый источник', recruiter: 'правка рекрутера', generated: 'сформировано' };
+  const entries = Object.entries(value);
+  if (!entries.length) { fieldProvenanceNode.append(document.createTextNode('источник ещё не указан')); return; }
+  entries.forEach(([field, provenance], index) => {
+    if (index) fieldProvenanceNode.append(document.createTextNode(' · '));
+    const item = document.createElement('span');
+    item.textContent = `${labels[field] ?? field}: ${kinds[provenance.kind] ?? 'неизвестно'}`;
+    fieldProvenanceNode.append(item);
+  });
 }
 
 const instructionFields = [
@@ -109,11 +132,19 @@ function renderInstructionEditor() {
     row.append(detail); instructionHistoryNode.append(row);
   }
   saveInstructionsButton.disabled = false;
+  syncReviewControls();
 }
 function storeCurrentInstructionDraft() {
   if (!reportInstructions || !displayedInstructionScope) return;
   instructionDrafts.set(displayedInstructionScope,
     Object.fromEntries(instructionFields.map(([key, node]) => [key, lines(node.value)])));
+}
+function hasUnsavedInstructionChanges() {
+  return [...instructionDrafts.entries()].some(([scopeType, instructions]) => {
+    const saved = reportInstructions?.scopes.find(item => item.scopeType === scopeType)?.instructions ??
+      { includeGuidance: [], styleGuidance: [], recruiterNotes: [] };
+    return JSON.stringify(instructions) !== JSON.stringify(saved);
+  });
 }
 async function loadReportInstructions() {
   instructionSection.hidden = false;
@@ -239,6 +270,7 @@ function syncReviewControls() {
   approvalNode.disabled = approved;
   approveButton.disabled = approved || !approvalNode.checked;
   requestChangesButton.disabled = approved ? false : !approvalNode.checked;
+  regenerateButton.disabled = approved || hasUnsavedInstructionChanges();
 }
 
 function editedFields() {
@@ -259,6 +291,30 @@ async function refreshPreview() {
   previewNode.srcdoc = preview.html;
   return true;
 }
+
+regenerateButton.addEventListener('click', async () => {
+  if (!report || report.reviewState === 'approved') return;
+  if (hasUnsavedInstructionChanges()) { showStatus('Сначала сохраните или удалите несохранённые инструкции.'); return; }
+  regenerateButton.disabled = true;
+  showStatus('Составляю текст по принятому источнику и сохранённым инструкциям…');
+  try {
+    const response = await request(`/api/v1/ui/accepted-report-drafts/${encodeURIComponent(report.reportRef)}/regenerate`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ expectedReportRevision: report.reportRevision,
+        replaceRecruiterEditedFields: replaceEditedFieldsNode.checked }),
+    });
+    const result = await response.json();
+    if (!response.ok) { showStatus(reportError(response, result)); regenerateButton.disabled = false; return; }
+    report = result; approvalNode.checked = false; instructionDrafts.delete('report_version');
+    await loadReportInstructions(); syncReviewControls();
+    renderEditor(report.clientFields); renderFieldProvenance(report.fieldProvenance);
+    setEditorEnabled(true);
+    if (!await refreshPreview()) return;
+    showStatus('Новая ревизия составлена. Проверьте каждое поле и предпросмотр; версия остаётся приватным черновиком.');
+  } catch {
+    showStatus('Не удалось связаться с составителем. Черновик не менялся.'); regenerateButton.disabled = false;
+  }
+});
 
 async function load() {
   if (!candidateId || !vacancyId || !['accepted_cold_search', 'accepted_hh_response'].includes(sourceKind) ||
@@ -302,6 +358,7 @@ async function load() {
     catch { instructionSection.hidden = false; instructionStatusNode.textContent = 'Не удалось загрузить инструкции. Проверьте соединение перед оформлением отчёта.'; }
     if (!await refreshPreview()) return;
     renderEditor(report.clientFields);
+    renderFieldProvenance(report.fieldProvenance);
     setEditorEnabled(report.reviewState !== 'approved');
     showStatus(report.reviewState === 'approved'
       ? 'Вы уже подтвердили проверку этого черновика.'
@@ -323,6 +380,7 @@ approveButton.addEventListener('click', async () => {
     const result = await response.json();
     if (!response.ok) { showStatus(reportError(response, result)); approveButton.disabled = false; return; }
     report = result;
+    instructionDrafts.delete('report_version'); await loadReportInstructions();
     syncReviewControls();
     setEditorEnabled(false);
     showStatus('Проверка сохранена. Отчёт остался приватным черновиком и не отправлен.');
@@ -344,7 +402,8 @@ requestChangesButton.addEventListener('click', async () => {
     });
     const result = await response.json();
     if (!response.ok) { showStatus(reportError(response, result)); syncReviewControls(); return; }
-    report = result; approvalNode.checked = false; syncReviewControls(); setEditorEnabled(true);
+    report = result; approvalNode.checked = false; instructionDrafts.delete('report_version');
+    await loadReportInstructions(); syncReviewControls(); setEditorEnabled(true);
     showStatus('Черновик возвращён на исправление. После правок нужно просмотреть и подтвердить новую версию.');
   } catch { showStatus('Не удалось вернуть черновик на исправление.'); syncReviewControls(); }
 });
@@ -384,7 +443,9 @@ saveEditsButton.addEventListener('click', async () => {
     });
     const result = await response.json();
     if (!response.ok) { showStatus(reportError(response, result)); saveEditsButton.disabled = false; return; }
-    report = result; approvalNode.checked = false; syncReviewControls();
+    report = result; approvalNode.checked = false; instructionDrafts.delete('report_version');
+    await loadReportInstructions(); syncReviewControls();
+    renderFieldProvenance(report.fieldProvenance);
     setEditorEnabled(true);
     if (!await refreshPreview()) return;
     showStatus('Изменения сохранены. Просмотрите обновлённый клиентский вид перед внутренним подтверждением.');
@@ -392,7 +453,7 @@ saveEditsButton.addEventListener('click', async () => {
 });
 instructionScopeNode.addEventListener('change', () => { storeCurrentInstructionDraft(); renderInstructionEditor(); });
 for (const [, node] of instructionFields) node.addEventListener('input', () => {
-  storeCurrentInstructionDraft(); saveInstructionsButton.disabled = false;
+  storeCurrentInstructionDraft(); saveInstructionsButton.disabled = false; syncReviewControls();
 });
 saveInstructionsButton.addEventListener('click', saveReportInstructions);
 

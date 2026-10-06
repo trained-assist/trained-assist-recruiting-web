@@ -115,7 +115,7 @@ test('accepted report UI uses real BFF handlers, profile-owned source, private d
   const reportPageHtml = await page.text();
   assert.match(reportPageHtml, /Черновик отчёта кандидата/);
   assert.match(reportPageHtml, /Сохранённые инструкции к отчётам/);
-  assert.match(reportPageHtml, /автоматическая генерация текста пока не подключена/);
+  assert.match(reportPageHtml, /regenerate-report/);
   assert.match(reportPageHtml, /Кратко о кандидате/);
   assert.match(reportPageHtml, /Соответствие требованиям вакансии/);
   assert.match(reportPageHtml, /Вывод рекрутера/);
@@ -148,6 +148,9 @@ test('accepted report UI uses real BFF handlers, profile-owned source, private d
   assert.match(draft.reportRef, /^report_[a-f0-9]{32}$/);
   assert.equal(draft.sourceRevision, sourceRevision);
   assert.equal(draft.reviewState, 'unreviewed');
+  assert.equal(draft.fieldProvenance.candidateName.kind, 'source');
+  assert.equal(draft.fieldProvenance.position.sourceRevision, sourceRevision);
+  assert.equal('summary' in draft.fieldProvenance, false, 'empty narrative fields are not presented as source-backed');
   assert.equal(JSON.stringify(draft).includes('INTERNAL_PRIVATE_COMMENT'), false);
   assert.equal(JSON.stringify(draft).includes('candidate@example.invalid'), false);
   assert.equal(JSON.stringify(draft).includes('SALARY_PRIVATE'), false);
@@ -180,6 +183,15 @@ test('accepted report UI uses real BFF handlers, profile-owned source, private d
   assert.deepEqual(edited.clientFields.fit, editedFields.fit);
   assert.equal(edited.clientFields.summary, editedFields.summary);
   assert.equal(edited.clientFields.conclusion, editedFields.conclusion);
+  assert.deepEqual(edited.fieldProvenance, {
+    candidateName: { kind: 'source', sourceRevision },
+    position: { kind: 'recruiter', editedAt: edited.updatedAt },
+    vacancyTitle: { kind: 'source', sourceRevision },
+    experience: { kind: 'recruiter', editedAt: edited.updatedAt },
+    summary: { kind: 'recruiter', editedAt: edited.updatedAt },
+    fit: { kind: 'recruiter', editedAt: edited.updatedAt },
+    conclusion: { kind: 'recruiter', editedAt: edited.updatedAt },
+  });
   assert.equal(JSON.stringify(edited).includes('INTERNAL_PRIVATE_COMMENT'), false);
   const staleEdit = await fetch(`${base}/api/v1/ui/accepted-report-drafts/${draft.reportRef}/edit`, { method: 'PATCH',
     headers: { cookie: connected.cookie, origin: publicOrigin, 'x-csrf-token': connected.csrfToken,
@@ -201,6 +213,7 @@ test('accepted report UI uses real BFF handlers, profile-owned source, private d
   const schema = JSON.parse(await readFile(new URL('../contracts/v1-accepted-report-draft.schema.json', import.meta.url), 'utf8'));
   const validate = new Ajv2020().compile(schema);
   assert.equal(validate(draft), true, JSON.stringify(validate.errors));
+  assert.equal(validate({ ...draft, fieldProvenance: { internalAssessment: { kind: 'source', sourceRevision } } }), false);
 
   const previewResponse = await fetch(`${base}/api/v1/ui/accepted-report-drafts/${draft.reportRef}/preview`, { headers: { cookie: connected.cookie } });
   assert.equal(previewResponse.status, 200);
@@ -265,6 +278,132 @@ test('accepted report UI uses real BFF handlers, profile-owned source, private d
   assert.equal(publicShare.status, 404);
   assert.equal(sendCalls + publishCalls + hhCalls + modelCalls, 0);
   assert.deepEqual(capturedLogs, [], 'report names, source data, cookies, and tokens are not logged');
+});
+
+test('regeneration uses current scoped notes, preserves recruiter fields, records provenance and rejects races', async t => {
+  const store = createMemoryAcceptedReportDraftStore();
+  const sourceRead = async context => context.profileId === profileOne
+    ? { status: 200, body: { ...structuredClone(sourceBase), profileId: context.profileId } }
+    : { status: 404, body: { error: 'not_found' } };
+  let calls = 0;
+  let mutateInstructionsDuringGeneration = false;
+  let hangGeneration = false;
+  let generationAbortObserved = false;
+  let base;
+  let connected;
+  let received;
+  const generateFields = async input => {
+    calls++;
+    received = input;
+    if (hangGeneration) return new Promise((resolve, reject) => input.signal.addEventListener('abort', () => {
+      generationAbortObserved = true; reject(new Error('aborted'));
+    }, { once: true }));
+    if (mutateInstructionsDuringGeneration) {
+      mutateInstructionsDuringGeneration = false;
+      const response = await fetch(`${base}/api/v1/ui/accepted-report-instructions`, { method: 'PUT',
+        headers: { cookie: connected.cookie, origin: publicOrigin, 'x-csrf-token': connected.csrfToken,
+          'content-type': 'application/json' },
+        body: JSON.stringify({ candidateId, vacancyId, sourceKind: 'accepted_cold_search', scopeType: 'profile',
+          expectedRevision: 1, instructions: { includeGuidance: ['Use only newly confirmed source facts.'],
+            styleGuidance: [], recruiterNotes: [] } }) });
+      assert.equal(response.status, 200);
+    }
+    return { ...(input.fieldsToGenerate.includes('summary') ? { summary: 'Generated summary from accepted source.' } : {}),
+      ...(input.fieldsToGenerate.includes('fit') ? { fit: [{ requirement: 'Relevant experience', status: 'yes', comment: 'Supported by an allowed source.' }] } : {}),
+      ...(input.fieldsToGenerate.includes('conclusion') ? { conclusion: 'Generated conclusion requires human review.' } : {}),
+      ...(input.fieldsToGenerate.includes('experienceDetails') ? { experienceDetails: [['Generated detail requires human review.']] } : {}) };
+  };
+  const bff = createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins: [issuer], publicOrigin,
+    redirectUri: `${publicOrigin}/auth/connected/callback`, store: createMemoryConnectedAppBffStore(),
+    clock: () => now, exchangeCode: async ({ code }) => ({ token: code, expiresAt: now / 1000 + 300 }),
+    introspectToken: async token => claimsFor(token) });
+  const server = createRecruitingServer({ connectedAppBff: bff, acceptedReportSourceRead: sourceRead,
+    acceptedReportDraftStore: store, acceptedReportFieldGenerator: generateFields,
+    acceptedReportFieldGeneratorTimeoutMs: 10 });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  base = `http://127.0.0.1:${server.address().port}`;
+  connected = await connect(base);
+  const csrfHeaders = { cookie: connected.cookie, origin: publicOrigin, 'x-csrf-token': connected.csrfToken,
+    'content-type': 'application/json' };
+  const create = await fetch(`${base}/api/v1/ui/accepted-report-drafts`, { method: 'POST',
+    headers: { ...csrfHeaders, 'Idempotency-Key': 'r04-regenerate-create-001' },
+    body: JSON.stringify({ candidateId, vacancyId, sourceKind: 'accepted_cold_search', expectedSourceRevision: sourceRevision }) });
+  assert.equal(create.status, 201);
+  let report = await create.json();
+  const edit = await fetch(`${base}/api/v1/ui/accepted-report-drafts/${report.reportRef}/edit`, { method: 'PATCH',
+    headers: csrfHeaders, body: JSON.stringify({ expectedReportRevision: report.reportRevision,
+      clientFields: { summary: 'A manually verified summary.' } }) });
+  assert.equal(edit.status, 200);
+  report = await edit.json();
+  const profileNote = await fetch(`${base}/api/v1/ui/accepted-report-instructions`, { method: 'PUT',
+    headers: csrfHeaders, body: JSON.stringify({ candidateId, vacancyId, sourceKind: 'accepted_cold_search',
+      scopeType: 'profile', expectedRevision: 0,
+      instructions: { includeGuidance: ['Use only confirmed source facts.'], styleGuidance: [], recruiterNotes: [] } }) });
+  assert.equal(profileNote.status, 200);
+  const versionNote = await fetch(`${base}/api/v1/ui/accepted-report-instructions`, { method: 'PUT',
+    headers: csrfHeaders, body: JSON.stringify({ candidateId, vacancyId, sourceKind: 'accepted_cold_search',
+      scopeType: 'report_version', reportRef: report.reportRef, reportRevision: report.reportRevision,
+      expectedRevision: 0,
+      instructions: { includeGuidance: [], styleGuidance: ['Keep the conclusion concise.'], recruiterNotes: [] } }) });
+  assert.equal(versionNote.status, 200);
+  const regenerateSchema = JSON.parse(await readFile(new URL('../contracts/v1-accepted-report-regenerate.schema.json', import.meta.url), 'utf8'));
+  const validateRegenerate = new Ajv2020().compile(regenerateSchema);
+  const regenerateBody = { expectedReportRevision: report.reportRevision, replaceRecruiterEditedFields: false };
+  assert.equal(validateRegenerate(regenerateBody), true, JSON.stringify(validateRegenerate.errors));
+  const regenerate = await fetch(`${base}/api/v1/ui/accepted-report-drafts/${report.reportRef}/regenerate`, { method: 'POST',
+    headers: csrfHeaders, body: JSON.stringify(regenerateBody) });
+  assert.equal(regenerate.status, 200, JSON.stringify(await regenerate.clone().json()));
+  const regenerated = await regenerate.json();
+  assert.equal(calls, 1);
+  assert.deepEqual(received.fieldsToGenerate, ['fit', 'conclusion', 'experienceDetails']);
+  assert.deepEqual(received.instructions.includeGuidance, ['Use only confirmed source facts.']);
+  assert.deepEqual(received.instructions.styleGuidance, ['Keep the conclusion concise.']);
+  assert.equal(received.profileId, undefined, 'the model adapter receives no caller identity');
+  assert.equal(received.source.internalAssessment, undefined);
+  assert.equal(received.internalAssessment, undefined);
+  assert.equal(received.source.email, undefined);
+  assert.equal(regenerated.clientFields.summary, 'A manually verified summary.');
+  assert.equal(regenerated.clientFields.fit[0].requirement, 'Relevant experience');
+  assert.deepEqual(regenerated.clientFields.experience[0].details, ['Generated detail requires human review.']);
+  assert.equal(regenerated.reviewState, 'unreviewed');
+  assert.deepEqual(regenerated.fieldProvenance.summary, { kind: 'recruiter', editedAt: report.updatedAt });
+  assert.equal(regenerated.fieldProvenance.fit.kind, 'generated');
+  assert.equal(regenerated.fieldProvenance.fit.sourceRevision, sourceRevision);
+  assert.deepEqual(regenerated.fieldProvenance.fit.instructionRevisions,
+    { profile: 1, vacancy: 0, candidate: 0, report_version: 1 });
+  const responseSchema = JSON.parse(await readFile(new URL('../contracts/v1-accepted-report-draft.schema.json', import.meta.url), 'utf8'));
+  const validateReport = new Ajv2020().compile(responseSchema);
+  assert.equal(validateReport(regenerated), true, JSON.stringify(validateReport.errors));
+
+  mutateInstructionsDuringGeneration = true;
+  const stale = await fetch(`${base}/api/v1/ui/accepted-report-drafts/${report.reportRef}/regenerate`, { method: 'POST',
+    headers: csrfHeaders, body: JSON.stringify({ expectedReportRevision: regenerated.reportRevision,
+      replaceRecruiterEditedFields: true }) });
+  assert.equal(stale.status, 409, 'a notes revision change while generation is in flight prevents a stale save');
+  assert.equal((await stale.json()).error, 'stale_report_instructions');
+  assert.equal(calls, 2);
+  const unchanged = await fetch(`${base}/api/v1/ui/accepted-report-drafts/${report.reportRef}`, { headers: { cookie: connected.cookie } });
+  const unchangedReport = await unchanged.json();
+  assert.equal(unchangedReport.reportRevision, regenerated.reportRevision);
+  assert.equal(unchangedReport.clientFields.summary, 'A manually verified summary.');
+
+  hangGeneration = true;
+  const timedOut = await fetch(`${base}/api/v1/ui/accepted-report-drafts/${report.reportRef}/regenerate`, { method: 'POST',
+    headers: csrfHeaders, body: JSON.stringify({ expectedReportRevision: regenerated.reportRevision,
+      replaceRecruiterEditedFields: true }) });
+  assert.equal(timedOut.status, 503);
+  assert.equal((await timedOut.json()).error, 'report_generator_unavailable');
+  assert.equal(generationAbortObserved, true, 'the configured generator timeout aborts the adapter');
+  const afterTimeout = await (await fetch(`${base}/api/v1/ui/accepted-report-drafts/${report.reportRef}`,
+    { headers: { cookie: connected.cookie } })).json();
+  assert.equal(afterTimeout.reportRevision, regenerated.reportRevision, 'a timed out generator does not mutate the draft');
+
+  const noCsrf = await fetch(`${base}/api/v1/ui/accepted-report-drafts/${report.reportRef}/regenerate`, { method: 'POST',
+    headers: { cookie: connected.cookie, origin: publicOrigin, 'content-type': 'application/json' },
+    body: JSON.stringify({ expectedReportRevision: regenerated.reportRevision, replaceRecruiterEditedFields: false }) });
+  assert.equal(noCsrf.status, 401);
+  assert.equal(calls, 3, 'CSRF denial happens before external generation');
 });
 
 test('SQLite report drafts survive restart, encrypt candidate fields at rest, and enforce optimistic review', async t => {

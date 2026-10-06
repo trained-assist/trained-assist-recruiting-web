@@ -201,6 +201,12 @@ function validAcceptedReportDraftStart(value) {
     /^[a-f0-9]{64}$/.test(value.expectedSourceRevision ?? '');
 }
 
+function validAcceptedReportRegenerate(value) {
+  return isPlainObject(value) && Object.keys(value).sort().join(',') === 'expectedReportRevision,replaceRecruiterEditedFields' &&
+    /^report-r[1-9][0-9]*$/.test(value.expectedReportRevision ?? '') &&
+    typeof value.replaceRecruiterEditedFields === 'boolean';
+}
+
 function projectAcceptedClientFields(value) {
   if (!isPlainObject(value) || Object.keys(value).sort().join(',') !== 'candidateName,experience,position,vacancyTitle' ||
       !['candidateName', 'position', 'vacancyTitle'].every(key => typeof value[key] === 'string' && value[key].length > 0 && value[key].length <= 300) ||
@@ -230,7 +236,7 @@ function validReportAction(value) {
   return isPlainObject(value) && Object.keys(value).sort().join(',') === 'expectedReportRevision' && isReportRevision(value.expectedReportRevision);
 }
 
-export function createRecruitingServer({ resolveTrustedProfileContext = () => null, connectedAppBff = null, resolveLegacyOpenTab = null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, candidateSearchJobStore = null, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), scheduleLeaseMs = 5 * 60_000, maxCandidateSearchJobs = 100, publicationAdapter, realProactiveFeed = null, realProactiveHistoricalRead = null, realProactiveActions = null, realProactivePrompt = null, realProactiveSeenImport = null, realProactiveAiScore = null, realProactiveManualCandidate = null, liveResponseRead = null, liveResponseDetailRead = null, liveResponseConversationRead = null, liveAssignmentRead = null, liveAssignmentSave = null, acceptedReportSourceRead = null, acceptedHhResponseReportSourceRead = null, acceptedReportDraftStore = null, resolveRealVacancyOwnership = null, resolveRealDefaultVacancy = () => null, listRealVacancies = () => [], privateProactiveOnly = false, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
+export function createRecruitingServer({ resolveTrustedProfileContext = () => null, connectedAppBff = null, resolveLegacyOpenTab = null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, candidateSearchJobStore = null, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), scheduleLeaseMs = 5 * 60_000, maxCandidateSearchJobs = 100, publicationAdapter, realProactiveFeed = null, realProactiveHistoricalRead = null, realProactiveActions = null, realProactivePrompt = null, realProactiveSeenImport = null, realProactiveAiScore = null, realProactiveManualCandidate = null, liveResponseRead = null, liveResponseDetailRead = null, liveResponseConversationRead = null, liveAssignmentRead = null, liveAssignmentSave = null, acceptedReportSourceRead = null, acceptedHhResponseReportSourceRead = null, acceptedReportDraftStore = null, acceptedReportFieldGenerator = null, acceptedReportFieldGeneratorTimeoutMs = 30_000, resolveRealVacancyOwnership = null, resolveRealDefaultVacancy = () => null, listRealVacancies = () => [], privateProactiveOnly = false, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
   if (realProactiveFeed !== null && (typeof realProactiveFeed.read !== 'function' || typeof resolveRealVacancyOwnership !== 'function'))
     throw new TypeError('real proactive feed and trusted vacancy ownership ports required');
   if (realProactiveActions !== null && realProactiveFeed === null) throw new TypeError('real actions require real feed mode');
@@ -271,12 +277,14 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
     const reader = kind === 'accepted_hh_response' ? acceptedHhResponseReportSourceRead : acceptedReportSourceRead;
     return typeof reader === 'function' ? reader(context, { ...request, sourceKind: kind }) : { status: 404, body: { error: 'not_found' } };
   };
-  const acceptedReportDrafts = acceptedReportDraftStore === null ? null :
-    createAcceptedReportDrafts({ sourceRead: reportSourceRead, store: acceptedReportDraftStore });
-  const acceptedReportPolicies = acceptedReportDraftStore === null ? null :
-    createReportPolicyService({ sourceRead: reportSourceRead, store: acceptedReportDraftStore });
   const acceptedReportInstructions = acceptedReportDraftStore === null ? null :
     createReportInstructions({ sourceRead: reportSourceRead, store: acceptedReportDraftStore });
+  const acceptedReportDrafts = acceptedReportDraftStore === null ? null :
+    createAcceptedReportDrafts({ sourceRead: reportSourceRead, store: acceptedReportDraftStore,
+      readInstructions: acceptedReportInstructions.getApplicable.bind(acceptedReportInstructions),
+      generateFields: acceptedReportFieldGenerator, generateTimeoutMs: acceptedReportFieldGeneratorTimeoutMs });
+  const acceptedReportPolicies = acceptedReportDraftStore === null ? null :
+    createReportPolicyService({ sourceRead: reportSourceRead, store: acceptedReportDraftStore });
   const currentSearchCriteriaRevision = async (context, vacancyId) => {
     try {
       const revision = await resolveCurrentSearchCriteriaRevision(context, vacancyId);
@@ -339,12 +347,12 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
     const isReportDraftPath = path === reportDraftRoot || new RegExp(`^${reportDraftRoot}/report_demo_[a-f0-9]{12}(?:/preview|/review|/publish|/revoke)?$`).test(path);
     const acceptedReportDraftRoot = '/api/v1/ui/accepted-report-drafts';
     const isAcceptedReportDraftPath = acceptedReportDrafts !== null &&
-      (path === acceptedReportDraftRoot || new RegExp(`^${acceptedReportDraftRoot}/report_[a-f0-9]{32}(?:/preview|/review|/edit)?$`).test(path));
+      (path === acceptedReportDraftRoot || new RegExp(`^${acceptedReportDraftRoot}/report_[a-f0-9]{32}(?:/preview|/review|/edit|/regenerate)?$`).test(path));
     const acceptedReportPolicyPath = acceptedReportPolicies !== null && path === '/api/v1/ui/accepted-report-policy';
     const acceptedReportInstructionsPath = acceptedReportInstructions !== null && path === '/api/v1/ui/accepted-report-instructions';
     const acceptedReportRouteMethodAllowed = isAcceptedReportDraftPath &&
       (['GET', 'HEAD'].includes(req.method) && path !== acceptedReportDraftRoot ||
-        req.method === 'POST' && (path === acceptedReportDraftRoot || /\/review$/.test(path)) ||
+        req.method === 'POST' && (path === acceptedReportDraftRoot || /\/(review|regenerate)$/.test(path)) ||
         req.method === 'PATCH' && /\/edit$/.test(path)) ||
       acceptedReportPolicyPath && (req.method === 'GET' || req.method === 'PUT') ||
       acceptedReportInstructionsPath && (req.method === 'GET' || req.method === 'PUT');
@@ -1149,10 +1157,10 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
         status = 401; body = { error: 'trusted_profile_context_required' };
       } else if (status === 200) {
         const rootRequest = path === acceptedReportDraftRoot && req.method === 'POST';
-        const match = path.match(/^\/api\/v1\/ui\/accepted-report-drafts\/(report_[a-f0-9]{32})(?:\/(preview|review|edit))?$/);
+        const match = path.match(/^\/api\/v1\/ui\/accepted-report-drafts\/(report_[a-f0-9]{32})(?:\/(preview|review|edit|regenerate))?$/);
         const ref = match?.[1]; const action = match?.[2] ?? '';
         const requiredScope = rootRequest ? 'recruiting.reports.create' : action === 'review'
-          ? 'recruiting.reports.review' : action === 'edit' ? 'recruiting.reports.edit' : 'recruiting.reports.read';
+          ? 'recruiting.reports.review' : ['edit', 'regenerate'].includes(action) ? 'recruiting.reports.edit' : 'recruiting.reports.read';
         if (!context.scopes.includes(requiredScope)) { status = 403; body = { error: 'report_scope_required' }; }
         else if (url.search !== '') { status = 400; body = { error: 'unexpected_query_parameters' }; }
         else if (rootRequest) {
@@ -1232,6 +1240,29 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
             else if (result.kind === 'source_not_found' || result.kind === 'not_found') { status = 404; body = { error: 'not_found' }; }
             else if (result.kind === 'invalid_request') { status = 400; body = { error: 'invalid_report_edit' }; }
             else { status = 503; body = { error: 'report_source_unavailable' }; }
+          }
+        } else if (ref && action === 'regenerate' && req.method === 'POST') {
+          let request;
+          try { request = await readJsonBody(req); } catch (error) {
+            status = error.message === 'body_too_large' ? 413 : 400; body = { error: 'invalid_json' };
+          }
+          if (status === 200 && !validAcceptedReportRegenerate(request)) {
+            status = 400; body = { error: 'invalid_report_regeneration' };
+          } else if (status === 200) {
+            const result = await acceptedReportDrafts.regenerate(context, ref, request.expectedReportRevision, {
+              replaceRecruiterEditedFields: request.replaceRecruiterEditedFields });
+            if (result.kind === 'regenerated') body = result.report;
+            else if (result.kind === 'stale_report') { status = 409; body = { error: 'stale_report_revision', report: result.report }; }
+            else if (result.kind === 'stale_source') { status = 409; body = { error: 'stale_report_source' }; }
+            else if (result.kind === 'stale_policy') { status = 409; body = { error: 'stale_report_policy', policyRevision: `policy-r${result.policyRevision}` }; }
+            else if (result.kind === 'stale_instructions') { status = 409; body = { error: 'stale_report_instructions' }; }
+            else if (result.kind === 'policy_violation') { status = 422; body = { error: 'report_policy_violation', policyRevision: `policy-r${result.policyRevision}`, violations: result.violations }; }
+            else if (result.kind === 'generation_invalid') { status = 502; body = { error: 'report_generation_invalid' }; }
+            else if (result.kind === 'not_editable') { status = 409; body = { error: 'report_not_editable' }; }
+            else if (result.kind === 'no_fields_to_regenerate') { status = 409; body = { error: 'report_has_no_fields_to_regenerate' }; }
+            else if (result.kind === 'source_not_found' || result.kind === 'not_found') { status = 404; body = { error: 'not_found' }; }
+            else if (result.kind === 'invalid_request') { status = 400; body = { error: 'invalid_report_regeneration' }; }
+            else { status = 503; body = { error: result.kind === 'generation_unavailable' ? 'report_generator_unavailable' : 'report_source_unavailable' }; }
           }
         } else { status = 404; body = { error: 'not_found' }; }
       }
