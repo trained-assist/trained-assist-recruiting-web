@@ -13,7 +13,7 @@ const sourceRef = value => typeof value === 'string' && value.length > 0 && valu
   !/[\x00-\x1f/\\]/.test(value) && value !== '.' && value !== '..';
 const fail = () => { throw new Error('private_legacy_import_unavailable'); };
 
-function privateDirectory(path) {
+export function privateDirectory(path) {
   try {
     if (typeof path !== 'string' || !isAbsolute(path) || resolve(path) !== path ||
         realpathSync(path) !== path || !lstatSync(path).isDirectory() ||
@@ -36,7 +36,7 @@ function privateBytes(path, maxBytes) {
   finally { if (fd !== undefined) closeSync(fd); }
 }
 
-function readPrivateJson(path, maxBytes) {
+export function readPrivateJson(path, maxBytes) {
   try { return JSON.parse(privateBytes(path, maxBytes).toString('utf8')); } catch { fail(); }
 }
 
@@ -78,7 +78,7 @@ function loadConfig(path) {
     isVacancyOwned: (profileId, vacancyId) => byTarget.get(profileId)?.has(vacancyId) === true };
 }
 
-async function digestPrivateFile(path, maxBytes) {
+export async function digestPrivateFile(path, maxBytes) {
   privateDirectory(dirname(path));
   let fd;
   try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW); }
@@ -94,7 +94,7 @@ async function digestPrivateFile(path, maxBytes) {
   return { bytes, sha256: hash.digest('hex') };
 }
 
-function checkedTar(archivePath) {
+export function checkedTar(archivePath) {
   const list = spawnSync('tar', ['-tf', archivePath], { encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 });
   const verbose = spawnSync('tar', ['-tvf', archivePath], { encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 });
   if (list.status !== 0 || verbose.status !== 0) fail();
@@ -103,7 +103,7 @@ function checkedTar(archivePath) {
   if (paths.length !== types.length || paths.length > 100_000 ||
       new Set(paths).size !== paths.length ||
       paths.some(path => path.startsWith('/') || path.split('/').includes('..') || path.includes('\\') ||
-        path.includes('\0') || !['agent-data/hh', 'agent-tokens', 'users'].some(root =>
+        /[\x00-\x1f\x7f]/.test(path) || !['agent-data/hh', 'agent-tokens', 'users'].some(root =>
           path === root || path === `${root}/` || path.startsWith(`${root}/`))) ||
       types.some(line => !['-', 'd'].includes(line[0]))) fail();
   return paths;
@@ -113,7 +113,7 @@ function parseBytes(bytes) {
   try { return JSON.parse(bytes.toString('utf8')); } catch { fail(); }
 }
 
-function buildInput(root, row, migrationId) {
+export function buildInput(root, row, migrationId) {
   const dir = join(root, 'agent-data', 'hh', row.sourceProfileRef, 'proactive');
   const files = readdirSync(dir);
   if (!files.includes('all-candidates.json') || !files.includes('seen-ids.json')) fail();
@@ -139,7 +139,7 @@ function buildInput(root, row, migrationId) {
     snapshots, comments, globalComments, expectedCounts: row.expectedCounts, sourceFiles };
 }
 
-function relevantSources(root) {
+export function relevantSources(root) {
   const hh = join(root, 'agent-data', 'hh');
   return readdirSync(hh, { withFileTypes: true }).filter(entry => entry.isDirectory())
     .filter(entry => {

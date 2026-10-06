@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { runPrivateLegacyImport } from '../src/r03-private-legacy-import-runner.js';
+import { createPrivateLegacyInventory } from '../src/r03-private-legacy-inventory.js';
 
 const sourceRef = 'invented_legacy_user';
 const profileId = 'invented_profile';
@@ -87,6 +88,24 @@ test('dry-run checks an invented private archive without creating the target DB'
   assert.equal(statSync(f.config.scratchDirectory).mode & 0o077, 0);
 });
 
+test('private inventory derives counts and leaves target identity unresolved', async t => {
+  const f = fixture(t);
+  const inventoryFile = join(f.receipts, 'inventory.json');
+  const command = { archivePath: f.archivePath, manifestPath: f.manifestPath,
+    scratchDirectory: f.config.scratchDirectory, inventoryFile };
+  const first = await createPrivateLegacyInventory(command);
+  assert.equal(first.status, 'inventoried');
+  assert.deepEqual(first.totals, counts);
+  assert.equal(statSync(inventoryFile).mode & 0o077, 0);
+  const inventory = JSON.parse(readFileSync(inventoryFile, 'utf8'));
+  assert.equal(inventory.profiles[0].sourceProfileRef, sourceRef);
+  assert.equal(inventory.profiles[0].targetProfileId, null);
+  assert.deepEqual(inventory.profiles[0].observedVacancyIds, [vacancyId]);
+  assert.deepEqual(inventory.profiles[0].expectedCounts, counts);
+  assert.deepEqual(await createPrivateLegacyInventory(command), first);
+  assert.throws(() => statSync(f.config.targetDbPath), /ENOENT/);
+});
+
 test('explicit import writes quarantined content, private receipt and idempotent replay', async t => {
   const f = fixture(t);
   await assert.rejects(runPrivateLegacyImport({ mode: 'import', configFile: f.configFile }),
@@ -121,6 +140,21 @@ test('wrong profile binding, receipt and archive bytes fail before target write'
   await assert.rejects(runPrivateLegacyImport({ mode: 'import', configFile: f.configFile, execute: true }),
     /private_legacy_import_unavailable/);
   assert.throws(() => statSync(f.config.targetDbPath), /ENOENT/);
+});
+
+test('replay repairs receipt-file failure after the durable DB commit', async t => {
+  const f = fixture(t);
+  chmodSync(f.receipts, 0o500);
+  await assert.rejects(runPrivateLegacyImport({ mode: 'import', configFile: f.configFile, execute: true }),
+    /private_legacy_import_unavailable/);
+  const db = new Database(f.config.targetDbPath, { readonly: true });
+  t.after(() => db.close());
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM r03_legacy_content_candidate').get().count, 1);
+  chmodSync(f.receipts, 0o700);
+  const recovered = await runPrivateLegacyImport({ mode: 'import', configFile: f.configFile, execute: true });
+  assert.equal(recovered.importedProfiles, 0);
+  assert.equal(statSync(join(f.receipts, `${migrationId}.json`)).mode & 0o077, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM r03_legacy_content_candidate').get().count, 1);
 });
 
 test('tar symlinks and duplicate members fail before any extraction or target write', async t => {

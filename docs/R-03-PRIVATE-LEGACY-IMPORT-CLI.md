@@ -17,6 +17,20 @@ candidate, seen, snapshot or comment source files must be mapped exactly once.
 Unknown source profiles, unowned target vacancies, count drift and changed
 archive bytes fail before any target SQLite write.
 
+Before an agent-owned target identity mapping is available, run the separate
+private inventory command. It writes an owner-only file with source profile
+refs, observed source vacancy IDs, per-profile counts and unresolved
+`targetProfileId: null`. This is source evidence, not a binding. The operator
+must obtain target profile and vacancy ownership from the agent's profile
+authority; source names alone are insufficient evidence. The inventory stays
+private because its identifiers can identify the customer.
+
+```sh
+node src/r03-private-legacy-inventory.js \
+  --archive /private/initial.tar --manifest /private/manifest.json \
+  --scratch /private/scratch --inventory-file /private/inventory.json
+```
+
 With the config prepared privately on the target host:
 
 ```sh
@@ -29,8 +43,11 @@ aggregate output. It creates a temporary preflight SQLite file in scratch and
 does not open or create the target database. `import --execute` repeats the
 checks, then imports all mapped profiles in one target transaction and writes a
 private operation receipt. Repeating the same import reuses the durable rows
-and receipt. The receipt contains per-file byte lengths and SHA-256 values and
-must stay in the private directory. It does not indicate that a legacy search
+and receipt. If SQLite commits but writing the receipt file fails, the command
+returns an error; rerun it with the same migration ID after fixing the private
+receipt directory. The database replay then reconstructs the identical file
+without writing duplicate content. The receipt contains per-file byte lengths
+and SHA-256 values and must stay in the private directory. It does not indicate that a legacy search
 was accepted. The CLI never activates a schedule, reads provider secrets from
 the archive, calls HH/LLM, or publishes candidate data.
 
