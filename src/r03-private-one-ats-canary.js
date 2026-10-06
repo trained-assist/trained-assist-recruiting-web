@@ -1,4 +1,5 @@
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync,
+  statSync, writeFileSync, constants } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -161,9 +162,15 @@ export async function runPrivateOneAtsCanary({ mode, hostConfigFile, sourceRecei
   if (currentPolicy.build !== preflight.build || currentPolicy.rungCount !== preflight.rungCount) fail();
   mkdirSync(outputDirectory, { mode: 0o700 });
   const dbPath = join(outputDirectory, 'candidate.sqlite');
-  const frozen = new Database(input.sourceDbPath, { readonly: true, fileMustExist: true });
-  try { await frozen.backup(dbPath); } finally { frozen.close(); }
+  // This source is an inert, owner-only disposable snapshot. A byte copy is
+  // allowed only with an empty/absent WAL and matching before/after hashes.
+  // Do not copy a live writer or retry an incomplete output directory.
+  const walPath = `${input.sourceDbPath}-wal`;
+  if (existsSync(walPath) && statSync(walPath).size !== 0) fail();
+  copyFileSync(input.sourceDbPath, dbPath, constants.COPYFILE_EXCL);
   chmodSync(dbPath, 0o600);
+  if (sha(dbPath) !== input.sourceDbSha256 || sha(input.sourceDbPath) !== input.sourceDbSha256 ||
+      existsSync(walPath) && statSync(walPath).size !== 0) fail();
   const schedules = new SqliteColdSearchScheduleRepository(dbPath);
   const candidates = new SqliteRealHhCandidateState({ filename: dbPath,
     isVacancyOwned: input.host.isVacancyOwned });
