@@ -41,5 +41,14 @@ nav a{margin-right:1rem}button{cursor:pointer}#action-status{min-height:1.5rem}
 <button id="schedule-enable" type="button">Включить расписание</button>
 <button id="schedule-disable" type="button">Выключить расписание</button>
 <button id="manual-search" type="button">Запустить поиск сейчас</button><p id="manual-status"></p></section>
+<section><h2>Запросы поиска</h2><p>Один запрос на строку, максимум 15. Пустой список сбрасывает ручную настройку.</p>
+<textarea id="prompt-queries" rows="5" maxlength="8000" aria-label="Запросы поиска"></textarea>
+<button id="prompt-save" type="button">Сохранить запросы</button>
+<button id="prompt-reset" type="button">Сбросить и создать заново</button>
+<p id="prompt-status" role="status" aria-live="polite"></p></section>
+<section><h2>Уже просмотренные резюме</h2><p>Вставьте ID или ссылки HH через запятую или с новой строки. Они не будут считаться новыми при следующем поиске.</p>
+<textarea id="seen-ids" rows="4" maxlength="16000" aria-label="Уже просмотренные резюме"></textarea>
+<button id="seen-import" type="button">Отметить просмотренными</button>
+<p id="seen-status" role="status" aria-live="polite"></p></section>
 <nav aria-label="Списки кандидатов">${tabs}</nav><p>Всего: ${feed.total}</p>${cards}</main></body></html>`;
 }

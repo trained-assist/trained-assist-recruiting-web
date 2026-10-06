@@ -34,6 +34,62 @@ if (root) {
       schedule.enabled ? `Включено. Следующий запуск: ${schedule.nextRunAt || 'уточняется'}.` : 'Выключено.';
   };
   refreshSchedule().catch(error => { scheduleStatus.textContent = `Расписание недоступно: ${message(error)}`; });
+  const promptStatus = document.getElementById('prompt-status');
+  const promptInput = document.getElementById('prompt-queries');
+  let promptState = null;
+  const refreshPrompt = async () => {
+    const result = await request(`/api/hh/proactive/prompt?vacancy_id=${encodeURIComponent(vacancyId)}`);
+    promptState = result;
+    promptInput.value = result.queries.join('\n');
+    promptStatus.textContent = result.pending_regeneration ? 'Запросы ещё не созданы. Можно задать их вручную или выполнить сброс с генерацией.' :
+      result.queries_manual ? 'Запросы сохранены вручную.' : 'Показаны запросы, созданные из вакансии.';
+  };
+  refreshPrompt().catch(error => { promptStatus.textContent = `Запросы недоступны: ${message(error)}`; });
+  const savePrompt = async (queries, reset = false) => {
+    if (!promptState) throw new Error('Сначала загрузите текущие запросы.');
+    let result;
+    try { result = await command('/api/hh/proactive/prompt', { vacancy_id: vacancyId, queries,
+      expected_revision: promptState.query_revision,
+      expected_override_revision: promptState.override_revision }); }
+    catch (error) {
+      if (message(error) === 'query_revision_conflict') {
+        await refreshPrompt();
+        throw new Error('Запросы изменились. Проверьте обновлённый список и сохраните снова.');
+      }
+      throw error;
+    }
+    if (result.pending_regeneration) {
+      promptStatus.textContent = 'Настройка сброшена; запросы создаются заново.';
+      try { await refreshPrompt(); } catch { /* persisted reset remains visible */ }
+    } else {
+      promptState = result;
+      promptInput.value = result.queries.join('\n');
+      promptStatus.textContent = reset ? 'Настройка сброшена.' : 'Запросы сохранены.';
+    }
+  };
+  document.getElementById('prompt-save').addEventListener('click', event => run(event.currentTarget,
+    () => savePrompt(promptInput.value)));
+  document.getElementById('prompt-reset').addEventListener('click', event => run(event.currentTarget,
+    () => savePrompt('', true)));
+  const seenInput = document.getElementById('seen-ids');
+  const seenStatus = document.getElementById('seen-status');
+  const resumeId = value => {
+    if (/^[A-Za-z0-9]{1,128}$/.test(value)) return value;
+    let url;
+    try { url = new URL(value); } catch { throw new Error('Укажите ID или ссылку HH на резюме.'); }
+    const match = /^\/resume\/([A-Za-z0-9]{1,128})\/?$/.exec(url.pathname);
+    if (url.protocol !== 'https:' || !['hh.ru', 'www.hh.ru'].includes(url.hostname) ||
+        url.username || url.password || !match) throw new Error('Некорректная ссылка HH на резюме.');
+    return match[1];
+  };
+  document.getElementById('seen-import').addEventListener('click', event => run(event.currentTarget, async () => {
+    const parts = seenInput.value.split(/[\n\r,]+/).map(value => value.trim()).filter(Boolean);
+    if (!parts.length || parts.length > 500) throw new Error('Укажите от 1 до 500 ID резюме.');
+    const ids = [...new Set(parts.map(resumeId))];
+    const result = await command('/api/hh/proactive/import-seen', { vacancy_id: vacancyId, ids });
+    seenStatus.textContent = `Добавлено ${result.imported}; всего просмотренных по вакансии ${result.total}.`;
+    seenInput.value = '';
+  }));
   document.getElementById('schedule-enable').addEventListener('click', event => run(event.currentTarget, async () => {
     const interval = Number(document.getElementById('interval-hours').value);
     if (!Number.isFinite(interval) || interval < 0.5 || interval > 8760) throw new Error('Укажите интервал от 0,5 до 8760 часов.');
