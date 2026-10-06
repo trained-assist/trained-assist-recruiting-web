@@ -89,6 +89,37 @@ test('mid-batch provider failure does not publish partial candidates or freshnes
   assert.equal(state.db.prepare('SELECT COUNT(*) AS count FROM real_hh_candidate').get().count, 0);
 });
 
+test('multiple HH pages per query commit together and a later page failure commits none', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'offline-hh-pages-'));
+  const state = new SqliteRealHhCandidateState({ filename: join(directory, 'private.sqlite'),
+    isVacancyOwned: (profile, vacancy) => profile === profileId && vacancy === vacancyId });
+  t.after(() => { if (state.db.open) state.close(); rmSync(directory, { recursive: true, force: true }); });
+  let failSecondPage = true;
+  const calls = [];
+  const transport = createHhResumeTransport({
+    loadVacancyContext: async (profile, vacancy) => ({ profileId: profile, vacancyId: vacancy, config: atsConfig }),
+    loadCredential: async profile => ({ profileId: profile, accessToken: 'invented-token' }),
+    fetchImpl: async url => {
+      const page = Number(new URL(url).searchParams.get('page'));
+      calls.push(page);
+      return page === 1 && failSecondPage ? response(503) : response(200, {
+        items: Array.from({ length: 50 }, (_, n) => item(`syntheticpage${page}resume${n}`)), pages: 2, found: 100
+      });
+    }, sleep: async () => {}
+  });
+  const oneQueryPlan = { ...plan, queryCache: { revision: 'paged-r1', queries: [queries[0]] } };
+  const search = createOfflineHhColdSearch({ loadSearchPlan: async () => oneQueryPlan, transport, candidateState: state });
+  const run = () => search.run({ ...request(), expectedQueryRevision: oneQueryPlan.queryCache.revision });
+  await assert.rejects(run(), /provider_search_failed/);
+  assert.deepEqual(calls, [0, 1, 1, 1]);
+  assert.equal(state.latestSnapshot(profileId, vacancyId), null);
+  assert.equal(state.seenTotal(profileId, vacancyId), 0);
+  failSecondPage = false;
+  const completed = await run();
+  assert.equal(completed.snapshot.candidateCount, 100);
+  assert.equal(state.seenTotal(profileId, vacancyId), 100);
+});
+
 test('four cached queries use explicit numeric HH area instead of ATS default', async t => {
   const { search, calls, state } = fixture(t, { queryCount: 4, area: [{ id: 77 }] });
   const result = await search.run(request());

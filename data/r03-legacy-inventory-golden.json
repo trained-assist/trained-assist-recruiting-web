@@ -1,0 +1,70 @@
+{
+  "migrationId": "migration_synthetic_001",
+  "expectedScheduleCount": 11,
+  "expectedCounts": {
+    "allCandidates": 3,
+    "seenIds": 2,
+    "snapshots": 2,
+    "queryCaches": 2,
+    "comments": 1,
+    "atsConfigs": 11,
+    "schedules": 11
+  },
+  "profiles": [
+    {
+      "sourceProfileRef": "legacy_synthetic_work",
+      "allCandidates": [
+        { "resumeId": "resume_synthetic_001", "vacancyIds": ["vac_synthetic_001"] },
+        { "resumeId": "resume_synthetic_002", "vacancyIds": [] }
+      ],
+      "seenIds": [
+        { "resumeId": "resume_synthetic_001", "vacancyId": "vac_synthetic_001", "firstSeenAt": "2026-10-01T00:00:00.000Z" },
+        { "resumeId": "resume_synthetic_002", "vacancyId": "vac_synthetic_002", "firstSeenAt": "2026-10-02T00:00:00.000Z" }
+      ],
+      "snapshots": [
+        { "jobId": "job_synthetic_001", "vacancyId": "vac_synthetic_001", "searchedAt": "2026-10-03T00:00:00.000Z", "candidateIds": ["resume_synthetic_001"] },
+        { "jobId": "job_synthetic_002", "vacancyId": "vac_synthetic_002", "searchedAt": "2026-10-04T00:00:00.000Z", "candidateIds": ["resume_synthetic_002"] }
+      ],
+      "queryCaches": [
+        { "vacancyId": "vac_synthetic_001", "manual": true, "queryCount": 1 },
+        { "vacancyId": "vac_synthetic_002", "manual": false, "queryCount": 3 }
+      ],
+      "comments": [
+        { "resumeId": "resume_synthetic_001", "vacancyId": "vac_synthetic_001" }
+      ],
+      "atsConfigs": [
+        { "vacancyId": "vac_synthetic_001" }, { "vacancyId": "vac_synthetic_002" },
+        { "vacancyId": "vac_synthetic_003" }, { "vacancyId": "vac_synthetic_004" },
+        { "vacancyId": "vac_synthetic_005" }, { "vacancyId": "vac_synthetic_006" },
+        { "vacancyId": "vac_synthetic_007" }, { "vacancyId": "vac_synthetic_008" },
+        { "vacancyId": "vac_synthetic_009" }, { "vacancyId": "vac_synthetic_010" }
+      ],
+      "schedules": [
+        { "legacyJobId": "legacy_synthetic_001", "vacancyId": "vac_synthetic_001", "cron": "1 7 * * *", "timezone": "Europe/Moscow", "enabled": false, "lastStatus": "unknown" },
+        { "legacyJobId": "legacy_synthetic_002", "vacancyId": "vac_synthetic_002", "cron": "2 7 * * *", "timezone": "Europe/Moscow", "enabled": false, "lastStatus": "unknown" },
+        { "legacyJobId": "legacy_synthetic_003", "vacancyId": "vac_synthetic_003", "cron": "3 7 * * *", "timezone": "Europe/Moscow", "enabled": false, "lastStatus": "unknown" },
+        { "legacyJobId": "legacy_synthetic_004", "vacancyId": "vac_synthetic_004", "cron": "4 7 * * *", "timezone": "Europe/Moscow", "enabled": false, "lastStatus": "unknown" },
+        { "legacyJobId": "legacy_synthetic_005", "vacancyId": "vac_synthetic_005", "cron": "5 7 * * *", "timezone": "Europe/Moscow", "enabled": false, "lastStatus": "unknown" },
+        { "legacyJobId": "legacy_synthetic_006", "vacancyId": "vac_synthetic_006", "cron": "6 7 * * *", "timezone": "Europe/Moscow", "enabled": false, "lastStatus": "unknown" },
+        { "legacyJobId": "legacy_synthetic_007", "vacancyId": "vac_synthetic_007", "cron": "7 7 * * *", "timezone": "Europe/Moscow", "enabled": false, "lastStatus": "unknown" },
+        { "legacyJobId": "legacy_synthetic_008", "vacancyId": "vac_synthetic_008", "cron": "8 7 * * *", "timezone": "Europe/Moscow", "enabled": false, "lastStatus": "unknown" },
+        { "legacyJobId": "legacy_synthetic_009", "vacancyId": "vac_synthetic_009", "cron": "9 7 * * *", "timezone": "Europe/Moscow", "enabled": false, "lastStatus": "success" },
+        { "legacyJobId": "legacy_synthetic_010", "vacancyId": "vac_synthetic_010", "cron": "10 7 * * *", "timezone": "Europe/Moscow", "enabled": false, "lastStatus": "failed" }
+      ]
+    },
+    {
+      "sourceProfileRef": "legacy_synthetic_test",
+      "allCandidates": [
+        { "resumeId": "resume_synthetic_003", "vacancyIds": ["vac_synthetic_011"] }
+      ],
+      "seenIds": [],
+      "snapshots": [],
+      "queryCaches": [],
+      "comments": [],
+      "atsConfigs": [{ "vacancyId": "vac_synthetic_011" }],
+      "schedules": [
+        { "legacyJobId": "legacy_synthetic_011", "vacancyId": "vac_synthetic_011", "cron": "11 7 * * *", "timezone": "Europe/Moscow", "enabled": false, "lastStatus": "success" }
+      ]
+    }
+  ]
+}

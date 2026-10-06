@@ -69,6 +69,68 @@ test('durable occurrence runs injected HH port, survives restart and serves morn
   assert.equal(workerAfterRestart.morningResults({ profileId: 'other', scopes: context.scopes }, vacancyId).status, 'never_run');
 });
 
+test('heartbeat renews a long HH occurrence past its initial lease without duplicate dispatch', async t => {
+  const f = fixture(t);
+  const due = Date.parse(f.firstDue);
+  let logicalNow = due;
+  let renewals = 0;
+  let releaseSearch;
+  let failSearch;
+  const enoughRenewals = new Promise((resolve, reject) => { releaseSearch = resolve; failSearch = reject; });
+  // The worker unrefs its heartbeat timer; the test keeps an independent
+  // handle alive until the renewal barrier resolves.
+  const watchdog = setTimeout(() => failSearch(new Error('heartbeat_barrier_timeout')), 5000);
+  t.after(() => clearTimeout(watchdog));
+  const original = f.repository.renewOccurrenceLease.bind(f.repository);
+  f.repository.renewOccurrenceLease = (...args) => {
+    const result = original(...args);
+    renewals++;
+    logicalNow += 20;
+    if (renewals === 3) { clearTimeout(watchdog); releaseSearch(); }
+    return result;
+  };
+  const worker = createDurableHhOccurrenceWorker({ scheduleRepository: f.repository,
+    loadSearchPlan: async () => plan,
+    search: { run: async request => {
+      // The first renewal must extend the lease claimed at `due`.
+      logicalNow = due + 20;
+      await enoughRenewals;
+      return f.search.run(request);
+    } }, candidateState: f.candidateState,
+    clock: () => new Date(logicalNow), leaseMs: 70, heartbeatMs: 15 });
+  assert.deepEqual(await worker.tick('worker_heartbeat'), { claimed: 1, completed: 1, rejected: 0, unknown: 0 });
+  assert.ok(renewals >= 2);
+  assert.equal(f.calls, 1);
+  assert.equal(worker.morningResults(context, vacancyId).snapshot.candidateCount, 1);
+  assert.equal((await worker.tick('worker_again')).claimed, 0);
+  assert.equal(f.calls, 1);
+});
+
+test('lost heartbeat quarantines a committed snapshot rather than publishing false freshness', async t => {
+  const f = fixture(t);
+  const due = Date.parse(f.firstDue);
+  let releaseSearch;
+  let failSearch;
+  const heartbeatAttempted = new Promise((resolve, reject) => { releaseSearch = resolve; failSearch = reject; });
+  const watchdog = setTimeout(() => failSearch(new Error('heartbeat_barrier_timeout')), 5000);
+  t.after(() => clearTimeout(watchdog));
+  f.repository.renewOccurrenceLease = () => { clearTimeout(watchdog); releaseSearch(); return false; };
+  const worker = createDurableHhOccurrenceWorker({ scheduleRepository: f.repository,
+    loadSearchPlan: async () => plan,
+    search: { run: async request => {
+      await heartbeatAttempted;
+      return f.search.run(request);
+    } }, candidateState: f.candidateState,
+    clock: () => new Date(due), leaseMs: 100, heartbeatMs: 10 });
+  assert.deepEqual(await worker.tick('worker_lost'), { claimed: 1, completed: 0, rejected: 0, unknown: 1 });
+  assert.equal(f.repository.listOccurrences(profileId)[0].status, 'outcome_unknown');
+  assert.equal(worker.morningResults(context, vacancyId).status, 'never_run');
+  assert.equal(f.candidateState.latestSnapshot(profileId, vacancyId)?.candidateCount, 1,
+    'committed snapshot remains quarantined for exact reconciliation');
+  assert.equal((await worker.tick('worker_again')).claimed, 0);
+  assert.equal(f.calls, 1);
+});
+
 test('overlap claims once; expired running work is unknown and never dispatched again', async t => {
   const f = fixture(t);
   f.setNow(f.firstDue);

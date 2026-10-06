@@ -7,6 +7,9 @@ const safeId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.te
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const sha = value => createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 24);
 const fail = () => { throw new Error('private_search_plan_unavailable'); };
+const validQueries = queries => Array.isArray(queries) && queries.length >= 1 && queries.length <= 15 &&
+  queries.every(query => typeof query === 'string' && query.trim() === query && query.length > 0 && query.length <= 500) &&
+  new Set(queries).size === queries.length;
 
 function readPrivateJson(directory, name, optional = false) {
   try {
@@ -75,10 +78,18 @@ function vacancyFromContext(directory, vacancyId) {
   return null;
 }
 
-export function createPrivateBaseSearchPlan({ resolveProfileBinding, isVacancyOwned }) {
+export function createPrivateBaseSearchPlan({ resolveProfileBinding, isVacancyOwned,
+  generateQueries, queryCache, queryOverrides } = {}) {
   if (typeof resolveProfileBinding !== 'function' || typeof isVacancyOwned !== 'function')
     throw new TypeError('private profile binding ports required');
-  return async (profileId, vacancyId) => {
+  if ((generateQueries === undefined) !== (queryCache === undefined) ||
+      generateQueries !== undefined && (typeof generateQueries !== 'function' ||
+        typeof queryCache?.get !== 'function' || typeof queryCache?.store !== 'function'))
+    throw new TypeError('private query regeneration ports required together');
+  if (queryOverrides !== undefined && typeof queryOverrides?.get !== 'function')
+    throw new TypeError('private query override port required');
+  return async (profileId, vacancyId, { allowGeneration = true } = {}) => {
+    if (typeof allowGeneration !== 'boolean') fail();
     if (!safeId(profileId) || !safeId(vacancyId) || !isVacancyOwned(profileId, vacancyId)) fail();
     let binding;
     try { binding = await resolveProfileBinding(profileId); } catch { fail(); }
@@ -87,22 +98,46 @@ export function createPrivateBaseSearchPlan({ resolveProfileBinding, isVacancyOw
     const config = contextValue(readPrivateJson(binding.contextDirectory, `ats_config:${vacancyId}.json`));
     if (!object(config) || config.vacancy_id !== undefined && String(config.vacancy_id) !== vacancyId) fail();
     try { normalizeHhAtsConfig(config); } catch { fail(); }
-    const queryRecord = readPrivateJson(binding.proactiveDirectory, `queries-${vacancyId}.json`);
-    if (!object(queryRecord) || String(queryRecord.vacancy_id) !== vacancyId ||
-        !Array.isArray(queryRecord.queries) || queryRecord.queries.length < 1 || queryRecord.queries.length > 15 ||
-        queryRecord.queries.some(query => typeof query !== 'string' || !query.trim() || query !== query.trim() || query.length > 500) ||
-        new Set(queryRecord.queries).size !== queryRecord.queries.length ||
-        queryRecord.manual !== undefined && typeof queryRecord.manual !== 'boolean') fail();
+    let queryRecord = readPrivateJson(binding.proactiveDirectory, `queries-${vacancyId}.json`, true);
+    if (queryRecord !== null && (!object(queryRecord) || String(queryRecord.vacancy_id) !== vacancyId ||
+        !validQueries(queryRecord.queries) ||
+        queryRecord.manual !== undefined && typeof queryRecord.manual !== 'boolean')) fail();
+    const comments = commentsForHash(binding.proactiveDirectory, vacancyId);
+    const configHash = legacyQueryConfigHash(config, comments);
+    let override;
+    try { override = queryOverrides?.get(profileId, vacancyId) ?? { revision: 0, mode: 'source' }; }
+    catch { fail(); }
+    if (!Number.isSafeInteger(override.revision) || override.revision < 0 ||
+        !['source', 'manual', 'reset'].includes(override.mode)) fail();
+    if (override.mode === 'manual') {
+      if (!validQueries(override.queries)) fail();
+      queryRecord = { vacancy_id: vacancyId, queries: override.queries, config_hash: 'manual', manual: true };
+    }
+    if (override.mode === 'reset') queryRecord = null;
+    const effectiveHash = override.mode === 'reset' ? createHash('md5')
+      .update(JSON.stringify([configHash, override.revision])).digest('hex').slice(0, 12) : configHash;
+    let pendingGeneration = false;
+    if (!queryRecord || queryRecord.manual !== true && queryRecord.config_hash !== configHash) {
+      if (generateQueries === undefined) fail();
+      let queries;
+      try {
+        queries = queryCache.get(profileId, vacancyId, effectiveHash);
+        if (queries === null && allowGeneration) queries = queryCache.store(profileId, vacancyId, effectiveHash,
+          await generateQueries({ profileId, vacancyId, atsConfig: config, comments,
+            baseQueries: queryRecord?.queries ?? [] }));
+      } catch { fail(); }
+      pendingGeneration = queries === null;
+      if (!pendingGeneration && !validQueries(queries)) fail();
+      queryRecord = { vacancy_id: vacancyId, queries, config_hash: effectiveHash, manual: false };
+    }
     const manual = queryRecord.manual === true;
-    if (!manual && queryRecord.config_hash !== legacyQueryConfigHash(config,
-      commentsForHash(binding.proactiveDirectory, vacancyId))) fail();
     const vacancy = vacancyFromContext(binding.contextDirectory, vacancyId);
     const has = (value, key) => Object.hasOwn(value ?? {}, key);
     const area = has(config.filters, 'area') ? config.filters.area : has(config, 'area') ? config.area
       : has(vacancy, 'area') ? vacancy.area : undefined;
     if (area === undefined) fail();
     return { profileId, vacancyId, criteriaRevision: `criteria-${sha(config)}`,
-      queryCache: { revision: `queries-${sha([queryRecord.queries, queryRecord.config_hash, manual])}`,
-        queries: [...queryRecord.queries], manual }, atsConfig: config, area };
+      queryCache: { revision: `queries-${sha([queryRecord.queries, queryRecord.config_hash, manual, override.revision])}`,
+        queries: pendingGeneration ? [] : [...queryRecord.queries], manual, pendingGeneration }, atsConfig: config, area };
   };
 }
