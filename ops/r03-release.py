@@ -102,10 +102,11 @@ def host_gate(args):
     active = subprocess.run(["systemctl", "is-active", UNIT.name], capture_output=True, text=True)
     if enabled.stdout.strip() != "disabled" or active.stdout.strip() != "inactive":
         fail("stage_unit_must_be_disabled_and_inactive")
-    for name in ("trained-recruiting-hh-minute.timer", "trained-recruiting-hh-score.timer"):
+    for name in ("trained-recruiting-hh-minute.timer", "trained-recruiting-hh-score.timer",
+                 "trained-recruiting-hh-minute.service", "trained-recruiting-hh-score.service"):
         result = subprocess.run(["systemctl", "is-active", name], capture_output=True, text=True)
-        if result.stdout.strip() == "active":
-            fail("recruiting_timer_active")
+        if result.stdout.strip() not in {"inactive", "unknown"}:
+            fail("recruiting_worker_or_timer_not_inactive")
     if RELEASES.is_symlink() or not RELEASES.is_dir() or UNIT.is_symlink() or \
             STAGE.is_symlink() or not STAGE.is_dir() or \
             not (STAGE / "config.json").is_file() or \

@@ -68,3 +68,38 @@ with tempfile.TemporaryDirectory() as outer:
 `], { cwd: root, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
 });
+
+test('disabled-stage promotion pins its unit and receipt-backed rollback restores the prior unit', () => {
+  const result = spawnSync('python3', ['-c', `
+import importlib.util, json, pathlib, tempfile, types
+spec = importlib.util.spec_from_file_location('release', ${JSON.stringify(script)})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+sha = 'a' * 40
+with tempfile.TemporaryDirectory() as outer:
+    base = pathlib.Path(outer)
+    module.RELEASES = base / 'releases'
+    module.RELEASES.mkdir()
+    module.STATE = base / 'receipts'
+    module.UNIT = base / 'stage.service'
+    module.UNIT.write_text('previous unit')
+    module.checked_manifest = lambda archive, manifest, digest: {'sourceSha': sha}
+    module.host_gate = lambda args: 'f' * 64
+    module.run = lambda *args, **kwargs: ''
+    def extract(archive, destination):
+        path = destination / 'infra/systemd/trained-recruiting-r03-stage.service'
+        path.parent.mkdir(parents=True)
+        path.write_text('WorkingDirectory=/releases/@RELEASE_SHA@\\nExecStart=/releases/@RELEASE_SHA@/src/server.js\\n')
+    module.extract = extract
+    args = types.SimpleNamespace(archive='archive', manifest='manifest', approved_sha256='b'*64)
+    module.install(args)
+    receipt = json.loads((module.STATE / (sha + '.json')).read_text())
+    assert receipt['status'] == 'disabled_staged'
+    assert (module.RELEASES / sha).stat().st_mode & 0o777 == 0o755
+    assert module.UNIT.read_text().count(sha) == 2
+    module.rollback(types.SimpleNamespace(source_sha=sha))
+    assert module.UNIT.read_text() == 'previous unit'
+    assert json.loads((module.STATE / (sha + '.json')).read_text())['status'] == 'rolled_back'
+`], { cwd: root, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+});
