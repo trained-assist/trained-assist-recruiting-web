@@ -41,8 +41,8 @@ async function fixture(t) {
     get exchangeCalls() { return exchangeCalls; }, get readCalls() { return readCalls; } };
 }
 const getCookie = (response, name) => response.headers.getSetCookie().find(part => part.startsWith(`${name}=`))?.split(';')[0];
-async function start(base) {
-  const response = await fetch(`${base}/auth/connected/start`, { redirect: 'manual' });
+async function start(base, from = 'responses') {
+  const response = await fetch(`${base}/auth/connected/start?from=${from}`, { redirect: 'manual' });
   assert.equal(response.status, 303);
   const authorize = new URL(response.headers.get('location'));
   assert.equal(`${authorize.origin}${authorize.pathname}`, `${issuer}/v1/connected-app-sessions/authorize`);
@@ -65,7 +65,7 @@ test('BFF exchanges one code and stores token only on the server', async t => {
   const { authorize, pendingCookie } = await start(f.base);
   const response = await callback(f.base, authorize.searchParams.get('state'), pendingCookie);
   assert.equal(response.status, 303);
-  assert.equal(response.headers.get('location'), `${publicOrigin}/hh/proactive`);
+  assert.equal(response.headers.get('location'), `${publicOrigin}/hh/responses`);
   assert.equal(f.exchangeCalls, 1);
   const appCookie = getCookie(response, '__Host-recruiting-app-session');
   assert.ok(appCookie);
@@ -185,7 +185,7 @@ test('private proactive routes use the same BFF profile and command CSRF gate', 
   const candidateUrl = `${base}/api/hh/proactive/candidates?vacancy_id=vac_demo_001`;
   assert.equal((await fetch(candidateUrl)).status, 401);
   assert.equal((await fetch(`${base}/api/v1/vacancies`)).status, 404, 'private mode hides synthetic routes');
-  const { authorize, pendingCookie } = await start(base);
+  const { authorize, pendingCookie } = await start(base, 'proactive');
   assert.equal(authorize.searchParams.get('scope'), 'recruiting.candidateSearch');
   const login = await callback(base, authorize.searchParams.get('state'), pendingCookie);
   assert.equal(login.status, 303);
