@@ -9,7 +9,7 @@ StartLimitBurst=5
 Type=simple
 User=trained-recruiting
 Group=trained-recruiting
-WorkingDirectory=/opt/trained-assist-recruiting-web/releases/5bbd27f711823d74620931e142eb00218b212ef5
+WorkingDirectory=/opt/trained-assist-recruiting-web/releases/@RELEASE_SHA@
 Environment=NODE_ENV=production
 UMask=0077
 LoadCredential=legacy_page_secret:/var/lib/trained-recruiting-r03-stage/secrets/legacy_page_secret
@@ -18,7 +18,7 @@ LoadCredential=hh_client_id:/var/lib/trained-recruiting-r03-stage/secrets/hh_cli
 LoadCredential=hh_client_secret:/var/lib/trained-recruiting-r03-stage/secrets/hh_client_secret
 LoadCredential=hh_user_agent:/var/lib/trained-recruiting-r03-stage/secrets/hh_user_agent
 LoadCredential=ladder_token:/var/lib/trained-recruiting-r03-stage/secrets/ladder_token
-ExecStart=/usr/bin/node /opt/trained-assist-recruiting-web/releases/5bbd27f711823d74620931e142eb00218b212ef5/src/r03-private-web-runtime.js --config /var/lib/trained-recruiting-r03-stage/config.json --secrets ${CREDENTIALS_DIRECTORY} --port 18083 --live-execution
+ExecStart=/usr/bin/node /opt/trained-assist-recruiting-web/releases/@RELEASE_SHA@/src/r03-private-web-runtime.js --config /var/lib/trained-recruiting-r03-stage/config.json --secrets ${CREDENTIALS_DIRECTORY} --port 18083 --live-execution
 Restart=on-failure
 RestartSec=10s
 TimeoutStartSec=30s
