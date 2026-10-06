@@ -63,7 +63,7 @@ export function latestDueSlot(plan, firstDue, now) {
   }
 }
 
-function scheduleId(profileId, vacancyId) { return `schedule_demo_${digest(JSON.stringify([profileId, vacancyId])).slice(0, 12)}`; }
+export function scheduleIdFor(profileId, vacancyId) { return `schedule_demo_${digest(JSON.stringify([profileId, vacancyId])).slice(0, 12)}`; }
 function occurrenceKey(legacyJobId, scheduledAt) { return JSON.stringify([legacyJobId, scheduledAt]); }
 export function occurrenceId(legacyJobId, scheduledAt) { return `occurrence_demo_${digest(occurrenceKey(legacyJobId, scheduledAt)).slice(0, 16)}`; }
 const clone = value => structuredClone(value);
@@ -160,13 +160,14 @@ export function createColdSearchScheduleHandler({ repository, resolveSearchReque
       return { kind: 'status', schedules: command.vacancyId ? schedules.filter(row => row.vacancyId === command.vacancyId) : schedules };
     }
     if (!command.vacancyId) return { kind: 'vacancy_required' };
-    const id = scheduleId(profileId, command.vacancyId);
+    const id = scheduleIdFor(profileId, command.vacancyId);
     const existing = repository.getSchedule(id);
     if (command.action === 'disable') {
       if (!existing) return { kind: 'not_found' };
       const updated = { ...existing, enabled: false, updatedAt: clock().toISOString() };
       return { kind: 'updated', schedule: repository.upsertSchedule(updated, existing.nextRunAt) };
     }
+    if (existing?.migrationQuarantine) return { kind: 'migration_pending_review', schedule: existing };
     if (existing?.blockedByUnknownOccurrenceId) return { kind: 'outcome_unknown', schedule: existing, occurrenceId: existing.blockedByUnknownOccurrenceId };
     let searchRequest;
     try { searchRequest = await resolveSearchRequest(profileId, command.vacancyId); } catch { searchRequest = null; }
