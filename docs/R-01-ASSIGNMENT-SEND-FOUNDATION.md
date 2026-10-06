@@ -27,12 +27,6 @@ contract](https://api.hh.ru/openapi/en/redoc) defines UUID keys and a 409
 response for a non-unique key. This client still never retries a POST: network
 errors and key conflicts are reconciled through a fresh chat read.
 
-The private web runtime also exposes a separately scoped, read-only conversation
-view. The recruiter explicitly opens it from the response status page; the BFF
-requests only `recruiting.responses.conversation.open`, and the server binds the
-HH chat to the trusted profile, owned vacancy and exact negotiation before
-reading its messages. HH may mark the response viewed when this happens.
-
 ## Not yet delivered
 
 - The private BFF now has server-only CP prepare/consume client calls and an
@@ -41,7 +35,7 @@ reading its messages. HH may mark the response viewed when this happens.
 - These methods are not yet wired to assignment HTTP handlers or a browser
   prepare → review → resume flow. The send scope is vocabulary and an opt-in
   re-auth request only; no profile membership or production grant is added.
-- There is no assignment-send HTTP route or agreement-confirmation UI.
+- There is no browser/server route or agreement-confirmation UI.
 - Proposal creation is not implemented as an independently approved HH write.
 - The UI for selecting and explicitly confirming the applicant agreement
   message is not implemented; the function requires that confirmation as a

@@ -75,12 +75,9 @@ function fixture(t) {
         const id = decodeURIComponent(url.pathname.slice('/negotiations/'.length));
         const vacancyId = id.match(/^n_(vacancy_[AB])_0$/)?.[1] ?? actor.vacancyId;
         return { status: 200, ok: true, json: async () => ({ id, vacancy: { id: vacancyId },
-          resume: { id: 'resume_example' }, state: { id: 'response' }, chat_id: `chat_${id}`,
+          resume: { id: 'resume_example' }, state: { id: 'response' },
           updated_at: '2026-10-06T07:10:00Z' }) };
       }
-      if (url.pathname.startsWith('/common/chats/')) return { status: 200, ok: true, json: async () => ({
-        messages: [{ id: 'message_A', creation_time: '2026-10-06T07:00:00Z',
-          sender_display_info: { role: 'APPLICANT' }, payload: { text: 'Да, согласен' } }], has_more: false }) };
       const requested = url.searchParams.get('vacancy_id');
       const page = Number(url.searchParams.get('page'));
       return { status: 200, ok: true, json: async () => hhPage(requested, page) };
@@ -128,35 +125,8 @@ test('exact response detail checks CP scope and owned vacancy without opening HH
   assert.equal(f.calls.length, 2);
 });
 
-test('conversation read needs its dedicated CP scope and an explicit user navigation', async t => {
-  const f = fixture(t); await once(f.server, 'listening');
-  const base = `http://127.0.0.1:${f.server.address().port}`;
-  const responseLogin = await signIn(base, 'responses', 'vacancy_A');
-  const detail = await fetch(`${base}/hh/response-detail?vacancy_id=vacancy_A&negotiation_id=n_vacancy_A_0`,
-    { headers: { cookie: responseLogin.session } });
-  assert.equal(detail.status, 200);
-  assert.match(await detail.text(), /Я понимаю, открыть переписку/);
-  assert.equal((await fetch(`${base}/api/v1/ui/hh-conversation?vacancyId=vacancy_A&negotiationId=n_vacancy_A_0`,
-    { headers: { cookie: responseLogin.session } })).status, 403);
-
-  f.setScope('recruiting.responses.conversation.open');
-  const login = await signIn(base, 'conversation', 'vacancy_A', 'n_vacancy_A_0');
-  assert.equal(login.authorize.searchParams.get('scope'), 'recruiting.responses.conversation.open');
-  assert.equal(login.accepted.headers.get('location'), `${origin}/hh/conversation?vacancy_id=vacancy_A&negotiation_id=n_vacancy_A_0`);
-  const headers = { cookie: cookie(login.accepted, '__Host-recruiting-app-session') };
-  const page = await fetch(`${base}/hh/conversation?vacancy_id=vacancy_A&negotiation_id=n_vacancy_A_0`, { headers });
-  assert.equal(page.status, 200);
-  assert.match(await page.text(), /Да, согласен/);
-  const api = await fetch(`${base}/api/v1/ui/hh-conversation?vacancyId=vacancy_A&negotiationId=n_vacancy_A_0`, { headers });
-  assert.equal(api.status, 200);
-  assert.equal((await api.json()).messages[0].role, 'APPLICANT');
-  assert.equal((await fetch(`${base}/api/v1/ui/hh-conversation?vacancyId=vacancy_B&negotiationId=n_vacancy_B_0`,
-    { headers })).status, 404);
-  assert.ok(f.calls.some(call => call.url.pathname === '/common/chats/chat_n_vacancy_A_0/messages'));
-});
-
-async function signIn(base, from, vacancyId, negotiationId = null) {
-  const start = await fetch(`${base}/auth/connected/start${from ? `?from=${from}${vacancyId ? `&vacancy_id=${vacancyId}` : ''}${negotiationId ? `&negotiation_id=${negotiationId}` : ''}` : ''}`,
+async function signIn(base, from, vacancyId) {
+  const start = await fetch(`${base}/auth/connected/start${from ? `?from=${from}${vacancyId ? `&vacancy_id=${vacancyId}` : ''}` : ''}`,
     { redirect: 'manual' });
   assert.equal(start.status, 303);
   const authorize = new URL(start.headers.get('location'));
