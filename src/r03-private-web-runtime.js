@@ -26,6 +26,7 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
   if (!/^[a-fA-F0-9]{64}$/.test(encryptionKey)) throw new Error('invalid_private_encryption_key');
   const clientId = loadPrivateHostSecret(secretsDirectory, 'hh_client_id');
   const clientSecret = loadPrivateHostSecret(secretsDirectory, 'hh_client_secret');
+  const userAgent = loadPrivateHostSecret(secretsDirectory, 'hh_user_agent');
   const schedules = new SqliteColdSearchScheduleRepository(config.dbPath);
   let candidates;
   let manualRuns;
@@ -36,7 +37,7 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
       loadToken: () => loadPrivateHostSecret(secretsDirectory, 'ladder_token'), fetchImpl }) });
     const stack = createPrivateHhSearchStack({ ...config, candidateState: candidates,
       scheduleRepository: schedules, generateQueries, encryptionKey, clientId, clientSecret,
-      fetchImpl, clock });
+      fetchImpl, userAgent, clock });
     manualRuns = new SqliteRealHhManualRuns({ filename: config.dbPath,
       isVacancyOwned: config.isVacancyOwned, loadSearchPlan: stack.loadSearchPlan,
       search: stack.search, candidateState: candidates, clock });

@@ -23,6 +23,7 @@ function fixture(t) {
       tokenDirectory: dirs.tokens }] }), { mode: 0o600 });
   for (const [name, value] of Object.entries({ hh_encryption_key: 'a'.repeat(64),
     hh_client_id: 'invented_client', hh_client_secret: 'invented_secret',
+    hh_user_agent: 'invented-recruiting/1.0 (contact@example.test)',
     ladder_token: 'invented_ladder_token' }))
     writeFileSync(join(dirs.secrets, name), value, { mode: 0o600 });
   return { root, configFile, dbPath, secretsDirectory: dirs.secrets };

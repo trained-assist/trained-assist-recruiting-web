@@ -12,7 +12,7 @@ import { SqlitePrivateQueryOverrides } from './sqlite-private-query-overrides.js
 // browser request. Construction does not start a timer or make an HH call.
 export function createPrivateHhSearchStack({ resolveProfileBinding, isVacancyOwned,
   candidateState, scheduleRepository, generateQueries, encryptionKey,
-  clientId, clientSecret, fetchImpl, clock = () => new Date() } = {}) {
+  clientId, clientSecret, fetchImpl, userAgent, clock = () => new Date() } = {}) {
   if (typeof resolveProfileBinding !== 'function' || typeof isVacancyOwned !== 'function' ||
       typeof generateQueries !== 'function' || typeof fetchImpl !== 'function' ||
       typeof candidateState?.recordCompletedSearch !== 'function' ||
@@ -32,7 +32,7 @@ export function createPrivateHhSearchStack({ resolveProfileBinding, isVacancyOwn
     },
     loadCredential: credentials.loadCredential,
     refreshCredential: credentials.refreshCredential,
-    fetchImpl
+    fetchImpl, userAgent
   });
   const search = createOfflineHhColdSearch({ loadSearchPlan, transport, candidateState, clock });
   const worker = createDurableHhOccurrenceWorker({ scheduleRepository, loadSearchPlan,

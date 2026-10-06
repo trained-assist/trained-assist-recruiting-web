@@ -35,12 +35,13 @@ export async function runPrivateHostMode({ mode, configFile, secretsDirectory = 
     if (!/^[a-fA-F0-9]{64}$/.test(encryptionKey)) throw new Error('invalid_private_encryption_key');
     const clientId = loadPrivateHostSecret(secretsDirectory, 'hh_client_id');
     const clientSecret = loadPrivateHostSecret(secretsDirectory, 'hh_client_secret');
+    const userAgent = loadPrivateHostSecret(secretsDirectory, 'hh_user_agent');
     const loadLadderToken = () => loadPrivateHostSecret(secretsDirectory, 'ladder_token');
     const generateQueries = createHhQueryGenerator({ chat: createServiceLadderChat({
       loadToken: loadLadderToken, fetchImpl }) });
     const stack = createPrivateHhSearchStack({ ...config, candidateState: candidates,
       scheduleRepository: schedules, generateQueries, encryptionKey, clientId,
-      clientSecret, fetchImpl, clock });
+      clientSecret, fetchImpl, userAgent, clock });
     if (mode === 'minute') {
       const result = await runPrivateHhMinuteTick({ worker: stack.worker,
         scheduleRepository: schedules, workerId, clock });

@@ -24,7 +24,8 @@ function fixture(t, vacancyIds = [vacancyId]) {
   const secrets = privateDir('secrets');
   for (const [name, value] of Object.entries({ legacy_page_secret: secret,
     hh_encryption_key: 'a'.repeat(64), hh_client_id: 'invented-client',
-    hh_client_secret: 'invented-client-secret', ladder_token: 'invented-ladder' }))
+    hh_client_secret: 'invented-client-secret', ladder_token: 'invented-ladder',
+    hh_user_agent: 'invented-recruiting/1.0 (contact@example.test)' }))
     writeFileSync(join(secrets, name), value, { mode: 0o600 });
   const configFile = join(directory, 'config.json');
   writeFileSync(configFile, JSON.stringify({ version: 'r03-private-host-v1',

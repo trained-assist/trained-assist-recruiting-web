@@ -14,6 +14,13 @@ export class HhSearchError extends Error {
 
 const has = (value, key) => Object.prototype.hasOwnProperty.call(value ?? {}, key);
 
+export function validateHhUserAgent(value) {
+  if (typeof value !== 'string' || value.length > 200 ||
+      !/^[\x20-\x7e]+\([A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\)$/.test(value))
+    throw new TypeError('HH contact user agent required');
+  return value;
+}
+
 // The precedence and explicit unrestricted null match hh-cold-search-transport.js.
 export function resolveHhSearchAreas(config, vacancy, options = {}) {
   let area;
@@ -47,11 +54,13 @@ function requireBoundContext(value, profileId, vacancyId) {
 }
 
 export function createHhResumeTransport({ loadVacancyContext, loadCredential, refreshCredential,
-  fetchImpl, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), timeoutMs = 20_000 } = {}) {
+  fetchImpl, userAgent = 'trained-assist-recruiting-web/1.0 (support@recruiter-assistant.ru)',
+  sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), timeoutMs = 20_000 } = {}) {
   if (typeof loadVacancyContext !== 'function' || typeof loadCredential !== 'function') throw new TypeError('trusted context and credential ports required');
   if (typeof fetchImpl !== 'function') throw new TypeError('explicit fetch adapter required');
   if (refreshCredential !== undefined && typeof refreshCredential !== 'function') throw new TypeError('invalid refresh port');
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) throw new TypeError('invalid timeout');
+  validateHhUserAgent(userAgent);
 
   return {
     async search({ trustedContext, vacancyId, query, ...options } = {}) {
@@ -85,7 +94,7 @@ export function createHhResumeTransport({ loadVacancyContext, loadCredential, re
         try {
           response = await fetchImpl(`${HH_RESUMES_URL}?${params}`, {
             method: 'GET', signal: AbortSignal.timeout(timeoutMs),
-            headers: { Authorization: `Bearer ${accessToken}`, 'User-Agent': 'trained-assist-recruiting-web/1.0', 'HH-User-Agent': 'trained-assist-recruiting-web/1.0' }
+            headers: { Authorization: `Bearer ${accessToken}`, 'User-Agent': userAgent, 'HH-User-Agent': userAgent }
           });
         } catch (error) {
           const transient = error?.name === 'TimeoutError' || error?.name === 'AbortError' || error instanceof TypeError;
