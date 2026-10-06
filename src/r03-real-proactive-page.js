@@ -12,6 +12,7 @@ const safeResumeUrl = value => {
 export function renderRealProactivePage({ profileId = '', vacancyId, feed, listView = 'active' }) {
   if (!['active', 'starred', 'archived'].includes(listView)) throw new TypeError('invalid_list_view');
   const freshness = feed.freshness === 'latest_run_incomplete' ? 'Последний поиск не завершён; показаны ранее принятые кандидаты.' :
+    feed.status === 'never_run' && feed.total > 0 ? 'Принятых результатов поиска пока нет; показаны кандидаты, добавленные вручную.' :
     feed.status === 'never_run' ? 'Принятых результатов пока нет.' : 'Показаны принятые результаты поиска.';
   const counts = { active: 0, starred: 0, archived: 0 };
   for (const item of feed.items) counts[item.review?.status ?? 'active']++;
@@ -56,5 +57,9 @@ nav a{margin-right:1rem}button{cursor:pointer}#action-status{min-height:1.5rem}
 <textarea id="seen-ids" rows="4" maxlength="16000" aria-label="Уже просмотренные резюме"></textarea>
 <button id="seen-import" type="button">Отметить просмотренными</button>
 <p id="seen-status" role="status" aria-live="polite"></p></section>
+<section><h2>Добавить резюме вручную</h2><p>Укажите ID резюме или ссылку HH. Кандидат будет привязан к этой вакансии.</p>
+<input id="manual-candidate-input" type="text" maxlength="512" aria-label="ID или ссылка HH на резюме">
+<button id="manual-candidate-add" type="button">Добавить кандидата</button>
+<p id="manual-candidate-status" role="status" aria-live="polite"></p></section>
 <nav aria-label="Списки кандидатов">${tabs}</nav><p>Всего: ${feed.total}</p>${cards}</main></body></html>`;
 }
