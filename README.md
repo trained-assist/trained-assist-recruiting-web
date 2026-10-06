@@ -53,6 +53,8 @@ An opt-in [R-03 synthetic minute worker](docs/R-03-MINUTE-WORKER.md) now opens t
 
 The [R-03 private base-plan adapter](docs/R-03-PRIVATE-BASE-PLAN.md) reads a restored profile's ATS context and cached HH queries from explicit private directories, verifies the legacy generated-query hash and vacancy scope, and reaches the shared cold-search handler in an offline composition test. No live profile or token is read by this PR.
 
+The [R-03 profile-bound HH credential broker](docs/R-03-PRIVATE-HH-CREDENTIAL.md) reads legacy plaintext or AES-GCM v2 token files from an explicitly bound private profile and performs one locked, encrypted OAuth refresh through the shared HH transport. Its integration test uses invented tokens and mock HTTP only.
+
 An offline [R-03 background scoring pass](docs/R-03-BACKGROUND-SCORING.md) writes revision-bound ATS assessments to the private real-HH SQLite candidate state through an injected evaluator. It is designed for a five-minute timer but is not installed or connected to live LLM, HH, or the public page.
 
 The offline [R-03 morning scoring bridge](docs/R-03-MORNING-SCORING-INTEGRATION.md) overlays accepted scheduled HH assessments in `morningResults`, preserves stale status for a newer unknown run, and holds uncertain snapshots out of background scoring until reconciliation.
