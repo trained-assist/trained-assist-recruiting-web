@@ -68,6 +68,14 @@ test('private web runtime accepts only exact old signed link then scopes session
   assert.equal((await fetch(`${base}/api/hh/proactive/candidates?vacancy_id=other`, { headers: auth })).status, 404);
   assert.equal((await fetch(`${base}/api/v1/vacancies`, { headers: auth })).status, 404);
   assert.equal((await fetch(`${base}/api/hh/proactive/prompt`, { headers: auth })).status, 400);
+  const seenPath = `${base}/api/hh/proactive/import-seen`;
+  const seenBody = JSON.stringify({ vacancy_id: vacancyId, ids: ['inventedresume1'] });
+  assert.equal((await fetch(seenPath, { method: 'POST', headers: { ...auth,
+    'Content-Type': 'application/json' }, body: seenBody })).status, 401);
+  const seenResponse = await fetch(seenPath, { method: 'POST', headers: { ...auth,
+    Origin: 'https://recruiter-assistant.ru', 'Content-Type': 'application/json' }, body: seenBody });
+  assert.equal(seenResponse.status, 200);
+  assert.equal((await seenResponse.json()).imported, 1);
   assert.equal((await fetch(`${base}/api/hh/proactive/search`, { method: 'POST', headers: auth,
     body: JSON.stringify({ vacancy_id: vacancyId }) })).status, 401, 'POST requires same public origin');
   assert.equal((await fetch(`${base}/api/hh/proactive/search`, { method: 'POST', headers: {
