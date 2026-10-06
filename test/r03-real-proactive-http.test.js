@@ -46,7 +46,7 @@ test('opt-in real page and API use one trusted profile/vacancy feed; HTML escape
   assert.equal(api.ok, true);
   assert.equal(api.freshness, 'latest_run_incomplete');
   assert.deepEqual(api.candidates, result.items);
-  const pageResponse = await fetch(base + `/hh/proactive?vacancy_id=${vacancyId}`, { headers });
+  const pageResponse = await fetch(base + `/hh/proactive?vacancy_id=${vacancyId}&list=starred`, { headers });
   const page = await pageResponse.text();
   assert.equal(pageResponse.status, 200);
   assert.match(page, /Последний поиск не завершён/);
