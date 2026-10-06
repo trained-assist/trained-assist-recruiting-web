@@ -147,9 +147,10 @@ function validReportAction(value) {
   return isPlainObject(value) && Object.keys(value).sort().join(',') === 'expectedReportRevision' && isReportRevision(value.expectedReportRevision);
 }
 
-export function createRecruitingServer({ resolveTrustedProfileContext = () => null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, candidateSearchJobStore = null, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), scheduleLeaseMs = 5 * 60_000, maxCandidateSearchJobs = 100, publicationAdapter, realProactiveFeed = null, resolveRealVacancyOwnership = null, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
+export function createRecruitingServer({ resolveTrustedProfileContext = () => null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, candidateSearchJobStore = null, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), scheduleLeaseMs = 5 * 60_000, maxCandidateSearchJobs = 100, publicationAdapter, realProactiveFeed = null, realProactiveActions = null, resolveRealVacancyOwnership = null, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
   if (realProactiveFeed !== null && (typeof realProactiveFeed.read !== 'function' || typeof resolveRealVacancyOwnership !== 'function'))
     throw new TypeError('real proactive feed and trusted vacancy ownership ports required');
+  if (realProactiveActions !== null && realProactiveFeed === null) throw new TypeError('real actions require real feed mode');
   const realProactiveRead = realProactiveFeed === null ? null : createRealProactiveRead({
     feed: realProactiveFeed, resolveVacancyOwnership: resolveRealVacancyOwnership });
   const candidateSearchJobs = candidateSearchJobStore ?? createCandidateSearchJobs({ provider: candidateSearchProvider, maxJobs: maxCandidateSearchJobs });
@@ -243,7 +244,43 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
         status = 403;
         body = { error: 'search_scope_required' };
       } else if (realProactiveFeed !== null) {
-        if ((path !== '/hh/proactive' && path !== '/api/hh/proactive/candidates') || (req.method !== 'GET' && req.method !== 'HEAD')) {
+        if (path !== '/hh/proactive' && path !== '/api/hh/proactive/candidates' && realProactiveActions !== null) {
+          let actionResult = null;
+          const queryVacancy = url.searchParams.get('vacancy_id');
+          const validQuery = [...url.searchParams.keys()].every(key => key === 'vacancy_id') &&
+            url.searchParams.getAll('vacancy_id').length === 1 && isRealProactiveVacancy(queryVacancy);
+          try {
+            if (req.method === 'GET' && path === '/api/hh/proactive/schedule' && validQuery)
+              actionResult = realProactiveActions.scheduleStatus(context, queryVacancy);
+            else if (req.method === 'GET' && path === '/api/hh/proactive/occurrences' && validQuery)
+              actionResult = realProactiveActions.occurrences(context, queryVacancy);
+            else if (req.method === 'GET' && /^\/api\/hh\/proactive\/manual-runs\/[A-Za-z0-9_-]{1,128}$/.test(path) && url.search === '')
+              actionResult = realProactiveActions.manualGet(context, path.split('/').at(-1));
+            else if (req.method === 'POST' && ['/api/hh/proactive/vacancy-state', '/api/hh/proactive/search',
+              '/api/hh/proactive/set-status', '/api/hh/proactive/comment'].includes(path)) {
+              const command = await readJsonBody(req);
+              if (path === '/api/hh/proactive/vacancy-state') actionResult = await realProactiveActions.updateSchedule(context, command);
+              else if (path === '/api/hh/proactive/search') actionResult = await realProactiveActions.manualStart(context, command, req.headers['idempotency-key']);
+              else if (command && typeof command === 'object' && !Array.isArray(command) &&
+                  isRealProactiveVacancy(command.vacancy_id) && isRealProactiveVacancy(command.candidate_id)) {
+                const allowed = path.endsWith('/comment')
+                  ? ['vacancy_id', 'candidate_id', 'expected_revision', 'comment', 'exclude_from_search']
+                  : ['vacancy_id', 'candidate_id', 'expected_revision', 'status'];
+                if (Object.keys(command).every(key => allowed.includes(key))) actionResult = realProactiveActions.updateCandidate(
+                  context, command.vacancy_id, command.candidate_id, {
+                    expected_revision: command.expected_revision,
+                    ...(path.endsWith('/comment') ? { comment: command.comment, exclude_from_search: command.exclude_from_search } : { status: command.status })
+                  });
+              }
+              actionResult ??= { status: 400, body: { error: 'invalid_candidate_action' } };
+            }
+          } catch (error) {
+            actionResult = { status: error.message === 'body_too_large' ? 413 : error instanceof SyntaxError ? 400 : 503,
+              body: { error: error.message === 'body_too_large' ? 'request_too_large' : error instanceof SyntaxError ? 'invalid_json' : 'real_action_unavailable' } };
+          }
+          status = actionResult?.status ?? 501;
+          body = actionResult?.body ?? { error: 'real_proactive_route_unavailable' };
+        } else if ((path !== '/hh/proactive' && path !== '/api/hh/proactive/candidates') || (req.method !== 'GET' && req.method !== 'HEAD')) {
           status = 501;
           body = { error: 'real_proactive_route_unavailable' };
         } else if ([...url.searchParams.keys()].some(key => key !== 'vacancy_id') ||
