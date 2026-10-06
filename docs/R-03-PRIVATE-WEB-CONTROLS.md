@@ -1,0 +1,7 @@
+# R-03 morning page controls
+
+The private `/hh/proactive` page now has active/starred/archived tabs, schedule status and enable/disable controls, a manual search button with durable run polling, and candidate status/comment/exclusion controls. It calls the same real SQLite-backed `/api/hh/proactive/*` handlers as the server contract. Candidate edits carry the feed's `review.revision`; stale edits return 409 and can be retried after a page refresh. Manual search uses a random idempotency key, stores an in-progress key/run ID in session storage and resumes polling after reload. The browser sends no legacy token in JSON and removes it from the address bar once the profile session cookie is established. The page has no inline executable script; its same-origin script and API are allowed by the page CSP. The server sets `Referrer-Policy: no-referrer`.
+
+Existing signed links with `list=active|starred|archived` keep their list view. The unsigned vacancy selector still passes private ownership checks. API and browser tests use invented candidates, cookies, request bodies and polling outcomes.
+
+The old page's prompt editor, individual AI score, manual candidate import, seen-ID import, and some vacancy flag operations are still absent. Legacy already-open tabs keep sending `username` and `token` in JSON and are not compatible with the new API. The page requires the new private runtime and does not authorize an nginx switch. Production still needs restored data, actual host secrets, HH/LLM canaries and a tested cutover/rollback.

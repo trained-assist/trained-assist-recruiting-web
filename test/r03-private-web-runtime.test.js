@@ -53,6 +53,10 @@ test('private web runtime accepts only exact old signed link then scopes session
   const cookie = pageResponse.headers.get('set-cookie');
   assert.match(cookie, /HttpOnly; Secure; SameSite=Strict/);
   const auth = { Cookie: cookie.split(';')[0] };
+  const scriptResponse = await fetch(`${base}/hh/proactive/app.js`, { headers: auth });
+  assert.equal(scriptResponse.status, 200);
+  assert.match(await scriptResponse.text(), /Idempotency-Key/);
+  assert.match(pageResponse.headers.get('content-security-policy'), /script-src 'self'/);
   const tamperedCookie = auth.Cookie.slice(0, -1) + (auth.Cookie.endsWith('0') ? '1' : '0');
   assert.equal((await fetch(`${base}/api/hh/proactive/candidates?vacancy_id=${vacancyId}`, {
     headers: { Cookie: tamperedCookie } })).status, 401);
@@ -106,5 +110,5 @@ test('private result page does not link to an imported non-HH URL', () => {
     total: 1, items: [{ title: 'Invented candidate', firstName: 'Invented', lastName: 'Person',
       area: 'Invented', atsScore: null, review: { status: 'active' }, comment: '',
       hhUrl: 'javascript:alert(1)' }] } });
-  assert.doesNotMatch(page, /javascript:|href=/);
+  assert.doesNotMatch(page, /javascript:|Резюме HH/);
 });
