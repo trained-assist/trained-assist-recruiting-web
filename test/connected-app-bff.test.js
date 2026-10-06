@@ -201,6 +201,9 @@ test('private proactive routes use the same BFF profile and command CSRF gate', 
   assert.equal(commands, 0);
   assert.equal((await request({ origin: publicOrigin, 'x-csrf-token': session.csrfToken })).status, 200);
   assert.equal(commands, 1);
+  current = { ...current, profileId: 'profile_demo_002' };
+  assert.equal((await fetch(candidateUrl, { headers: { cookie: appCookie } })).status, 401);
+  assert.equal(reads, 1, 'a switched profile cannot reuse the old browser session for candidate reads');
   current = null;
   assert.equal((await fetch(candidateUrl, { headers: { cookie: appCookie } })).status, 503);
   assert.equal(reads, 1);
