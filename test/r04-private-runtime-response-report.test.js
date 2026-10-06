@@ -26,6 +26,9 @@ const atsConfig = { vacancy_id: vacancyId, vacancy_title: 'Synthetic Platform En
   required: [], preferred: [], knockout: [] };
 const rawResume = { id: resumeId, title: 'Synthetic Platform Engineer', first_name: 'Синтетический',
   last_name: 'Кандидат', total_experience: { months: 60 }, area: { name: 'Тестовый регион' }, salary: null,
+  education: { primary: [{ name: 'Synthetic university', organization: 'Synthetic Institute', year: 2019 }],
+    additional: [{ name: 'Synthetic course', organization: 'Synthetic Academy', year: 2022 }] },
+  skill_set: [{ name: 'TypeScript' }], language: [{ name: 'English', level: { name: 'C1' } }],
   email: 'private@example.test', alternate_url: 'https://hh.ru/resume/' + resumeId,
   experience: [{ position: 'Platform Engineer', company: 'Synthetic Company', start: '2021', end: null }] };
 
@@ -149,7 +152,13 @@ test('private runtime composes accepted HH response source, encrypted draft, BFF
   const coldSource = await coldSourceResponse.json();
   assert.equal(coldSource.sourceKind, 'accepted_cold_search');
   assert.equal(coldSource.clientDraftFields.candidateName, 'Синтетический Кандидат');
+  assert.deepEqual(coldSource.clientDraftFields.education, ['Synthetic university, Synthetic Institute, 2019']);
+  assert.deepEqual(coldSource.clientDraftFields.courses, ['Synthetic course, Synthetic Academy, 2022']);
+  assert.deepEqual(coldSource.clientDraftFields.skills, ['TypeScript']);
+  assert.deepEqual(coldSource.clientDraftFields.languages, ['English — C1']);
+  assert.equal(coldSource.clientDraftFields.location, 'Тестовый регион');
   assert.equal(JSON.stringify(coldSource).includes('private@example.test'), false);
+  assert.equal(JSON.stringify(coldSource).includes('hh.ru/resume'), false);
   const coldCreate = await fetch(base + '/api/v1/ui/accepted-report-drafts', { method: 'POST',
     headers: { cookie: sessionCookie, origin, 'x-csrf-token': session.csrfToken,
       'content-type': 'application/json', 'Idempotency-Key': 'runtime-cold-search-report-001' },
@@ -171,6 +180,7 @@ test('private runtime composes accepted HH response source, encrypted draft, BFF
   const source = await sourceResponse.json();
   assert.equal(source.sourceKind, 'accepted_hh_response');
   assert.equal(source.clientDraftFields.candidateName, 'Синтетический Кандидат');
+  assert.deepEqual(source.clientDraftFields.skills, ['TypeScript']);
   assert.equal(JSON.stringify(source).includes('private@example.test'), false);
   assert.equal(JSON.stringify(source).includes('internalAssessment'), false);
 
