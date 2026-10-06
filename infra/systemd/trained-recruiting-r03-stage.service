@@ -1,0 +1,32 @@
+[Unit]
+Description=Trained Assist R-03 private disabled staging web
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=60s
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=trained-recruiting
+Group=trained-recruiting
+WorkingDirectory=/opt/trained-assist-recruiting-web/releases/5bbd27f711823d74620931e142eb00218b212ef5
+Environment=NODE_ENV=production
+UMask=0077
+LoadCredential=legacy_page_secret:/var/lib/trained-recruiting-r03-stage/secrets/legacy_page_secret
+LoadCredential=hh_encryption_key:/var/lib/trained-recruiting-r03-stage/secrets/hh_encryption_key
+LoadCredential=hh_client_id:/var/lib/trained-recruiting-r03-stage/secrets/hh_client_id
+LoadCredential=hh_client_secret:/var/lib/trained-recruiting-r03-stage/secrets/hh_client_secret
+LoadCredential=hh_user_agent:/var/lib/trained-recruiting-r03-stage/secrets/hh_user_agent
+LoadCredential=ladder_token:/var/lib/trained-recruiting-r03-stage/secrets/ladder_token
+ExecStart=/usr/bin/node /opt/trained-assist-recruiting-web/releases/5bbd27f711823d74620931e142eb00218b212ef5/src/r03-private-web-runtime.js --config /var/lib/trained-recruiting-r03-stage/config.json --secrets ${CREDENTIALS_DIRECTORY} --port 18083 --live-execution
+Restart=on-failure
+RestartSec=10s
+TimeoutStartSec=30s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/trained-recruiting-r03-stage
+
+[Install]
+WantedBy=multi-user.target
