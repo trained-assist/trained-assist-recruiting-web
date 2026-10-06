@@ -99,13 +99,17 @@ function parseEvaluationQuery(url) {
   return value;
 }
 
+const parsedJsonBody = Symbol('parsedJsonBody');
 async function readJsonBody(req, maxBytes = 16_384) {
-  let raw = '';
-  for await (const chunk of req) {
-    raw += chunk;
-    if (Buffer.byteLength(raw) > maxBytes) throw new Error('body_too_large');
-  }
-  return JSON.parse(raw);
+  req[parsedJsonBody] ??= (async () => {
+    let raw = '';
+    for await (const chunk of req) {
+      raw += chunk;
+      if (Buffer.byteLength(raw) > maxBytes) throw new Error('body_too_large');
+    }
+    return JSON.parse(raw);
+  })();
+  return req[parsedJsonBody];
 }
 
 function parseSearchResultPage(url) {
@@ -148,10 +152,20 @@ function validReportAction(value) {
   return isPlainObject(value) && Object.keys(value).sort().join(',') === 'expectedReportRevision' && isReportRevision(value.expectedReportRevision);
 }
 
-export function createRecruitingServer({ resolveTrustedProfileContext = () => null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, candidateSearchJobStore = null, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), scheduleLeaseMs = 5 * 60_000, maxCandidateSearchJobs = 100, publicationAdapter, realProactiveFeed = null, realProactiveActions = null, realProactivePrompt = null, realProactiveSeenImport = null, resolveRealVacancyOwnership = null, resolveRealDefaultVacancy = () => null, privateProactiveOnly = false, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
+export function createRecruitingServer({ resolveTrustedProfileContext = () => null, resolveLegacyOpenTab = null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, candidateSearchJobStore = null, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), scheduleLeaseMs = 5 * 60_000, maxCandidateSearchJobs = 100, publicationAdapter, realProactiveFeed = null, realProactiveActions = null, realProactivePrompt = null, realProactiveSeenImport = null, realProactiveAiScore = null, realProactiveManualCandidate = null, liveResponseRead = null, acceptedReportSourceRead = null, resolveRealVacancyOwnership = null, resolveRealDefaultVacancy = () => null, privateProactiveOnly = false, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
   if (realProactiveFeed !== null && (typeof realProactiveFeed.read !== 'function' || typeof resolveRealVacancyOwnership !== 'function'))
     throw new TypeError('real proactive feed and trusted vacancy ownership ports required');
   if (realProactiveActions !== null && realProactiveFeed === null) throw new TypeError('real actions require real feed mode');
+  if (realProactiveAiScore !== null && (realProactiveFeed === null || typeof realProactiveAiScore !== 'function'))
+    throw new TypeError('real AI score requires real feed mode');
+  if (realProactiveManualCandidate !== null && (realProactiveFeed === null || typeof realProactiveManualCandidate !== 'function'))
+    throw new TypeError('manual candidate requires real feed mode');
+  if (liveResponseRead !== null && typeof liveResponseRead !== 'function')
+    throw new TypeError('live response read port required');
+  if (acceptedReportSourceRead !== null && typeof acceptedReportSourceRead !== 'function')
+    throw new TypeError('report source read port required');
+  if (resolveLegacyOpenTab !== null && (!privateProactiveOnly || typeof resolveLegacyOpenTab !== 'function'))
+    throw new TypeError('legacy open-tab resolver requires private proactive mode');
   const realProactiveRead = realProactiveFeed === null ? null : createRealProactiveRead({
     feed: realProactiveFeed, resolveVacancyOwnership: resolveRealVacancyOwnership });
   const candidateSearchJobs = candidateSearchJobStore ?? createCandidateSearchJobs({ provider: candidateSearchProvider, maxJobs: maxCandidateSearchJobs });
@@ -228,6 +242,52 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
       body = manifest;
     } else if (path === '/api/v1/capabilities') {
       body = { serviceId: manifest.serviceId, domainApiVersion: manifest.domainApiVersion, capabilities };
+    } else if (path === '/api/v1/ui/accepted-report-source' && acceptedReportSourceRead !== null) {
+      let context;
+      try { context = await resolveTrustedProfileContext(req, url, res); }
+      catch { status = 503; body = { error: 'trusted_profile_unavailable' }; }
+      if (status === 200 && (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes))) {
+        status = 401; body = { error: 'trusted_profile_context_required' };
+      } else if (status === 200 && !context.scopes.includes('recruiting.reports.read')) {
+        status = 403; body = { error: 'report_scope_required' };
+      } else if (status === 200) {
+        const keys = [...url.searchParams.keys()];
+        const vacancyId = url.searchParams.get('vacancyId');
+        const candidateId = url.searchParams.get('candidateId');
+        if (keys.length !== 2 || new Set(keys).size !== keys.length ||
+            !keys.every(key => ['vacancyId', 'candidateId'].includes(key)) ||
+            !isRealProactiveVacancy(vacancyId) || !isRealProactiveVacancy(candidateId)) {
+          status = 400; body = { error: 'invalid_report_source_request' };
+        } else {
+          try {
+            const result = await acceptedReportSourceRead(context, { vacancyId, candidateId });
+            status = result.status; body = result.body;
+          } catch { status = 503; body = { error: 'report_source_unavailable' }; }
+        }
+      }
+    } else if (path === '/api/v1/ui/hh-responses' && liveResponseRead !== null) {
+      let context;
+      try { context = await resolveTrustedProfileContext(req, url, res); }
+      catch { status = 503; body = { error: 'trusted_profile_unavailable' }; }
+      if (status === 200 && (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes))) {
+        status = 401; body = { error: 'trusted_profile_context_required' };
+      } else if (status === 200 && !context.scopes.includes('recruiting.responses.read')) {
+        status = 403; body = { error: 'response_scope_required' };
+      } else if (status === 200) {
+        const keys = [...url.searchParams.keys()];
+        const rawPage = url.searchParams.get('page');
+        const vacancyId = url.searchParams.get('vacancyId');
+        if (keys.some(key => !['vacancyId', 'page'].includes(key)) || new Set(keys).size !== keys.length ||
+            typeof vacancyId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(vacancyId) ||
+            rawPage !== null && !/^(?:0|[1-9][0-9]{0,2})$/.test(rawPage)) {
+          status = 400; body = { error: 'invalid_response_request' };
+        } else {
+          try {
+            const result = await liveResponseRead(context, { vacancyId, page: rawPage === null ? 0 : Number(rawPage) });
+            status = result.status; body = result.body;
+          } catch { status = 503; body = { error: 'response_read_unavailable' }; }
+        }
+      }
     } else if (path === '/api/v1/vacancies') {
       if (url.search !== '') {
         status = 400;
@@ -236,8 +296,35 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
         body = { apiVersion: 'v1', items: vacancies };
       }
     } else if (isProactivePath) {
+      // Existing tabs still send the old signed JSON shape. Return a visible
+      // migration instruction after checking its identity and explicit vacancy;
+      // never execute a stale write under a freshly minted session cookie.
+      const legacyPostPaths = new Set(['/api/hh/proactive/ai-score', '/api/hh/proactive/search',
+        '/api/hh/proactive/prompt', '/api/hh/proactive/comment', '/api/hh/proactive/vacancy-state',
+        '/api/hh/proactive/set-status', '/api/hh/proactive/import-seen', '/api/hh/proactive/add-manual']);
+      if (resolveLegacyOpenTab && req.method === 'POST' && legacyPostPaths.has(path) && url.search === '') {
+        try {
+          const command = await readJsonBody(req);
+          const legacyContext = resolveLegacyOpenTab(req, command);
+          if (legacyContext) {
+            if (command.vacancy_id !== undefined &&
+                (!isRealProactiveVacancy(command.vacancy_id) ||
+                  !resolveRealVacancyOwnership(legacyContext, command.vacancy_id))) {
+              status = 404;
+              body = { error: 'vacancy_not_found' };
+            } else {
+              status = 409;
+              body = { error: 'Страница обновилась. Перезагрузите её и повторите действие.',
+                code: 'legacy_page_reload_required', reload_url: '/hh/proactive' };
+            }
+          }
+        } catch (error) {
+          status = error.message === 'body_too_large' ? 413 : error instanceof SyntaxError ? 400 : 503;
+          body = { error: status === 413 ? 'request_too_large' : status === 400 ? 'invalid_json' : 'legacy_page_unavailable' };
+        }
+      }
       let context;
-      try { context = await resolveTrustedProfileContext(req, url, res); }
+      try { if (status === 200) context = await resolveTrustedProfileContext(req, url, res); }
       catch { status = 503; body = { error: 'trusted_profile_unavailable' }; }
       if (status !== 200) {
         // A failing trusted resolver must not enter a profile-scoped handler.
@@ -279,6 +366,36 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
             } catch (error) {
               status = error.message === 'body_too_large' ? 413 : error instanceof SyntaxError ? 400 : 503;
               body = { error: status === 413 ? 'request_too_large' : status === 400 ? 'invalid_json' : 'seen_import_unavailable' };
+            }
+          }
+        } else if (path === '/api/hh/proactive/ai-score' && realProactiveAiScore !== null) {
+          if (req.method !== 'POST' || url.search !== '') {
+            status = 405;
+            body = { error: 'method_not_allowed' };
+            res.setHeader('Allow', 'POST');
+          } else {
+            try {
+              const result = await realProactiveAiScore(context, await readJsonBody(req));
+              status = result.status;
+              body = result.body;
+            } catch (error) {
+              status = error.message === 'body_too_large' ? 413 : error instanceof SyntaxError ? 400 : 503;
+              body = { error: status === 413 ? 'request_too_large' : status === 400 ? 'invalid_json' : 'assessment_unavailable' };
+            }
+          }
+        } else if (path === '/api/hh/proactive/add-manual' && realProactiveManualCandidate !== null) {
+          if (req.method !== 'POST' || url.search !== '') {
+            status = 405;
+            body = { error: 'method_not_allowed' };
+            res.setHeader('Allow', 'POST');
+          } else {
+            try {
+              const result = await realProactiveManualCandidate(context, await readJsonBody(req));
+              status = result.status;
+              body = result.body;
+            } catch (error) {
+              status = error.message === 'body_too_large' ? 413 : error instanceof SyntaxError ? 400 : 503;
+              body = { error: status === 413 ? 'request_too_large' : status === 400 ? 'invalid_json' : 'manual_candidate_unavailable' };
             }
           }
         } else if (path !== '/hh/proactive' && path !== '/api/hh/proactive/candidates' && realProactiveActions !== null) {

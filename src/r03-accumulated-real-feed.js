@@ -36,11 +36,12 @@ export function createR03AccumulatedRealFeed({ scheduleRepository, candidateStat
       acceptedScheduledJobIds: accepted.map(row => row.jobId), acceptedManualJobIds: acceptedManual.map(row => row.jobId) });
     const latestRunAt = occurrences.reduce((latest, row) => row.scheduledAt > latest ? row.scheduledAt : latest, '');
     const latestAcceptedAt = accepted.reduce((latest, row) => row.scheduledAt > latest ? row.scheduledAt : latest, '');
-    const freshness = latestRunAt > latestAcceptedAt ? 'latest_run_incomplete' : items.length ? 'latest_completed' : 'never_run';
+    const hasAcceptedSearch = accepted.length > 0 || acceptedManual.length > 0;
+    const freshness = latestRunAt > latestAcceptedAt ? 'latest_run_incomplete' : hasAcceptedSearch ? 'latest_completed' : 'never_run';
     const resultRevision = createHash('sha256').update(JSON.stringify({ profileId, vacancyId, accepted: accepted.map(row => row.jobId),
       acceptedManual: acceptedManual.map(row => row.jobId),
       latestRunAt, items })).digest('hex').slice(0, 24);
-    return { status: items.length ? 'completed' : 'never_run', freshness, total: items.length, resultRevision, items };
+    return { status: hasAcceptedSearch ? 'completed' : 'never_run', freshness, total: items.length, resultRevision, items };
   }
   function update(trustedContext, vacancyId, candidateId, command) {
     const profileId = scope(trustedContext, vacancyId);

@@ -79,6 +79,10 @@ export class SqliteRealHhCandidateState {
     CREATE TABLE IF NOT EXISTS real_hh_seen (
       profile_id TEXT NOT NULL, vacancy_id TEXT NOT NULL, resume_id TEXT NOT NULL,
       first_seen_at TEXT NOT NULL, PRIMARY KEY (profile_id, vacancy_id, resume_id));
+    CREATE TABLE IF NOT EXISTS real_hh_manual_candidate (
+      profile_id TEXT NOT NULL, vacancy_id TEXT NOT NULL, resume_id TEXT NOT NULL,
+      projection TEXT NOT NULL, added_at TEXT NOT NULL,
+      PRIMARY KEY (profile_id, vacancy_id, resume_id));
     CREATE TABLE IF NOT EXISTS real_hh_snapshot (
       profile_id TEXT NOT NULL, vacancy_id TEXT NOT NULL, job_id TEXT NOT NULL,
       result_version TEXT NOT NULL, searched_at TEXT NOT NULL, criteria_revision TEXT NOT NULL,
@@ -114,6 +118,13 @@ export class SqliteRealHhCandidateState {
     this.insertCandidate = this.db.prepare(`INSERT INTO real_hh_candidate(profile_id,resume_id,latest_projection,first_found_at) VALUES(?,?,?,?)
       ON CONFLICT(profile_id,resume_id) DO UPDATE SET latest_projection=excluded.latest_projection`);
     this.insertSeen = this.db.prepare('INSERT OR IGNORE INTO real_hh_seen(profile_id,vacancy_id,resume_id,first_seen_at) VALUES(?,?,?,?)');
+    this.insertManualCandidate = this.db.prepare(`INSERT OR IGNORE INTO real_hh_manual_candidate
+      (profile_id,vacancy_id,resume_id,projection,added_at) VALUES(?,?,?,?,?)`);
+    this.manualCandidates = this.db.prepare(`SELECT resume_id,projection,added_at AS searched_at,
+      NULL AS job_id,'manual_add' AS source,NULL AS criteria_revision,NULL AS source_revision
+      FROM real_hh_manual_candidate WHERE profile_id=? AND vacancy_id=?`);
+    this.manualCandidateById = this.db.prepare(`SELECT 1 AS present FROM real_hh_manual_candidate
+      WHERE profile_id=? AND vacancy_id=? AND resume_id=?`);
     this.insertSnapshot = this.db.prepare(`INSERT INTO real_hh_snapshot(profile_id,vacancy_id,job_id,result_version,searched_at,criteria_revision,source_revision,source,input_digest,result_revision,total_collected,candidate_count,new_count)
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`);
     this.insertMember = this.db.prepare('INSERT INTO real_hh_snapshot_member(profile_id,vacancy_id,job_id,position,resume_id,projection) VALUES(?,?,?,?,?,?)');
@@ -222,6 +233,23 @@ export class SqliteRealHhCandidateState {
     this.assertScope(profileId, vacancyId);
     return this.seenCount.get(profileId, vacancyId).count;
   }
+  addManualCandidate({ profileId, vacancyId, candidate, addedAt }) {
+    this.assertScope(profileId, vacancyId);
+    validateCandidate(candidate, vacancyId);
+    if (!isoTime(addedAt)) throw new TypeError('invalid_manual_candidate_time');
+    return this.db.transaction(() => {
+      const added = this.insertManualCandidate.run(profileId, vacancyId, candidate.id,
+        JSON.stringify(candidate), addedAt).changes === 1;
+      if (added) this.insertCandidate.run(profileId, candidate.id, JSON.stringify(candidate), addedAt);
+      this.onStep('manual_candidate');
+      return { added, candidateId: candidate.id };
+    }).immediate();
+  }
+  hasManualCandidate(profileId, vacancyId, candidateId) {
+    this.assertScope(profileId, vacancyId);
+    if (!safeId(candidateId)) throw new TypeError('invalid_manual_candidate_id');
+    return Boolean(this.manualCandidateById.get(profileId, vacancyId, candidateId));
+  }
   importSeen({ profileId, vacancyId, ids, importedAt }) {
     this.assertScope(profileId, vacancyId);
     if (!Array.isArray(ids) || ids.length < 1 || ids.length > 500 ||
@@ -255,6 +283,22 @@ export class SqliteRealHhCandidateState {
       if (pending.length === limit) break;
     }
     return pending;
+  }
+  assessmentForLatest({ profileId, vacancyId, jobId, candidateId, at = new Date().toISOString() }) {
+    this.assertScope(profileId, vacancyId);
+    if (![jobId, candidateId].every(safeId) || !isoTime(at)) throw new TypeError('invalid_assessment_target');
+    const snapshot = this.latestSnapshot(profileId, vacancyId);
+    if (!snapshot || snapshot.jobId !== jobId) return { kind: 'stale' };
+    const row = this.memberById.get(profileId, vacancyId, jobId, candidateId);
+    if (!row) return { kind: 'not_found' };
+    const candidate = JSON.parse(row.projection);
+    const inputRevision = this.assessmentInputRevision(snapshot, candidate);
+    const prior = this.assessmentById.get(profileId, vacancyId, jobId, candidateId);
+    if (prior?.input_revision === inputRevision)
+      return { kind: 'scored', assessment: JSON.parse(prior.assessment) };
+    const failure = this.assessmentFailure.get(profileId, vacancyId, candidateId, inputRevision);
+    if (failure?.retry_at > at) return { kind: 'retry_later', retryAt: failure.retry_at };
+    return { kind: 'pending', snapshot, candidate, inputRevision };
   }
   recordAssessmentFailure({ profileId, vacancyId, jobId, candidateId, inputRevision, failedAt }) {
     this.assertScope(profileId, vacancyId);
@@ -322,13 +366,15 @@ export class SqliteRealHhCandidateState {
       ON m.profile_id=s.profile_id AND m.vacancy_id=s.vacancy_id AND m.job_id=s.job_id
       WHERE s.profile_id=? AND s.vacancy_id=? AND (${scheduledClause} OR ${manualClause})
       ORDER BY s.searched_at DESC,s.job_id DESC,m.position LIMIT 50001`).all(profileId, vacancyId, ...scheduled, ...manual);
-    if (rows.length > 50000) throw new Error('real_hh_feed_capacity_exceeded');
+    const manualRows = this.manualCandidates.all(profileId, vacancyId);
+    if (rows.length + manualRows.length > 50000) throw new Error('real_hh_feed_capacity_exceeded');
     const byResume = new Map();
-    for (const row of rows) {
+    for (const row of [...rows, ...manualRows].sort((a, b) => b.searched_at.localeCompare(a.searched_at) ||
+      String(b.job_id ?? '').localeCompare(String(a.job_id ?? '')))) {
       if (byResume.has(row.resume_id)) continue;
       const candidate = JSON.parse(row.projection);
       const snapshot = { criteriaRevision: row.criteria_revision, sourceRevision: row.source_revision };
-      const assessmentRow = this.assessmentById.get(profileId, vacancyId, row.job_id, row.resume_id);
+      const assessmentRow = row.job_id === null ? null : this.assessmentById.get(profileId, vacancyId, row.job_id, row.resume_id);
       const assessment = assessmentRow?.input_revision === this.assessmentInputRevision(snapshot, candidate)
         ? JSON.parse(assessmentRow.assessment) : null;
       const overlay = this.overlayById.get(profileId, vacancyId, row.resume_id);

@@ -12,13 +12,15 @@ const safeResumeUrl = value => {
 export function renderRealProactivePage({ profileId = '', vacancyId, feed, listView = 'active' }) {
   if (!['active', 'starred', 'archived'].includes(listView)) throw new TypeError('invalid_list_view');
   const freshness = feed.freshness === 'latest_run_incomplete' ? 'Последний поиск не завершён; показаны ранее принятые кандидаты.' :
+    feed.status === 'never_run' && feed.total > 0 ? 'Принятых результатов поиска пока нет; показаны кандидаты, добавленные вручную.' :
     feed.status === 'never_run' ? 'Принятых результатов пока нет.' : 'Показаны принятые результаты поиска.';
   const counts = { active: 0, starred: 0, archived: 0 };
   for (const item of feed.items) counts[item.review?.status ?? 'active']++;
   const cards = feed.items.filter(item => (item.review?.status ?? 'active') === listView)
-    .map(item => `<article data-candidate-id="${escapeHtml(item.id)}" data-review-revision="${escapeHtml(item.review?.revision ?? 0)}"><h2>${escapeHtml(item.title)}</h2>
+    .map(item => `<article data-candidate-id="${escapeHtml(item.id)}" data-job-id="${escapeHtml(item.jobId ?? '')}" data-review-revision="${escapeHtml(item.review?.revision ?? 0)}"><h2>${escapeHtml(item.title)}</h2>
     <p>${escapeHtml(item.firstName)} ${escapeHtml(item.lastName)} · ${escapeHtml(item.area)}</p>
     <p>ATS: ${item.atsScore === null ? 'ожидает оценки' : escapeHtml(item.atsScore)} · ${escapeHtml(item.review.status)}</p>
+    ${item.jobId ? '<button type="button" class="score-now">Оценить ATS сейчас</button><span class="score-result" role="status"></span>' : ''}
     ${item.comment ? `<p class="comment">${escapeHtml(item.comment)}</p>` : ''}
     ${safeResumeUrl(item.hhUrl) ? `<a href="${escapeHtml(safeResumeUrl(item.hhUrl))}" target="_blank" rel="noopener noreferrer">Резюме HH</a>` : ''}
     <div class="controls"><label>Статус <select class="candidate-status"><option value="active"${item.review?.status === 'active' ? ' selected' : ''}>Активный</option><option value="starred"${item.review?.status === 'starred' ? ' selected' : ''}>Избранный</option><option value="archived"${item.review?.status === 'archived' ? ' selected' : ''}>Архив</option></select></label>
@@ -55,5 +57,9 @@ nav a{margin-right:1rem}button{cursor:pointer}#action-status{min-height:1.5rem}
 <textarea id="seen-ids" rows="4" maxlength="16000" aria-label="Уже просмотренные резюме"></textarea>
 <button id="seen-import" type="button">Отметить просмотренными</button>
 <p id="seen-status" role="status" aria-live="polite"></p></section>
+<section><h2>Добавить резюме вручную</h2><p>Укажите ID резюме или ссылку HH. Кандидат будет привязан к этой вакансии.</p>
+<input id="manual-candidate-input" type="text" maxlength="512" aria-label="ID или ссылка HH на резюме">
+<button id="manual-candidate-add" type="button">Добавить кандидата</button>
+<p id="manual-candidate-status" role="status" aria-live="polite"></p></section>
 <nav aria-label="Списки кандидатов">${tabs}</nav><p>Всего: ${feed.total}</p>${cards}</main></body></html>`;
 }
