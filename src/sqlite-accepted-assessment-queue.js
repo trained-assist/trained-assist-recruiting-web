@@ -277,8 +277,14 @@ export class SqliteAcceptedAssessmentQueue {
         else totals.unknown++;
         continue;
       }
-      if (this.finish(row, owner, 'completed', assessment)) totals.written++;
-      else totals.unknown++;
+      try {
+        if (this.finish(row, owner, 'completed', assessment)) totals.written++;
+        else totals.unknown++;
+      } catch {
+        // A malformed response is still post-dispatch. Hold it for review.
+        this.finish(row, owner, 'outcome_unknown');
+        totals.unknown++;
+      }
     }
     totals.budgetRemaining = this.remainingDispatches();
     return totals;

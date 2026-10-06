@@ -9,6 +9,7 @@ export async function runAcceptedAssessmentWorker({ queue, scopes, workerId,
   const deadlineMs = clock().getTime() + maxDurationMs;
   const totals = { scopes: scopes.length, claimed: 0, written: 0, deferred: 0,
     blocked: 0, unknown: 0, inserted: 0, acceptedJobs: 0 };
+  const acceptedByScope = new Map();
   const due = [...scopes];
   while (due.length && queue.remainingDispatches() > 0 && clock().getTime() + 50_000 <= deadlineMs) {
     const scope = due.shift();
@@ -16,9 +17,10 @@ export async function runAcceptedAssessmentWorker({ queue, scopes, workerId,
     const result = await queue.tick(scope.profileId, scope.vacancyId, workerId, quota, { deadlineMs });
     for (const field of ['claimed', 'written', 'deferred', 'blocked', 'unknown', 'inserted'])
       totals[field] += result[field];
-    totals.acceptedJobs += result.acceptedJobs;
+    acceptedByScope.set(`${scope.profileId}\0${scope.vacancyId}`, result.acceptedJobs);
     if (result.claimed) due.push(scope);
   }
+  totals.acceptedJobs = [...acceptedByScope.values()].reduce((sum, count) => sum + count, 0);
   return { status: totals.unknown || totals.blocked ? 'degraded' : 'completed',
     ...totals, budgetRemaining: queue.remainingDispatches() };
 }

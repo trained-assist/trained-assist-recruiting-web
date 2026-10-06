@@ -116,6 +116,17 @@ test('expired lease is unknown without an automatic second model call', async t 
   assert.equal(read.assessmentBlockedCount, 1);
 });
 
+test('invalid post-dispatch assessment is quarantined without a second model call', async t => {
+  const f = fixture(t);
+  f.add(profileId, 'accepted_job', '2026-10-06T06:00:00.000Z', 'inventedresume');
+  let calls = 0;
+  const queue = f.open(async () => { calls++; return { score: 8 }; });
+  assert.equal((await queue.tick(profileId, vacancyId, 'worker_a', 1)).unknown, 1);
+  assert.equal(queue.statusFor(profileId, vacancyId, 'accepted_job', 'inventedresume'), 'outcome_unknown');
+  assert.equal((await queue.tick(profileId, vacancyId, 'worker_b', 1)).claimed, 0);
+  assert.equal(calls, 1);
+});
+
 test('stale criteria and uncertain evaluator failure become attention without model redispatch', async t => {
   const f = fixture(t);
   f.add(profileId, 'old_criteria_job', '2026-10-06T06:00:00.000Z', 'inventedstale');
