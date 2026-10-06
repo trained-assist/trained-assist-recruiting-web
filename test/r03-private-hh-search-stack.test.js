@@ -10,6 +10,9 @@ import { R03LegacyScheduleActivation } from '../src/r03-legacy-schedule-activati
 import { createPrivateHhSearchStack } from '../src/r03-private-hh-search-stack.js';
 import { createHhQueryGenerator } from '../src/r03-hh-query-generator.js';
 import { createServiceLadderChat } from '../src/r03-service-ladder-chat.js';
+import { createFreeLadderChat } from '../src/r03-free-ladder-chat.js';
+import { createHhAssessmentEvaluator } from '../src/r03-hh-assessment-evaluator.js';
+import { runAcceptedMorningScoringTick } from '../src/r03-morning-scoring.js';
 
 const profileId = 'profile_invented_001';
 const vacancyId = 'vacancy_invented_001';
@@ -45,11 +48,16 @@ test('imported schedule, private profile and credential produce a durable mornin
   const isVacancyOwned = (profile, vacancy) => profile === profileId && vacancy === vacancyId;
   let now = '2026-10-06T00:00:00.000Z';
   const clock = () => new Date(now);
-  let hhCalls = 0, oauthCalls = 0, queryCalls = 0;
+  let hhCalls = 0, oauthCalls = 0, queryCalls = 0, scoreCalls = 0;
   const fetchImpl = async (url, options) => {
     if (url === 'https://llm-ladder.trainedassist.store/v1/chat/completions') {
-      queryCalls++;
       assert.equal(options.headers.Authorization, 'Bearer invented_service_token');
+      if (JSON.parse(options.body).model === 'free') {
+        scoreCalls++;
+        return { ok: true, json: async () => ({ choices: [{ message: {
+          content: '{"score":8,"knockout_failed":[]}' } }] }) };
+      }
+      queryCalls++;
       return { ok: true, json: async () => ({ choices: [{ message: {
         content: '["Вымышленный инженер"]' } }] }) };
     }
@@ -105,6 +113,16 @@ test('imported schedule, private profile and credential produce a durable mornin
   const secondPage = stack.worker.morningResults(context, vacancyId, { cursor: morning.nextCursor });
   assert.equal(secondPage.items.length, 50);
   assert.equal(new Set([...morning.items, ...secondPage.items].map(item => item.id)).size, 100);
+  const evaluate = createHhAssessmentEvaluator({ loadSearchPlan: stack.loadSearchPlan,
+    chat: createFreeLadderChat({ loadToken: async () => 'invented_service_token', fetchImpl }) });
+  const scored = await runAcceptedMorningScoringTick({ worker: stack.worker, state: candidateState,
+    trustedContext: context, vacancyId, evaluate,
+    currentCriteriaRevision: async () => (await stack.loadSearchPlan(profileId, vacancyId)).criteriaRevision,
+    limit: 10 });
+  assert.equal(scored.status, 'processed');
+  assert.equal(scored.written, 10);
+  assert.equal(scoreCalls, 10);
+  assert.equal(stack.worker.morningResults(context, vacancyId).items.filter(item => item.atsScore === 8).length, 10);
   assert.equal((await stack.worker.tick('worker_repeat')).claimed, 0);
   assert.equal(hhCalls, 3);
   assert.equal(stack.worker.morningResults({ profileId: 'other_profile', scopes: context.scopes }, vacancyId).status, 'never_run');
