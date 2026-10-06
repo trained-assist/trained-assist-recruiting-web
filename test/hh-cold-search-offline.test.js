@@ -103,7 +103,7 @@ test('multiple HH pages per query commit together and a later page failure commi
       const page = Number(new URL(url).searchParams.get('page'));
       calls.push(page);
       return page === 1 && failSecondPage ? response(503) : response(200, {
-        items: [item(`syntheticpage${page}`)], pages: 2, found: 2
+        items: Array.from({ length: 50 }, (_, n) => item(`syntheticpage${page}resume${n}`)), pages: 2, found: 100
       });
     }, sleep: async () => {}
   });
@@ -116,8 +116,8 @@ test('multiple HH pages per query commit together and a later page failure commi
   assert.equal(state.seenTotal(profileId, vacancyId), 0);
   failSecondPage = false;
   const completed = await run();
-  assert.equal(completed.snapshot.candidateCount, 2);
-  assert.equal(state.seenTotal(profileId, vacancyId), 2);
+  assert.equal(completed.snapshot.candidateCount, 100);
+  assert.equal(state.seenTotal(profileId, vacancyId), 100);
 });
 
 test('four cached queries use explicit numeric HH area instead of ATS default', async t => {

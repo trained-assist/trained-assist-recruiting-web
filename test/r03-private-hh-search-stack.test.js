@@ -59,8 +59,9 @@ test('imported schedule, private profile and credential produce a durable mornin
     const urlObject = new URL(url);
     assert.deepEqual(urlObject.searchParams.getAll('area'), ['1']);
     const page = Number(urlObject.searchParams.get('page'));
-    return { status: 200, ok: true, json: async () => ({ items: [resume(`inventedresume${page}`)],
-      pages: 2, found: 2 }) };
+    return { status: 200, ok: true, json: async () => ({
+      items: Array.from({ length: 50 }, (_, n) => resume(`inventedpage${page}resume${n}`)),
+      pages: 2, found: 100 }) };
   };
   const stack = createPrivateHhSearchStack({ resolveProfileBinding, isVacancyOwned,
     candidateState, scheduleRepository: repository, generateQueries: async () => {
@@ -89,8 +90,12 @@ test('imported schedule, private profile and credential produce a durable mornin
   assert.equal(hhCalls, 3, 'one 401 and two successful result pages');
   const morning = stack.worker.morningResults(context, vacancyId);
   assert.equal(morning.freshness, 'latest_completed');
-  assert.deepEqual(morning.items.map(item => item.id), ['inventedresume0', 'inventedresume1']);
-  assert.equal(candidateState.seenTotal(profileId, vacancyId), 2);
+  assert.equal(morning.snapshot.candidateCount, 100);
+  assert.equal(morning.items.length, 50);
+  assert.equal(candidateState.seenTotal(profileId, vacancyId), 100);
+  const secondPage = stack.worker.morningResults(context, vacancyId, { cursor: morning.nextCursor });
+  assert.equal(secondPage.items.length, 50);
+  assert.equal(new Set([...morning.items, ...secondPage.items].map(item => item.id)).size, 100);
   assert.equal((await stack.worker.tick('worker_repeat')).claimed, 0);
   assert.equal(hhCalls, 3);
   assert.equal(stack.worker.morningResults({ profileId: 'other_profile', scopes: context.scopes }, vacancyId).status, 'never_run');
