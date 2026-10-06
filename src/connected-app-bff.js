@@ -79,10 +79,11 @@ export function createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins, 
       redirectUri !== `${publicOrigin}/auth/connected/callback` ||
       !store || !['putPending', 'takePending', 'putSession', 'getSession', 'deleteSession'].every(method => typeof store[method] === 'function') ||
       typeof exchangeCode !== 'function' || typeof introspectToken !== 'function' || typeof clock !== 'function' ||
-      !Array.isArray(scopes) || scopes.length < 1 || scopes.some(scope => !['recruiting.responses.read', 'recruiting.reports.read', 'recruiting.candidateSearch', 'recruiting.assignment.review'].includes(scope)))
+      !Array.isArray(scopes) || scopes.length < 1 || scopes.some(scope => !['recruiting.responses.read', 'recruiting.responses.conversation.open', 'recruiting.reports.read', 'recruiting.candidateSearch', 'recruiting.assignment.review'].includes(scope)))
     throw new TypeError('connected_app_bff_ports_required');
 
-  const allowedScopes = new Set([...scopes, 'recruiting.candidateSearch', 'recruiting.responses.read', 'recruiting.assignment.review']);
+  const allowedScopes = new Set([...scopes, 'recruiting.candidateSearch', 'recruiting.responses.read',
+    'recruiting.responses.conversation.open', 'recruiting.assignment.review']);
   const inspect = async token => {
     let claims;
     try { claims = await introspectToken(token); }
@@ -133,16 +134,24 @@ export function createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins, 
         const from = url.searchParams.get('from');
         const fromProactive = from === 'proactive';
         const fromResponses = from === 'responses';
+        const fromConversation = from === 'conversation';
         const fromAssignment = from === 'assignment';
         const vacancyId = url.searchParams.get('vacancy_id');
+        const negotiationId = url.searchParams.get('negotiation_id');
         if (new Set(entries).size !== entries.length ||
-            (entries.length !== 0 && (!(fromProactive || fromResponses || fromAssignment) ||
-              entries.some(key => !['from', 'vacancy_id'].includes(key)) ||
-              vacancyId !== null && !safeId(vacancyId)))) {
+            (entries.length !== 0 && (!(fromProactive || fromResponses || fromConversation || fromAssignment) ||
+              entries.some(key => !['from', 'vacancy_id', 'negotiation_id'].includes(key)) ||
+              vacancyId !== null && !safeId(vacancyId) ||
+              fromConversation && (!safeId(vacancyId) || !safeId(negotiationId)) ||
+              !fromConversation && negotiationId !== null))) {
           respond(res, 400, { error: 'invalid_auth_request' }); return true;
         }
-        const returnPath = `${fromAssignment ? '/hh/assignment' : fromResponses ? '/hh/responses' : '/hh/proactive'}${vacancyId ? `?vacancy_id=${encodeURIComponent(vacancyId)}` : ''}`;
-        const requestedScopes = fromAssignment ? ['recruiting.assignment.review'] : fromResponses ? ['recruiting.responses.read'] : ['recruiting.candidateSearch'];
+        const returnPath = fromConversation
+          ? `/hh/response-conversation?vacancy_id=${encodeURIComponent(vacancyId)}&negotiation_id=${encodeURIComponent(negotiationId)}`
+          : `${fromAssignment ? '/hh/assignment' : fromResponses ? '/hh/responses' : '/hh/proactive'}${vacancyId ? `?vacancy_id=${encodeURIComponent(vacancyId)}` : ''}`;
+        const requestedScopes = fromAssignment ? ['recruiting.assignment.review'] : fromConversation
+          ? ['recruiting.responses.read', 'recruiting.responses.conversation.open']
+          : fromResponses ? ['recruiting.responses.read'] : ['recruiting.candidateSearch'];
         const pendingHandle = random(); const state = random(); const verifier = random();
         await store.putPending(hash(pendingHandle), { state, verifier, returnPath, requestedScopes, createdAt: clock() });
         const auth = new URL(`${issuer}/v1/connected-app-sessions/authorize`);
@@ -163,7 +172,8 @@ export function createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins, 
         const code = url.searchParams.get('code'); const state = url.searchParams.get('state');
         const returnPath = transaction?.returnPath ?? '/hh/proactive';
         if (!transaction || clock() < transaction.createdAt || clock() - transaction.createdAt > 300_000 ||
-            !/^\/hh\/(?:proactive|responses|assignment)(?:\?vacancy_id=[A-Za-z0-9_-]{1,128})?$/.test(returnPath) ||
+            !/^\/hh\/(?:proactive|responses|assignment)(?:\?vacancy_id=[A-Za-z0-9_-]{1,128})?$/.test(returnPath) &&
+              !/^\/hh\/response-conversation\?vacancy_id=[A-Za-z0-9_-]{1,128}&negotiation_id=[A-Za-z0-9_-]{1,128}$/.test(returnPath) ||
             !Array.isArray(transaction?.requestedScopes) || transaction.requestedScopes.length < 1 ||
             transaction.requestedScopes.some(scope => !allowedScopes.has(scope)) ||
             entries.length !== 3 || new Set(entries).size !== 3 || !entries.every(key => ['code', 'state', 'iss'].includes(key)) ||

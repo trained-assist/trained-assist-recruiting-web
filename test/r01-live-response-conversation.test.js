@@ -56,6 +56,17 @@ test('foreign negotiation, missing chat, malformed/incompatible chat page fail b
   }
 });
 
+test('attachment projection excludes provider URLs from public message data', async () => {
+  const attachmentPage = page({ messages: [{ ...messages[0], payload: { attachments: [{
+    url: 'https://private.example/signed?token=secret', title: 'CV.pdf', content_type: 'application/pdf' }] } }] });
+  const read = createHhResponseConversationRead({ ...ports, fetchImpl: async url =>
+    new URL(url).pathname.startsWith('/negotiations/') ? result(detail()) : result(attachmentPage) });
+  const response = await read({ profileId }, { vacancyId, negotiationId });
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.body.messages[0].attachments, [{ title: 'CV.pdf', contentType: 'application/pdf' }]);
+  assert.doesNotMatch(JSON.stringify(response.body), /private\.example|token=secret/);
+});
+
 test('401 refresh is bounded and chat/history provider errors do not leak payload text', async () => {
   let calls = 0;
   const read = createHhResponseConversationRead({ ...ports,

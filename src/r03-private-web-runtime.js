@@ -119,7 +119,8 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
       connectedAppBff = createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins: [issuer],
         publicOrigin, redirectUri: `${publicOrigin}/auth/connected/callback`, store: bffStore,
         exchangeCode: client.exchangeCode, introspectToken: client.introspectToken,
-        clock: () => clock().getTime(), scopes: ['recruiting.candidateSearch'] });
+        clock: () => clock().getTime(), scopes: ['recruiting.candidateSearch', 'recruiting.responses.read',
+          'recruiting.responses.conversation.open'] });
     }
     const auth = connectedAppBff === null ? createPrivateWebAuth({ legacySecret,
       resolveLegacyProfile: config.resolveLegacyProfile,

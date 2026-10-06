@@ -46,7 +46,7 @@ function fixture(t) {
     bff_encryption_key: 'b'.repeat(64) })) writeFileSync(join(secrets, name), value, { mode: 0o600 });
   const configFile = join(directory, 'config.json');
   writeFileSync(configFile, JSON.stringify({ version: 'r03-private-host-v1', dbPath: join(directory, 'state.sqlite'), profiles }), { mode: 0o600 });
-  let actor = actors[0]; let scope = 'recruiting.responses.read';
+  let actor = actors[0]; let scopes = ['recruiting.responses.read'];
   let cpOutage = false; let hhOutage = false; let refresh = false;
   const calls = []; let exchanges = 0;
   const fetchImpl = async (input, options) => {
@@ -59,7 +59,7 @@ function fixture(t) {
       }
       if (url.pathname.endsWith('/introspect')) return { ok: true, json: async () => ({ active: true,
         iss: issuer, aud: 'recruiting-web', sub: 'user_A', profileId: actor.profileId,
-        sessionId: 'session_A', scopes: [scope], nbf: now.getTime() / 1000 - 1,
+        sessionId: 'session_A', scopes, nbf: now.getTime() / 1000 - 1,
         exp: now.getTime() / 1000 + 300 }) };
     }
     if (url.href === 'https://hh.ru/oauth/token') {
@@ -75,9 +75,13 @@ function fixture(t) {
         const id = decodeURIComponent(url.pathname.slice('/negotiations/'.length));
         const vacancyId = id.match(/^n_(vacancy_[AB])_0$/)?.[1] ?? actor.vacancyId;
         return { status: 200, ok: true, json: async () => ({ id, vacancy: { id: vacancyId },
-          resume: { id: 'resume_example' }, state: { id: 'response' },
+          chat_id: 123456, resume: { id: 'resume_example' }, state: { id: 'response' },
           updated_at: '2026-10-06T07:10:00Z' }) };
       }
+      if (url.pathname === '/common/chats/123456/messages') return { status: 200, ok: true,
+        json: async () => ({ id: '123456', vacancy_id: actor.vacancyId, has_more: false,
+          messages: [{ id: 'message_A', creation_time: '2026-10-06T07:00:00Z', type: 'SIMPLE',
+            payload: { text: 'synthetic message' }, viewed_by_opponent: false }] }) };
       const requested = url.searchParams.get('vacancy_id');
       const page = Number(url.searchParams.get('page'));
       return { status: 200, ok: true, json: async () => hhPage(requested, page) };
@@ -89,7 +93,8 @@ function fixture(t) {
     connectedBffConfig: { issuer, publicOrigin: origin, dbPath: join(directory, 'bff.sqlite') } });
   server.listen(0, '127.0.0.1');
   t.after(async () => { await new Promise(resolve => server.close(resolve)); rmSync(directory, { recursive: true, force: true }); });
-  return { server, calls, profiles, setActor: value => { actor = value; }, setScope: value => { scope = value; },
+  return { server, calls, profiles, setActor: value => { actor = value; }, setScope: value => { scopes = [value]; },
+    setScopes: values => { scopes = values; },
     setCpOutage: value => { cpOutage = value; }, setHhOutage: value => { hhOutage = value; },
     setRefresh: value => { refresh = value; },
     get exchanges() { return exchanges; } };
@@ -125,8 +130,8 @@ test('exact response detail checks CP scope and owned vacancy without opening HH
   assert.equal(f.calls.length, 2);
 });
 
-async function signIn(base, from, vacancyId) {
-  const start = await fetch(`${base}/auth/connected/start${from ? `?from=${from}${vacancyId ? `&vacancy_id=${vacancyId}` : ''}` : ''}`,
+async function signIn(base, from, vacancyId, negotiationId) {
+  const start = await fetch(`${base}/auth/connected/start${from ? `?from=${from}${vacancyId ? `&vacancy_id=${vacancyId}` : ''}${negotiationId ? `&negotiation_id=${negotiationId}` : ''}` : ''}`,
     { redirect: 'manual' });
   assert.equal(start.status, 303);
   const authorize = new URL(start.headers.get('location'));
@@ -226,6 +231,40 @@ test('private response entry requests one step-up scope, real HTTP reader and ow
     { method: 'POST', headers: { cookie: login.session } })).status, 405);
   assert.equal((await fetch(`${base}/api/v1/ui/vacancy-assignment?vacancyId=vacancy_A`,
     { method: 'POST', headers: { cookie: login.session } })).status, 401);
+});
+
+test('conversation history is a separate scoped POST with real BFF CSRF and exact confirmation path', async t => {
+  const f = fixture(t); await once(f.server, 'listening');
+  const base = `http://127.0.0.1:${f.server.address().port}`;
+  const query = 'vacancy_id=vacancy_A&negotiation_id=n_vacancy_A_0';
+  f.setScope('recruiting.responses.read');
+  const readOnly = await signIn(base, 'responses', 'vacancy_A');
+  const path = `${base}/hh/response-conversation?${query}`;
+  const confirmation = await fetch(path, { headers: { cookie: readOnly.session } });
+  assert.equal(confirmation.status, 200);
+  assert.match(await confirmation.text(), /истории сообщений может отметить отклик просмотренным/);
+  assert.equal(f.calls.length, 0, 'GET confirmation must not read HH messages');
+  const readOnlySession = await (await fetch(`${base}/auth/connected/session`, { headers: { cookie: readOnly.session } })).json();
+  const noEffectScope = await fetch(path, { method: 'POST', headers: { cookie: readOnly.session, origin, 'x-csrf-token': readOnlySession.csrfToken } });
+  assert.equal(noEffectScope.status, 403);
+  assert.equal(f.calls.length, 0, 'responses.read alone must not open HH chat');
+
+  f.setScopes(['recruiting.responses.read', 'recruiting.responses.conversation.open']);
+  const consent = await signIn(base, 'conversation', 'vacancy_A', 'n_vacancy_A_0');
+  assert.equal(consent.authorize.searchParams.get('scope'), 'recruiting.responses.read recruiting.responses.conversation.open');
+  assert.equal(consent.accepted.headers.get('location'), `${origin}/hh/response-conversation?${query}`);
+  const appSession = cookie(consent.accepted, '__Host-recruiting-app-session');
+  const session = await (await fetch(`${base}/auth/connected/session`, { headers: { cookie: appSession } })).json();
+  const withoutCsrf = await fetch(path, { method: 'POST', headers: { cookie: appSession, origin } });
+  assert.equal(withoutCsrf.status, 401);
+  assert.equal(f.calls.length, 0, 'missing CSRF must prevent side effect');
+  const opened = await fetch(path, { method: 'POST', headers: { cookie: appSession, origin,
+    'x-csrf-token': session.csrfToken } });
+  assert.equal(opened.status, 200);
+  assert.equal((await opened.json()).messages[0].text, 'synthetic message');
+  assert.equal(f.calls.length, 2, 'one negotiation verification and one chat history request');
+  assert.equal(f.calls[1].url.pathname, '/common/chats/123456/messages');
+  assert.equal(f.calls[1].url.searchParams.get('limit'), '50');
 });
 
 test('reviewed assignment save is exact, immutable, profile-owned and fail-closed over HTTP', async t => {

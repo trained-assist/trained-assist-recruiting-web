@@ -1,8 +1,8 @@
 {
   "repository": "trained-assist/trained-assist-control-plane",
-  "revision": "d5012dfc3b1ef41674f52efa7bd26a8b38c43850",
+  "revision": "eade4e8df70fb0cc4f8d9d9f22b748c439faa6c7",
   "contractPath": "contracts/connected-app-identity-v1.contract.json",
-  "contractSha256": "7350803a65e4f1a72df280b7d6af7b796935affa656fe5be475a7ed9c2046bb9",
+  "contractSha256": "1392c98b4cc486770a3a1e03ce386c388f459717b946c2e1093beb34ec86cd36",
   "responseSchemaPath": "contracts/connected-app-identity-v1.response.schema.json",
   "responseSchemaSha256": "3c9e9b8d0b73e7530ae3c16ace612225c587c23e079bb8e721262f406a65a0b8"
 }

@@ -40,11 +40,17 @@ function renderLiveResponseDetailPage(data) {
   const conversation = `/hh/response-conversation?vacancy_id=${encodeURIComponent(data.vacancyId)}&negotiation_id=${encodeURIComponent(data.negotiationId)}`;
   return `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Статус отклика HH</title><main><h1>Отклик ${escapeResponseHtml(data.negotiationId)}</h1><p><a href="${back}">К откликам</a></p><p>Текущий статус HH: ${escapeResponseHtml(data.state)}. Получено: ${escapeResponseHtml(data.fetchedAt)}.</p><p>Открытие переписки может отметить отклик просмотренным в HH. Нажмите ссылку ниже, если хотите загрузить историю сообщений.</p><p><a href="${conversation}">Открыть переписку с возможным статусом «просмотрено»</a></p></main></html>`;
 }
-function renderLiveResponseConversationPage(data) {
-  const messages = data.messages.map(item => `<article><p><strong>${escapeResponseHtml(item.type)}</strong> <small>${escapeResponseHtml(item.createdAt)}</small></p>${item.text !== undefined ? `<p>${escapeResponseHtml(item.text)}</p>` : ''}${item.attachments?.length ? `<ul>${item.attachments.map(file => `<li>${escapeResponseHtml(file.title)} (${escapeResponseHtml(file.contentType)})</li>`).join('')}</ul>` : ''}${item.movedParticipant ? '<p>Изменился состав участников чата.</p>' : ''}</article>`).join('');
-  const older = data.hasMore ? '<p>Показаны последние 50 сообщений. История продолжается; более ранние сообщения здесь не загружались.</p>' : '';
-  return `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Переписка HH</title><main><h1>Переписка по отклику ${escapeResponseHtml(data.negotiationId)}</h1><p><a href="/hh/responses?vacancy_id=${encodeURIComponent(data.vacancyId)}">К откликам</a></p><p role="note">Вы открыли переписку. HH может отметить отклик просмотренным. История получена по явному действию рекрутера; автоматически сообщения не загружаются.</p><p>Получено: ${escapeResponseHtml(data.fetchedAt)} · показано ${data.messages.length} сообщений из одной страницы максимум 50.</p>${older}<section>${messages || '<p>Сообщений нет.</p>'}</section></main></html>`;
+function renderLiveResponseConversationConfirmPage({ vacancyId, negotiationId }) {
+  const loadUrl = `/hh/response-conversation?vacancy_id=${encodeURIComponent(vacancyId)}&negotiation_id=${encodeURIComponent(negotiationId)}`;
+  return `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Открыть переписку HH</title><main><h1>Открыть переписку по отклику ${escapeResponseHtml(negotiationId)}</h1><p>Запрос истории сообщений может отметить отклик просмотренным в HH. История ещё не загружена.</p><p>Нажмите кнопку, чтобы выполнить запрос. Если понадобится отдельное разрешение, вам предложат подтвердить его через Control Plane; затем нужно будет нажать кнопку ещё раз.</p><button id="open-conversation" type="button" data-url="${loadUrl}">Загрузить историю переписки</button><p id="conversation-state" role="status" aria-live="polite"></p><section id="conversation-messages"></section><script src="/hh/response-conversation/app.js" defer></script></main></html>`;
 }
+const liveResponseConversationClient = `const button=document.querySelector('#open-conversation');
+const state=document.querySelector('#conversation-state');const output=document.querySelector('#conversation-messages');
+const params=new URLSearchParams(location.search);const vacancyId=params.get('vacancy_id');const negotiationId=params.get('negotiation_id');
+const validId=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(value);
+const stepUp=()=>{const next=new URL('/auth/connected/start',location.origin);next.searchParams.set('from','conversation');next.searchParams.set('vacancy_id',vacancyId);next.searchParams.set('negotiation_id',negotiationId);location.assign(next.href);};
+function addText(parent,tag,text){const node=document.createElement(tag);node.textContent=text;parent.append(node);return node;}
+button?.addEventListener('click',async()=>{if(!validId(vacancyId)||!validId(negotiationId)){state.textContent='Некорректная ссылка.';return;}button.disabled=true;state.textContent='Проверяю отдельное разрешение на открытие переписки…';try{const session=await fetch('/auth/connected/session',{cache:'no-store',credentials:'same-origin'});if(!session.ok){state.textContent='Сессия недоступна. Войдите в приложение снова.';button.disabled=false;return;}const auth=await session.json();if(!auth.scopes?.includes('recruiting.responses.read')||!auth.scopes?.includes('recruiting.responses.conversation.open')){stepUp();return;}state.textContent='Загружаю одну страницу истории…';const response=await fetch(button.dataset.url,{method:'POST',headers:{'x-csrf-token':auth.csrfToken},credentials:'same-origin',cache:'no-store'});const body=await response.json();if(!response.ok){state.textContent=body.error==='connected_app_introspection_unavailable'?'Проверка профиля временно недоступна; переписка не загружена.':'Не удалось загрузить переписку.';button.disabled=false;return;}state.textContent='HH может отметить отклик просмотренным. Получено: '+body.fetchedAt+'; показано '+body.messages.length+' сообщений из одной страницы максимум 50.';if(body.hasMore)addText(output,'p','История продолжается; более ранние сообщения не загружались.');if(!body.messages.length)addText(output,'p','Сообщений нет.');for(const message of body.messages){const article=addText(output,'article','');article.replaceChildren();addText(article,'p',message.type+' · '+message.createdAt);if(message.text!==undefined)addText(article,'p',message.text);for(const file of message.attachments??[])addText(article,'p',file.title+' ('+file.contentType+')');if(message.movedParticipant)addText(article,'p','Изменился состав участников чата.');}}catch{state.textContent='Связь временно недоступна; история не загружена.';button.disabled=false;}});`;
 function renderAssignmentPage(data) {
   const items = data.materials.map(item => `<section><h2>${escapeResponseHtml(item.title)}</h2><pre>${escapeResponseHtml(item.material)}</pre><p>SHA-256: ${item.sha256}</p></section>`).join('');
   const status = data.reviewStatus === 'saved_plan' ? 'Сохранённый сценарий' : 'Черновик переноса: рекрутер должен проверить и сохранить сценарий';
@@ -285,12 +291,12 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
         !(connectedAppBff !== null && (liveResponseRead !== null &&
           (path === '/hh/responses' || path === '/api/v1/ui/hh-responses') ||
           liveResponseDetailRead !== null && (path === '/hh/response-detail' || path === '/api/v1/ui/hh-response-detail') ||
-          liveResponseConversationRead !== null && path === '/hh/response-conversation' ||
+          liveResponseConversationRead !== null && (path === '/hh/response-conversation' || path === '/hh/response-conversation/app.js') ||
           liveAssignmentRead !== null &&
           (path === '/hh/assignment' || path === '/hh/assignment/app.js' || path === '/api/v1/ui/vacancy-assignment')))) {
       status = 404;
       body = { error: 'not_found' };
-    } else if (req.method !== 'GET' && req.method !== 'HEAD' && !(req.method === 'POST' && (isCandidateSearchPath || isReportDraftPath || path === '/api/v1/ui/vacancy-assignment' && liveAssignmentSave !== null || path === '/api/hh/proactive/vacancy-state' || path === '/api/hh/proactive/search' || realProactiveFeed !== null && path.startsWith('/api/hh/proactive/'))) && !(req.method === 'PATCH' && isReportDraftPath)) {
+    } else if (req.method !== 'GET' && req.method !== 'HEAD' && !(req.method === 'POST' && (isCandidateSearchPath || isReportDraftPath || path === '/api/v1/ui/vacancy-assignment' && liveAssignmentSave !== null || path === '/hh/response-conversation' && liveResponseConversationRead !== null || path === '/api/hh/proactive/vacancy-state' || path === '/api/hh/proactive/search' || realProactiveFeed !== null && path.startsWith('/api/hh/proactive/'))) && !(req.method === 'PATCH' && isReportDraftPath)) {
       status = 405;
       body = { error: 'method_not_allowed' };
       res.setHeader('Allow', isCandidateSearchPath || isReportDraftPath ? 'GET, HEAD, POST, PATCH' : path === '/api/v1/ui/vacancy-assignment' && liveAssignmentSave !== null ? 'GET, HEAD, POST' : 'GET, HEAD');
@@ -413,6 +419,11 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
           if (status === 200 && pageRoute) { type = mime.html; body = renderLiveResponseDetailPage(body); }
         } catch { status = 503; body = { error: 'response_detail_unavailable' }; }
       }
+    } else if (path === '/hh/response-conversation/app.js' && req.method === 'GET' &&
+        liveResponseConversationRead !== null && connectedAppBff !== null) {
+      type = 'text/javascript; charset=utf-8'; body = liveResponseConversationClient;
+      res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'");
+      res.setHeader('Referrer-Policy', 'no-referrer');
     } else if (path === '/hh/response-conversation' && liveResponseConversationRead !== null && connectedAppBff !== null) {
       let context;
       try { context = await trustedReadResolver(req, url, res); }
@@ -424,23 +435,30 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
         ['vacancy_id', 'negotiation_id'].includes(key)) &&
         /^[A-Za-z0-9_-]{1,128}$/.test(vacancyId ?? '') && /^[A-Za-z0-9_-]{1,128}$/.test(negotiationId ?? '');
       if (status === 200 && (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes))) {
-        if (valid) {
+        if (valid && req.method === 'GET') {
           const start = new URL('/auth/connected/start', 'http://localhost');
-          start.searchParams.set('from', 'responses'); start.searchParams.set('vacancy_id', vacancyId);
+          start.searchParams.set('from', 'conversation'); start.searchParams.set('vacancy_id', vacancyId);
+          start.searchParams.set('negotiation_id', negotiationId);
           res.writeHead(303, { Location: start.pathname + start.search, 'Cache-Control': 'no-store',
             'Referrer-Policy': 'no-referrer' }); res.end(); return;
         }
         status = 401; body = { error: 'trusted_profile_context_required' };
-      } else if (status === 200 && !context.scopes.includes('recruiting.responses.read')) {
-        status = 403; body = { error: 'response_scope_required' };
       } else if (status === 200 && !valid) {
         status = 400; body = { error: 'invalid_response_conversation_request' };
+      } else if (status === 200 && !['GET', 'POST'].includes(req.method)) {
+        status = 405; body = { error: 'method_not_allowed' };
+      } else if (status === 200 && req.method === 'POST' &&
+          (!context.scopes.includes('recruiting.responses.read') ||
+            !context.scopes.includes('recruiting.responses.conversation.open'))) {
+        status = 403; body = { error: 'response_conversation_scope_required' };
       } else if (status === 200) {
-        try {
-          const result = await liveResponseConversationRead(context, { vacancyId, negotiationId });
-          status = result.status; body = result.body;
-          if (status === 200) { type = mime.html; body = renderLiveResponseConversationPage(body); }
-        } catch { status = 503; body = { error: 'response_conversation_unavailable' }; }
+        if (req.method === 'GET') { type = mime.html; body = renderLiveResponseConversationConfirmPage({ vacancyId, negotiationId }); }
+        else {
+          try {
+            const result = await liveResponseConversationRead(context, { vacancyId, negotiationId });
+            status = result.status; body = result.body;
+          } catch { status = 503; body = { error: 'response_conversation_unavailable' }; }
+        }
       }
     } else if ((path === '/api/v1/ui/hh-responses' ||
         path === '/hh/responses' && connectedAppBff !== null) && liveResponseRead !== null) {

@@ -5,8 +5,9 @@ import { createRecruitingServer } from '../src/server.js';
 
 test('only explicit conversation route reads messages and page names the viewed effect', async t => {
   let conversationReads = 0, listReads = 0, detailReads = 0;
+  let scopes = ['recruiting.responses.read'];
   const connectedAppBff = { handle: async () => false, resolve: async () => ({ profileId: 'profile_A',
-    sub: 'user_A', scopes: ['recruiting.responses.read'] }) };
+    sub: 'user_A', scopes }) };
   const server = createRecruitingServer({ connectedAppBff, privateProactiveOnly: true,
     liveResponseRead: async () => { listReads++; return { status: 200, body: { domainApiVersion: 'v1',
       profileId: 'profile_A', vacancyId: 'vacancy_A', state: 'response', page: 0, total: 0, pages: 0,
@@ -36,17 +37,32 @@ test('only explicit conversation route reads messages and page names the viewed 
   const page = await fetch(`${base}/hh/response-conversation?vacancy_id=vacancy_A&negotiation_id=negotiation_A`);
   assert.equal(page.status, 200);
   const html = await page.text();
-  assert.equal(conversationReads, 1);
+  assert.equal(conversationReads, 0, 'GET renders confirmation and never requests HH messages');
   assert.equal(listReads, 1);
   assert.equal(detailReads, 1);
-  assert.match(html, /HH может отметить отклик просмотренным/);
-  assert.match(html, /последние 50 сообщений/);
-  assert.match(html, /&lt;hello&gt;/);
-  assert.doesNotMatch(html, /<hello>/);
+  assert.match(html, /может отметить отклик просмотренным в HH/);
+  assert.match(html, /Загрузить историю переписки/);
   assert.equal(page.headers.get('cache-control'), 'no-store');
-  assert.equal((await fetch(`${base}/hh/response-conversation?vacancy_id=vacancy_B&negotiation_id=negotiation_A`)).status, 404);
+  const script = await fetch(`${base}/hh/response-conversation/app.js`);
+  const scriptBody = await script.text();
+  assert.match(scriptBody, /method:'POST'/);
+  assert.match(scriptBody, /x-csrf-token/);
+  assert.match(scriptBody, /textContent=text/);
+  assert.doesNotMatch(scriptBody, /innerHTML|document\.write/);
+  const conversationUrl = `${base}/hh/response-conversation?vacancy_id=vacancy_A&negotiation_id=negotiation_A`;
+  const denied = await fetch(conversationUrl, { method: 'POST' });
+  assert.equal(denied.status, 403, 'read scope alone cannot open history');
+  assert.equal(conversationReads, 0);
+  scopes = ['recruiting.responses.read', 'recruiting.responses.conversation.open'];
+  const opened = await fetch(conversationUrl, { method: 'POST', headers: { origin: base, 'x-csrf-token': 'fixture' } });
+  assert.equal(opened.status, 200);
+  const payload = await opened.json();
+  assert.equal(payload.messages[0].text, '<hello>');
+  assert.equal(conversationReads, 1);
+  const foreign = await fetch(`${base}/hh/response-conversation?vacancy_id=vacancy_B&negotiation_id=negotiation_A`,
+    { method: 'POST', headers: { origin: base, 'x-csrf-token': 'fixture' } });
+  assert.equal(foreign.status, 404);
   assert.equal(conversationReads, 2);
-  assert.equal((await fetch(`${base}/hh/response-conversation?vacancy_id=vacancy_A&negotiation_id=negotiation_A`,
-    { method: 'POST' })).status, 405);
+  assert.equal((await fetch(conversationUrl, { method: 'DELETE' })).status, 405);
   assert.equal(conversationReads, 2);
 });

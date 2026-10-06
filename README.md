@@ -47,6 +47,8 @@ This is an **R-01 foundation**, not completion of the production scenario. Actua
 
 An additional [R-01 live HH response read slice](docs/R-01-LIVE-RESPONSE-READ.md) binds one HH `response` page to the opt-in private Connected App BFF runtime through its profile credential broker and owned vacancy map. The queryless Connected App entry offers a static feature chooser; its `/hh/responses` page and `/api/v1/ui/hh-responses` API request `recruiting.responses.read` only through an explicit step-up. They are absent from the demo, public route and C14 capability registry; page-level revision and best-effort pagination state their limits explicitly.
 
+Opening a response conversation has a provider-visible “may mark viewed” effect. The GET route only renders a confirmation page; history loads after a CSRF-protected POST and requires both `recruiting.responses.read` and separate `recruiting.responses.conversation.open` scope. See [the R-01 conversation contract and limits](docs/R-01-LIVE-RESPONSE-READ.md#explicit-conversation-history-r-01-follow-up).
+
 The [R-04 accepted report source slice](docs/R-04-ACCEPTED-SOURCE.md) projects a currently assessed candidate from the accepted cold-search feed into separate client draft and internal fields. It requires an injected trusted report reader; publication stays disabled.
 
 The opt-in [R-01/R-04 Connected App BFF boundary](docs/R-01-R-04-CONNECTED-BFF.md) handles a Control Plane authorization code with PKCE, keeps the access token server side and rechecks profile scope on each read. It is an unmounted synthetic integration until the platform login authority, durable BFF store and live issuer are accepted.

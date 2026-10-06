@@ -24,8 +24,9 @@ test('pinned control-plane identity contract matches the Recruiting consumer', a
   assert.equal(contract.introspection.invalidation.includes('scope_removed'), true);
   assert.deepEqual(schema.oneOf[1].required, contract.introspection.activeResponseFields);
   const scopes = contract.audiences['recruiting-web'];
-  assert.deepEqual(scopes, ['recruiting.responses.read', 'recruiting.reports.read',
-    'recruiting.candidateSearch']);
+  assert.deepEqual(scopes, ['recruiting.responses.read', 'recruiting.responses.conversation.open',
+    'recruiting.reports.read', 'recruiting.reports.create', 'recruiting.reports.review',
+    'recruiting.candidateSearch', 'recruiting.assignment.review']);
   assert.equal(scopes.some(scope => contract.audiences['crm-web'].includes(scope)), false);
   const resolver = createRecruitingReadSessionResolver({ verifyToken: async () => null,
     isProfileBound: async () => false, issuer: 'https://agent.example.invalid',
