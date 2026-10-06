@@ -25,11 +25,12 @@ test('browser page uses profile cookie API, exact review revisions, idempotent m
   ]);
   const cardElements = new Map([
     ['.save-status', element('save-status')], ['.save-comment', element('save-comment')],
+    ['.score-now', element('score-now')], ['.score-result', element('score-result')],
     ['.candidate-status', element('candidate-status', { value: 'starred' })],
     ['.candidate-comment', element('candidate-comment', { value: 'Invented note' })],
     ['.candidate-exclude', element('candidate-exclude', { checked: true })]
   ]);
-  const card = { dataset: { candidateId: 'invented_resume', reviewRevision: '2' },
+  const card = { dataset: { candidateId: 'invented_resume', jobId: 'invented_job', reviewRevision: '2' },
     querySelector: selector => cardElements.get(selector) };
   const root = { dataset: { profileId: 'invented_profile_A', vacancyId } };
   let reloads = 0;
@@ -44,6 +45,7 @@ test('browser page uses profile cookie API, exact review revisions, idempotent m
     if (path.startsWith('/api/hh/proactive/prompt?')) body = { ok: true, queries: ['invented query'],
       query_revision: `queries-${'a'.repeat(24)}`, override_revision: 0 };
     if (path === '/api/hh/proactive/search') body = { ok: true, run: { runId: 'invented_run' } };
+    if (path === '/api/hh/proactive/ai-score') body = { ok: true, atsScore: 8, atsTag: 'PASS' };
     if (path.endsWith('/manual-runs/invented_run')) body = { ok: true,
       run: { status: polls++ ? 'completed' : 'running' } };
     return { ok: true, status: 200, json: async () => body };
@@ -70,8 +72,9 @@ test('browser page uses profile cookie API, exact review revisions, idempotent m
     const button = elements.get(id) ?? cardElements.get(`.${id}`);
     await handlers.get(id)({ currentTarget: button });
   }
+  await handlers.get('score-now')({ currentTarget: cardElements.get('.score-now') });
   const posts = calls.filter(call => call.options.method === 'POST');
-  assert.equal(posts.length, 6);
+  assert.equal(posts.length, 7);
   assert.deepEqual(JSON.parse(posts[1].options.body), { vacancy_id: vacancyId, action: 'enable', interval_hours: 24 });
   assert.deepEqual(JSON.parse(posts[2].options.body), { vacancy_id: vacancyId, action: 'disable' });
   assert.equal(posts[3].options.headers['Idempotency-Key'], 'invented_idempotency_key');
@@ -79,6 +82,9 @@ test('browser page uses profile cookie API, exact review revisions, idempotent m
     expected_revision: 2, status: 'starred' });
   assert.deepEqual(JSON.parse(posts[5].options.body), { vacancy_id: vacancyId, candidate_id: 'invented_resume',
     expected_revision: 2, comment: 'Invented note', exclude_from_search: true });
+  assert.deepEqual(JSON.parse(posts[6].options.body), { vacancy_id: vacancyId, candidate_id: 'invented_resume',
+    expected_job_id: 'invented_job' });
+  assert.match(cardElements.get('.score-result').textContent, /ATS: 8 \(PASS\)/);
   assert.ok(calls.every(call => call.options.credentials === 'same-origin'));
   assert.ok(posts.every(call => !('token' in JSON.parse(call.options.body))));
   assert.equal(polls, 2);

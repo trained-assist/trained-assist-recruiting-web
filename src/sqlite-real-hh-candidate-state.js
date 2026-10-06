@@ -256,6 +256,22 @@ export class SqliteRealHhCandidateState {
     }
     return pending;
   }
+  assessmentForLatest({ profileId, vacancyId, jobId, candidateId, at = new Date().toISOString() }) {
+    this.assertScope(profileId, vacancyId);
+    if (![jobId, candidateId].every(safeId) || !isoTime(at)) throw new TypeError('invalid_assessment_target');
+    const snapshot = this.latestSnapshot(profileId, vacancyId);
+    if (!snapshot || snapshot.jobId !== jobId) return { kind: 'stale' };
+    const row = this.memberById.get(profileId, vacancyId, jobId, candidateId);
+    if (!row) return { kind: 'not_found' };
+    const candidate = JSON.parse(row.projection);
+    const inputRevision = this.assessmentInputRevision(snapshot, candidate);
+    const prior = this.assessmentById.get(profileId, vacancyId, jobId, candidateId);
+    if (prior?.input_revision === inputRevision)
+      return { kind: 'scored', assessment: JSON.parse(prior.assessment) };
+    const failure = this.assessmentFailure.get(profileId, vacancyId, candidateId, inputRevision);
+    if (failure?.retry_at > at) return { kind: 'retry_later', retryAt: failure.retry_at };
+    return { kind: 'pending', snapshot, candidate, inputRevision };
+  }
   recordAssessmentFailure({ profileId, vacancyId, jobId, candidateId, inputRevision, failedAt }) {
     this.assertScope(profileId, vacancyId);
     if (![jobId, candidateId].every(safeId) || !/^[a-f0-9]{32}$/.test(inputRevision) || !isoTime(failedAt))
