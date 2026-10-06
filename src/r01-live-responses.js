@@ -5,10 +5,12 @@ const iso = value => typeof value === 'string' && !Number.isNaN(Date.parse(value
 
 // HH is the authority for this read. Never accept a token, profile or HH URL
 // from the request; the host supplies the credential broker and binding.
-export function createHhResponseRead({ loadCredential, refreshCredential, fetchImpl, isVacancyOwned,
+export function createHhResponseRead({ loadCredential, refreshCredential, fetchImpl, isVacancyOwned, userAgent,
   clock = () => new Date(), timeoutMs = 8_000 } = {}) {
   if (typeof loadCredential !== 'function' || typeof fetchImpl !== 'function' ||
       typeof isVacancyOwned !== 'function' || typeof clock !== 'function' ||
+      typeof userAgent !== 'string' || userAgent.length < 3 || userAgent.length > 200 ||
+      !/^[\x20-\x7e]+$/.test(userAgent) || !userAgent.includes('@') ||
       !Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 30_000)
     throw new TypeError('HH response read ports required');
 
@@ -30,7 +32,7 @@ export function createHhResponseRead({ loadCredential, refreshCredential, fetchI
     url.searchParams.set('per_page', '20');
     url.searchParams.set('page', String(page));
     const request = async token => fetchImpl(url, { method: 'GET', headers: {
-      authorization: `Bearer ${token}`, accept: 'application/json'
+      authorization: `Bearer ${token}`, accept: 'application/json', 'HH-User-Agent': userAgent
     }, signal: AbortSignal.timeout(timeoutMs) });
     let response;
     try {

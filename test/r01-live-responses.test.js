@@ -15,7 +15,8 @@ const reply = (items = [item('n1')], status = 200) => ({ status, ok: status >= 2
 
 test('HH read uses trusted profile credential and vacancy, projects a typed live page', async () => {
   const calls = [];
-  const read = createHhResponseRead({ loadCredential: async id => ({ profileId: id, accessToken: 'private-token' }),
+  const read = createHhResponseRead({ userAgent: 'Recruiting Test test@example.invalid',
+    loadCredential: async id => ({ profileId: id, accessToken: 'private-token' }),
     isVacancyOwned: (id, vacancy) => id === profileId && vacancy === vacancyId,
     fetchImpl: async (url, options) => { calls.push({ url: String(url), options }); return reply(); },
     clock: () => new Date('2026-10-06T07:00:00Z') });
@@ -25,6 +26,7 @@ test('HH read uses trusted profile credential and vacancy, projects a typed live
   assert.equal(new URL(calls[0].url).pathname, '/negotiations/response');
   assert.equal(new URL(calls[0].url).searchParams.get('vacancy_id'), vacancyId);
   assert.equal(calls[0].options.headers.authorization, 'Bearer private-token');
+  assert.equal(calls[0].options.headers['HH-User-Agent'], 'Recruiting Test test@example.invalid');
   assert.equal(result.body.items[0].id, 'n1');
   assert.equal(result.body.paginationConsistency, 'best_effort');
   assert.equal(JSON.stringify(result.body).includes('private-token'), false);
@@ -36,7 +38,8 @@ test('HH read uses trusted profile credential and vacancy, projects a typed live
 });
 
 test('HH failures and malformed or cross-vacancy pages fail closed; 401 refreshes once', async () => {
-  const port = { loadCredential: async () => ({ profileId, accessToken: 'old' }),
+  const port = { userAgent: 'Recruiting Test test@example.invalid',
+    loadCredential: async () => ({ profileId, accessToken: 'old' }),
     isVacancyOwned: () => true, fetchImpl: async () => reply() };
   for (const bad of [reply([item('n1'), item('n1')]), reply([item('n1', 'other')]),
     { status: 200, ok: true, json: async () => ({ items: [], found: 0, pages: 1, page: 1 }) }]) {
@@ -55,7 +58,8 @@ test('HH failures and malformed or cross-vacancy pages fail closed; 401 refreshe
 
 test('HTTP route requires trusted profile scope and never reads another vacancy', async t => {
   let calls = 0;
-  const read = createHhResponseRead({ loadCredential: async () => ({ profileId, accessToken: 'secret' }),
+  const read = createHhResponseRead({ userAgent: 'Recruiting Test test@example.invalid',
+    loadCredential: async () => ({ profileId, accessToken: 'secret' }),
     isVacancyOwned: (id, vacancy) => id === profileId && vacancy === vacancyId,
     fetchImpl: async () => { calls++; return reply(); } });
   const server = createRecruitingServer({ liveResponseRead: read,
