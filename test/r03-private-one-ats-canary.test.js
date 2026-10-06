@@ -71,14 +71,14 @@ async function fixture(t) {
     clock: () => new Date('2026-10-06T10:00:00.000Z') };
 }
 
-function provider({ failReal = false } = {}) {
+function provider({ failReal = false, runtimeBuild = build,
+  rungs = ['opencode-go/space-bunny-free', 'openrouter/example:free'] } = {}) {
   let invented = 0, real = 0;
   return { calls: () => ({ invented, real }), fetchImpl: async (url, init) => {
-    if (url.endsWith('/health')) return new Response(JSON.stringify({ ok: true, build }));
+    if (url.endsWith('/health')) return new Response(JSON.stringify({ ok: true, build: runtimeBuild }));
     if (url.endsWith('/v1/models')) {
       assert.equal(init.headers.Authorization, 'Bearer invented_token');
-      return new Response(JSON.stringify({ data: [{ id: 'free', rungs: [
-        'opencode-go/space-bunny-free', 'openrouter/example:free' ] }] }));
+      return new Response(JSON.stringify({ data: [{ id: 'free', rungs }] }));
     }
     assert.equal(url, 'https://llm-ladder.trainedassist.store/v1/chat/completions');
     const body = JSON.parse(init.body);
@@ -106,6 +106,17 @@ test('fresh free-ladder proof, one accepted real candidate, then replay without 
     fetchImpl: async () => { throw new Error('replay fetched'); } });
   assert.equal(replay.providerRequests, 0);
   assert.equal(JSON.parse(readFileSync(join(f.outputDirectory, 'receipt.json'))).published, false);
+});
+
+test('changed build or paid rung blocks before any LLM request', async t => {
+  for (const options of [{ runtimeBuild: 'changed' },
+    { rungs: ['opencode-go/space-bunny-free', 'openrouter/paid-model'] }]) {
+    const f = await fixture(t);
+    const p = provider(options);
+    await assert.rejects(runPrivateOneAtsCanary({ ...f, mode: 'preflight',
+      fetchImpl: p.fetchImpl }));
+    assert.deepEqual(p.calls(), { invented: 0, real: 0 });
+  }
 });
 
 test('failed one-candidate provider call remains unknown and cannot rerun', async t => {
