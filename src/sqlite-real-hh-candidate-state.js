@@ -98,6 +98,10 @@ export class SqliteRealHhCandidateState {
       revision INTEGER NOT NULL, status TEXT NOT NULL, comment TEXT,
       exclude_from_search INTEGER NOT NULL,
       PRIMARY KEY (profile_id, vacancy_id, resume_id));
+    CREATE TABLE IF NOT EXISTS real_hh_feedback_query_cache (
+      profile_id TEXT NOT NULL, vacancy_id TEXT NOT NULL, base_revision TEXT NOT NULL,
+      feedback_revision TEXT NOT NULL, queries TEXT NOT NULL,
+      PRIMARY KEY (profile_id, vacancy_id, base_revision, feedback_revision));
     CREATE INDEX IF NOT EXISTS real_hh_snapshot_latest ON real_hh_snapshot(profile_id, vacancy_id, searched_at DESC, job_id DESC);`);
     this.getSnapshot = this.db.prepare('SELECT * FROM real_hh_snapshot WHERE profile_id=? AND vacancy_id=? AND job_id=?');
     this.getJobAnywhere = this.db.prepare('SELECT profile_id, vacancy_id FROM real_hh_snapshot WHERE job_id=? LIMIT 1');
@@ -128,6 +132,12 @@ export class SqliteRealHhCandidateState {
     this.upsertOverlay = this.db.prepare(`INSERT INTO real_hh_candidate_overlay(profile_id,vacancy_id,resume_id,revision,status,comment,exclude_from_search)
       VALUES(?,?,?,?,?,?,?) ON CONFLICT(profile_id,vacancy_id,resume_id) DO UPDATE SET
       revision=excluded.revision,status=excluded.status,comment=excluded.comment,exclude_from_search=excluded.exclude_from_search`);
+    this.feedbackRows = this.db.prepare(`SELECT resume_id,revision,status,comment,exclude_from_search
+      FROM real_hh_candidate_overlay WHERE profile_id=? AND vacancy_id=? ORDER BY resume_id`);
+    this.feedbackQueries = this.db.prepare(`SELECT queries FROM real_hh_feedback_query_cache
+      WHERE profile_id=? AND vacancy_id=? AND base_revision=? AND feedback_revision=?`);
+    this.insertFeedbackQueries = this.db.prepare(`INSERT OR IGNORE INTO real_hh_feedback_query_cache
+      (profile_id,vacancy_id,base_revision,feedback_revision,queries) VALUES(?,?,?,?,?)`);
   }
 
   close() { this.db.close(); }
@@ -289,6 +299,33 @@ export class SqliteRealHhCandidateState {
       const revision = expectedRevision + 1;
       this.upsertOverlay.run(profileId, vacancyId, candidateId, revision, status, comment, excludeFromSearch ? 1 : 0);
       return { kind: 'updated', revision };
+    }).immediate();
+  }
+  searchFeedback(profileId, vacancyId) {
+    this.assertScope(profileId, vacancyId);
+    const rows = this.feedbackRows.all(profileId, vacancyId);
+    return { revision: hash(rows.map(row => [row.resume_id, row.comment, row.exclude_from_search])).slice(0, 24),
+      comments: rows.filter(row => typeof row.comment === 'string' && row.comment.trim())
+        .map(row => row.comment.trim()),
+      excludedResumeIds: rows.filter(row => row.exclude_from_search === 1).map(row => row.resume_id) };
+  }
+  cachedFeedbackQueries(profileId, vacancyId, baseRevision, feedbackRevision) {
+    this.assertScope(profileId, vacancyId);
+    if (typeof baseRevision !== 'string' || !baseRevision || !/^[a-f0-9]{24}$/.test(feedbackRevision))
+      throw new TypeError('invalid_feedback_query_key');
+    const row = this.feedbackQueries.get(profileId, vacancyId, baseRevision, feedbackRevision);
+    return row ? JSON.parse(row.queries) : null;
+  }
+  storeFeedbackQueries(profileId, vacancyId, baseRevision, feedbackRevision, queries) {
+    this.assertScope(profileId, vacancyId);
+    if (typeof baseRevision !== 'string' || !baseRevision || !/^[a-f0-9]{24}$/.test(feedbackRevision) ||
+        !Array.isArray(queries) || queries.length < 1 || queries.length > 15 ||
+        queries.some(query => typeof query !== 'string' || !query.trim() || query !== query.trim() || query.length > 500) ||
+        new Set(queries).size !== queries.length) throw new TypeError('invalid_feedback_queries');
+    return this.db.transaction(() => {
+      if (this.searchFeedback(profileId, vacancyId).revision !== feedbackRevision) throw new Error('feedback_revision_stale');
+      this.insertFeedbackQueries.run(profileId, vacancyId, baseRevision, feedbackRevision, JSON.stringify(queries));
+      return JSON.parse(this.feedbackQueries.get(profileId, vacancyId, baseRevision, feedbackRevision).queries);
     }).immediate();
   }
 }
