@@ -9,6 +9,7 @@ import { R03LegacyScheduleImport } from '../src/r03-legacy-schedule-import.js';
 import { R03LegacyScheduleActivation } from '../src/r03-legacy-schedule-activation.js';
 import { createPrivateHhSearchStack } from '../src/r03-private-hh-search-stack.js';
 import { createHhQueryGenerator } from '../src/r03-hh-query-generator.js';
+import { createServiceLadderChat } from '../src/r03-service-ladder-chat.js';
 
 const profileId = 'profile_invented_001';
 const vacancyId = 'vacancy_invented_001';
@@ -46,6 +47,12 @@ test('imported schedule, private profile and credential produce a durable mornin
   const clock = () => new Date(now);
   let hhCalls = 0, oauthCalls = 0, queryCalls = 0;
   const fetchImpl = async (url, options) => {
+    if (url === 'https://llm-ladder.trainedassist.store/v1/chat/completions') {
+      queryCalls++;
+      assert.equal(options.headers.Authorization, 'Bearer invented_service_token');
+      return { ok: true, json: async () => ({ choices: [{ message: {
+        content: '["Вымышленный инженер"]' } }] }) };
+    }
     if (url === 'https://hh.ru/oauth/token') {
       oauthCalls++;
       return { ok: true, json: async () => ({ access_token: 'new_invented_access',
@@ -63,10 +70,8 @@ test('imported schedule, private profile and credential produce a durable mornin
       items: Array.from({ length: 50 }, (_, n) => resume(`inventedpage${page}resume${n}`)),
       pages: 2, found: 100 }) };
   };
-  const generateQueries = createHhQueryGenerator({ chat: async () => {
-    queryCalls++;
-    return '["Вымышленный инженер"]';
-  } });
+  const generateQueries = createHhQueryGenerator({ chat: createServiceLadderChat({
+    loadToken: async () => 'invented_service_token', fetchImpl }) });
   const stack = createPrivateHhSearchStack({ resolveProfileBinding, isVacancyOwned,
     candidateState, scheduleRepository: repository, generateQueries,
     encryptionKey: key, clientId: 'invented_client', clientSecret: 'invented_secret', fetchImpl, clock });
