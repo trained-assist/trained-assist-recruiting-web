@@ -24,6 +24,17 @@ refs, observed source vacancy IDs, per-profile counts and unresolved
 must obtain target profile and vacancy ownership from the agent's profile
 authority; source names alone are insufficient evidence. The inventory stays
 private because its identifiers can identify the customer.
+The inventory entrypoint uses only Node built-ins and can run from an
+owner-only staged source release without installing npm dependencies. The
+SQLite import entrypoint still requires `better-sqlite3` to load successfully.
+
+The candidate RU host has Node 20.20.2, Python 3.10.12 and Node headers, but
+the 2026-10-06 `npm ci --omit=dev` attempt could not build `better-sqlite3`:
+`node-gyp` reported `not found: make`; `gcc` and `g++` were also absent.
+Provision the native build toolchain or a verified compatible native binary,
+then run a host-side `import('better-sqlite3')` smoke check before any SQLite
+preflight, import, web release or worker activation. Until that passes, the
+host is only suitable for the dependency-free archive inventory.
 
 ```sh
 node src/r03-private-legacy-inventory.js \

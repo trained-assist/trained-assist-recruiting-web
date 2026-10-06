@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
   statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -104,6 +104,23 @@ test('private inventory derives counts and leaves target identity unresolved', a
   assert.deepEqual(inventory.profiles[0].expectedCounts, counts);
   assert.deepEqual(await createPrivateLegacyInventory(command), first);
   assert.throws(() => statSync(f.config.targetDbPath), /ENOENT/);
+});
+
+test('private inventory CLI runs from a release without SQLite or node_modules', t => {
+  const f = fixture(t);
+  const isolated = join(f.root, 'isolated');
+  mkdirSync(isolated, { mode: 0o700 });
+  writeFileSync(join(isolated, 'package.json'), '{"type":"module"}', { mode: 0o600 });
+  for (const name of ['r03-private-legacy-archive.js', 'r03-private-legacy-inventory.js'])
+    copyFileSync(new URL(`../src/${name}`, import.meta.url), join(isolated, name));
+  const inventoryFile = join(f.receipts, 'isolated-inventory.json');
+  const run = spawnSync(process.execPath, [join(isolated, 'r03-private-legacy-inventory.js'),
+    '--archive', f.archivePath, '--manifest', f.manifestPath,
+    '--scratch', f.config.scratchDirectory, '--inventory-file', inventoryFile],
+  { encoding: 'utf8' });
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(JSON.parse(run.stdout).profileCount, 1);
+  assert.equal(statSync(inventoryFile).mode & 0o077, 0);
 });
 
 test('explicit import writes quarantined content, private receipt and idempotent replay', async t => {

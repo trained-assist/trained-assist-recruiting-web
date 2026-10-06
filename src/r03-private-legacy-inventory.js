@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildInput, checkedTar, digestPrivateFile, privateDirectory,
-  readPrivateJson, relevantSources } from './r03-private-legacy-import-runner.js';
+  readPrivateJson, relevantSources } from './r03-private-legacy-archive.js';
 
 const safeId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value) &&
   !['__proto__', 'prototype', 'constructor'].includes(value);
