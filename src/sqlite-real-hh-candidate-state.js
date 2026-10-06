@@ -222,6 +222,20 @@ export class SqliteRealHhCandidateState {
     this.assertScope(profileId, vacancyId);
     return this.seenCount.get(profileId, vacancyId).count;
   }
+  importSeen({ profileId, vacancyId, ids, importedAt }) {
+    this.assertScope(profileId, vacancyId);
+    if (!Array.isArray(ids) || ids.length < 1 || ids.length > 500 ||
+        ids.some(id => typeof id !== 'string' || !/^[A-Za-z0-9]{1,128}$/.test(id)) ||
+        !isoTime(importedAt)) throw new TypeError('invalid_seen_import');
+    const unique = [...new Set(ids)];
+    return this.db.transaction(() => {
+      let imported = 0;
+      for (const id of unique)
+        imported += this.insertSeen.run(profileId, vacancyId, id, importedAt).changes;
+      this.onStep('import_seen');
+      return { imported, total: this.seenCount.get(profileId, vacancyId).count };
+    }).immediate();
+  }
   assessmentInputRevision(snapshot, candidate) {
     return hash([snapshot.criteriaRevision, snapshot.sourceRevision, candidate]).slice(0, 32);
   }
