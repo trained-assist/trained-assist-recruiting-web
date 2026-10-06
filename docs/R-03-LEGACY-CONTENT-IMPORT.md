@@ -1,17 +1,18 @@
 # R-03 private legacy content import
 
-The old HH skill writes four independent data families beneath a profile's
+The old HH skill writes these independent data families beneath a profile's
 `proactive/` directory: `all-candidates.json`, `seen-ids.json`,
-`search-results-*.json`, and `candidate-comments-<vacancy>.json`. Candidate
-records may list several vacancy IDs. An empty `vacancy_ids` list means an
-old wildcard record, not an authorized assignment to every vacancy.
+`search-results-*.json`, `candidate-comments-<vacancy>.json`, and sometimes
+the older unscoped `candidate-comments.json`. Candidate records may list
+several vacancy IDs. An absent or empty `vacancy_ids` list means an old
+wildcard record, not an authorized assignment to every vacancy.
 
 `R03LegacyContentImporter` accepts parsed content from a **private** extractor.
 The extractor/operator must bind the source profile to exactly one trusted
 target profile and provide the target's vacancy ownership check. The import
 validates every candidate, seen entry, snapshot reference and comment against
 that binding, checks the expected row counts, and compares each parsed family
-to its exact supplied source-file bytes. It writes all four families in one
+to its exact supplied source-file bytes. It writes every family in one
 SQLite transaction. A crash before commit leaves no imported rows. The same
 migration/profile/content digest replays without duplication; changed content
 or bytes under the same key conflicts. The receipt reports source filename,
@@ -20,7 +21,10 @@ content matches those supplied bytes; the operator must separately verify that
 these are the bytes captured from the old host.
 
 Raw content stays in owner-only SQLite tables named `r03_legacy_content_*`.
-Wildcard records and every old snapshot remain quarantined. The importer does
+Wildcard records, unscoped comments, dangling historical references and every
+old snapshot remain quarantined. A snapshot filename must match its payload's
+vacancy ID. Longer original comments are preserved privately; the current
+review editor's shorter limit applies only at a later explicit promotion. The importer does
 not populate the live candidate/seen/snapshot tables, create accepted manual
 or scheduled receipts, activate schedules, or publish data to the page. This
 prevents an old result with an unknown run outcome from looking like a fresh

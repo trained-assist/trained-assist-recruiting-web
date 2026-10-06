@@ -32,7 +32,8 @@ no candidate data, and activates no schedule.
    silently using the first backup.
 6. Construct `R03LegacyContentImporter` input from the restored JSON bytes:
    `allCandidates` from `all-candidates.json`, `seenIds` from `seen-ids.json`,
-   each `{sourceFile,payload}` snapshot, and comments keyed by owned vacancy.
+   each `{sourceFile,payload}` snapshot, comments keyed by owned vacancy, and
+   optional unscoped `globalComments` from `candidate-comments.json`.
    Pass the same bytes as `sourceFiles`, together with explicit
    `expectedCounts`, `bindProfile`, and `isVacancyOwned` ports. The importer
    verifies parsed objects against the bytes, then returns each file's byte
@@ -41,7 +42,8 @@ no candidate data, and activates no schedule.
    migration key is a conflict requiring investigation.
 7. Verify the target SQLite integrity and row counts, plus a private sample of
    profile/vacancy scoped candidates, seen dates, snapshots and comments.
-   Wildcard candidates and all legacy snapshots remain quarantined. Continue
+   Wildcard candidates, dangling historical references, unscoped comments and
+   all legacy snapshots remain quarantined. Continue
    with explicit old-result reconciliation and accepted-receipt decisions;
    importing alone does not make the historical feed visible.
 

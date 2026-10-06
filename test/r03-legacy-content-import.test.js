@@ -28,7 +28,9 @@ function content() {
       candidates: [{ id: 'resume_invented_bound', score: 8 }, { id: 'resume_invented_wildcard', score: 6 }]
     } }],
     comments: { [vacancy]: { resume_invented_bound: { text: 'Вымышленный комментарий', updatedAt: '2026-10-03T07:00:00.000Z' } } },
-    expectedCounts: { allCandidates: 2, seenIds: 2, snapshots: 1, comments: 1, wildcardQuarantined: 1 }
+    globalComments: { resume_invented_wildcard: { text: 'Глобальная заметка без вакансии' } },
+    expectedCounts: { allCandidates: 2, seenIds: 2, snapshots: 1, comments: 2,
+      globalComments: 1, wildcardQuarantined: 1, unboundReferences: 0 }
   };
   return withBytes(input);
 }
@@ -38,7 +40,8 @@ function withBytes(input) {
     ['all-candidates.json', input.allCandidates], ['seen-ids.json', input.seenIds],
     ...input.snapshots.map(row => [row.sourceFile, row.payload]),
     ...Object.entries(input.comments).map(([vacancyId, value]) =>
-      [`candidate-comments-${encodeURIComponent(vacancyId)}.json`, value])
+      [`candidate-comments-${encodeURIComponent(vacancyId)}.json`, value]),
+    ...(input.globalComments ? [['candidate-comments.json', input.globalComments]] : [])
   ].map(([file, value]) => [file, Buffer.from(JSON.stringify(value, null, 2))]));
   return input;
 }
@@ -61,9 +64,10 @@ test('private import preserves invented content and quarantines wildcard and leg
   assert.equal(receipt.kind, 'imported');
   assert.deepEqual(receipt.counts, content().expectedCounts);
   assert.match(receipt.sourceDigest, /^[a-f0-9]{64}$/);
-  assert.equal(receipt.sourceReceipts.length, 4);
+  assert.equal(receipt.sourceReceipts.length, 5);
   assert.deepEqual(receipt.sourceReceipts.map(row => row.file),
-    ['all-candidates.json', `candidate-comments-${vacancy}.json`, 'search-results-2026-10-03-vacancy_invented.json', 'seen-ids.json']);
+    ['all-candidates.json', `candidate-comments-${vacancy}.json`, 'candidate-comments.json',
+      'search-results-2026-10-03-vacancy_invented.json', 'seen-ids.json']);
   assert.ok(receipt.sourceReceipts.every(row => row.bytes > 0 && /^[a-f0-9]{64}$/.test(row.sha256)));
   assert.equal(statSync(filename).mode & 0o077, 0);
   const wildcard = importer.db.prepare('SELECT wildcard_quarantined,payload FROM r03_legacy_content_candidate WHERE resume_id=?')
@@ -71,7 +75,10 @@ test('private import preserves invented content and quarantines wildcard and leg
   assert.equal(wildcard.wildcard_quarantined, 1);
   assert.equal(JSON.parse(wildcard.payload).first_name, 'Пример');
   assert.equal(importer.db.prepare('SELECT acceptance_status FROM r03_legacy_content_snapshot').get().acceptance_status, 'quarantined');
-  assert.equal(importer.db.prepare('SELECT text FROM r03_legacy_content_comment').get().text, 'Вымышленный комментарий');
+  assert.equal(importer.db.prepare('SELECT text FROM r03_legacy_content_comment WHERE scope_status=?').get('bound').text,
+    'Вымышленный комментарий');
+  assert.equal(importer.db.prepare('SELECT text FROM r03_legacy_content_comment WHERE scope_status=?').get('unbound').text,
+    'Глобальная заметка без вакансии');
   assert.equal(importer.db.prepare('SELECT COUNT(*) AS count FROM r03_legacy_content_seen').get().count, 2);
   importer.close();
 
@@ -92,7 +99,8 @@ test('exact replay is idempotent; changed content under same migration conflicts
   changed.comments[vacancy].resume_invented_bound.text = 'Другой вымышленный комментарий';
   withBytes(changed);
   assert.equal(second.import(changed).kind, 'conflict');
-  assert.equal(second.db.prepare('SELECT text FROM r03_legacy_content_comment').get().text, 'Вымышленный комментарий');
+  assert.equal(second.db.prepare('SELECT text FROM r03_legacy_content_comment WHERE scope_status=?').get('bound').text,
+    'Вымышленный комментарий');
   assert.equal(second.db.prepare('SELECT COUNT(*) AS count FROM r03_legacy_content_import').get().count, 1);
 });
 
@@ -114,11 +122,13 @@ test('profile, vacancy, links, counts, duplicates and source filenames fail befo
     input => { input.sourceProfileRef = 'unknown_source'; },
     input => { input.allCandidates.resume_invented_bound.vacancy_ids = [otherVacancy]; },
     input => { input.allCandidates.resume_invented_bound.vacancy_data[otherVacancy] = {}; },
-    input => { input.seenIds[vacancy].missing_candidate = '2026-10-02'; },
-    input => { input.snapshots[0].payload.candidates[0].id = 'missing_candidate'; },
+    input => { input.seenIds[otherVacancy] = { resume_invented_bound: '2026-10-02' }; },
+    input => { input.snapshots[0].payload.candidates[0].id = 'resume_invented_bound';
+      input.snapshots[0].payload.vacancy_id = otherVacancy; },
     input => { input.snapshots.push(copy(input.snapshots[0])); input.expectedCounts.snapshots++; },
     input => { input.snapshots[0].sourceFile = '../search-results-evil.json'; },
-    input => { input.comments[vacancy].missing_candidate = { text: 'Fake' }; },
+    input => { input.snapshots[0].sourceFile = 'search-results-2026-10-03-vacancy_elsewhere.json'; },
+    input => { input.comments[otherVacancy] = { resume_invented_bound: { text: 'Fake' } }; },
     input => { input.expectedCounts.seenIds = 1; }
   ];
   for (const mutate of cases) {
@@ -126,6 +136,36 @@ test('profile, vacancy, links, counts, duplicates and source filenames fail befo
     assert.throws(() => importer.import(input));
   }
   assert.equal(importer.db.prepare('SELECT COUNT(*) AS count FROM r03_legacy_content_import').get().count, 0);
+});
+
+test('dangling historical references are preserved with quarantine markers', t => {
+  const { open } = fixture(t);
+  const importer = open();
+  const input = content();
+  input.seenIds[vacancy].resume_missing_old = '2026-09-30';
+  input.snapshots[0].payload.candidates.push({ id: 'resume_missing_old', score: 5 });
+  input.comments[vacancy].resume_missing_old = { text: 'Старая вымышленная заметка' };
+  input.expectedCounts.seenIds++;
+  input.expectedCounts.comments++;
+  input.expectedCounts.unboundReferences = 3;
+  withBytes(input);
+  assert.equal(importer.import(input).kind, 'imported');
+  assert.equal(importer.db.prepare('SELECT unbound_reference FROM r03_legacy_content_seen WHERE resume_id=?')
+    .get('resume_missing_old').unbound_reference, 1);
+  assert.equal(importer.db.prepare('SELECT unbound_references FROM r03_legacy_content_snapshot').get().unbound_references, 1);
+  assert.equal(importer.db.prepare('SELECT unbound_reference FROM r03_legacy_content_comment WHERE resume_id=?')
+    .get('resume_missing_old').unbound_reference, 1);
+});
+
+test('long old comments are retained privately without imposing the new editor limit', t => {
+  const { open } = fixture(t);
+  const importer = open();
+  const input = content();
+  input.comments[vacancy].resume_invented_bound.text = 'Вымышленный '.repeat(150);
+  withBytes(input);
+  assert.equal(importer.import(input).kind, 'imported');
+  assert.ok(importer.db.prepare('SELECT text FROM r03_legacy_content_comment WHERE scope_status=?')
+    .get('bound').text.length > 1000);
 });
 
 test('source byte receipts require exact supplied JSON bytes for every family', t => {

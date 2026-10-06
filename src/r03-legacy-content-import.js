@@ -6,6 +6,8 @@ import Database from 'better-sqlite3';
 
 const safeId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value) &&
   !['__proto__', 'prototype', 'constructor'].includes(value);
+const sourceRef = value => typeof value === 'string' && value.length > 0 && value.length <= 256 &&
+  !/[\x00-\x1f/\\]/.test(value) && value !== '.' && value !== '..';
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const validDate = value => typeof value === 'string' && Number.isFinite(Date.parse(value));
@@ -36,34 +38,37 @@ export class R03LegacyContentImporter {
       PRIMARY KEY(migration_id, profile_id, resume_id));
     CREATE TABLE IF NOT EXISTS r03_legacy_content_seen (
       migration_id TEXT NOT NULL, profile_id TEXT NOT NULL, vacancy_id TEXT NOT NULL,
-      resume_id TEXT NOT NULL, first_seen_at TEXT NOT NULL,
+      resume_id TEXT NOT NULL, first_seen_at TEXT NOT NULL, unbound_reference INTEGER NOT NULL,
       PRIMARY KEY(migration_id, profile_id, vacancy_id, resume_id));
     CREATE TABLE IF NOT EXISTS r03_legacy_content_snapshot (
       migration_id TEXT NOT NULL, profile_id TEXT NOT NULL, source_file TEXT NOT NULL,
       vacancy_id TEXT NOT NULL, searched_at TEXT NOT NULL, candidate_ids TEXT NOT NULL,
-      payload TEXT NOT NULL, acceptance_status TEXT NOT NULL CHECK(acceptance_status='quarantined'),
+      payload TEXT NOT NULL, unbound_references INTEGER NOT NULL,
+      acceptance_status TEXT NOT NULL CHECK(acceptance_status='quarantined'),
       PRIMARY KEY(migration_id, profile_id, source_file));
     CREATE TABLE IF NOT EXISTS r03_legacy_content_comment (
       migration_id TEXT NOT NULL, profile_id TEXT NOT NULL, vacancy_id TEXT NOT NULL,
       resume_id TEXT NOT NULL, text TEXT NOT NULL, updated_at TEXT,
+      unbound_reference INTEGER NOT NULL, scope_status TEXT NOT NULL,
       PRIMARY KEY(migration_id, profile_id, vacancy_id, resume_id));`);
     this.lookup = this.db.prepare('SELECT source_digest,counts,source_receipts FROM r03_legacy_content_import WHERE migration_id=? AND profile_id=?');
     this.addImport = this.db.prepare('INSERT INTO r03_legacy_content_import VALUES(?,?,?,?,?)');
     this.addCandidate = this.db.prepare('INSERT INTO r03_legacy_content_candidate VALUES(?,?,?,?,?,?)');
-    this.addSeen = this.db.prepare('INSERT INTO r03_legacy_content_seen VALUES(?,?,?,?,?)');
-    this.addSnapshot = this.db.prepare('INSERT INTO r03_legacy_content_snapshot VALUES(?,?,?,?,?,?,?,?)');
-    this.addComment = this.db.prepare('INSERT INTO r03_legacy_content_comment VALUES(?,?,?,?,?,?)');
+    this.addSeen = this.db.prepare('INSERT INTO r03_legacy_content_seen VALUES(?,?,?,?,?,?)');
+    this.addSnapshot = this.db.prepare('INSERT INTO r03_legacy_content_snapshot VALUES(?,?,?,?,?,?,?,?,?)');
+    this.addComment = this.db.prepare('INSERT INTO r03_legacy_content_comment VALUES(?,?,?,?,?,?,?,?)');
   }
 
   close() { this.db.close(); }
 
   plan(input) {
     const content = input && Object.fromEntries(Object.entries(input).filter(([key]) => key !== 'sourceFiles'));
-    if (!object(input) || !safeId(input.migrationId) || !safeId(input.sourceProfileRef) ||
+    if (!object(input) || !safeId(input.migrationId) || !sourceRef(input.sourceProfileRef) ||
         !object(input.allCandidates) || !object(input.seenIds) || !bound(input.snapshots, 1000) ||
-        !object(input.comments) || !object(input.expectedCounts) || !object(input.sourceFiles) ||
+        !object(input.comments) || input.globalComments != null && !object(input.globalComments) ||
+        !object(input.expectedCounts) || !object(input.sourceFiles) ||
         Object.keys(input).some(key => !['migrationId', 'sourceProfileRef', 'allCandidates', 'seenIds',
-          'snapshots', 'comments', 'expectedCounts', 'sourceFiles'].includes(key)) ||
+          'snapshots', 'comments', 'globalComments', 'expectedCounts', 'sourceFiles'].includes(key)) ||
         Object.keys(input.allCandidates).length > 50_000 ||
         Object.keys(input.seenIds).length > 1000 || Object.keys(input.comments).length > 1000 ||
         Buffer.byteLength(JSON.stringify(content)) > 128 * 1024 * 1024)
@@ -90,15 +95,17 @@ export class R03LegacyContentImporter {
       candidateById.set(id, vacancyIds);
       candidates.push({ id, record, vacancyIds });
     }
-    const linked = (id, vacancyId) => candidateById.has(id) &&
-      (candidateById.get(id).length === 0 || candidateById.get(id).includes(vacancyId));
+    const linked = (id, vacancyId) => !candidateById.has(id) ||
+      candidateById.get(id).length === 0 || candidateById.get(id).includes(vacancyId);
+    let unboundReferences = 0;
     const seen = [];
     for (const [vacancyId, bucket] of Object.entries(input.seenIds)) {
       if (!owned(vacancyId) || !object(bucket)) throw new Error('invalid_legacy_content_seen');
       for (const [id, firstSeenAt] of Object.entries(bucket)) {
         if (!safeId(id) || !linked(id, vacancyId) || !validDate(firstSeenAt))
           throw new Error('invalid_legacy_content_seen');
-        seen.push({ vacancyId, id, firstSeenAt });
+        if (!candidateById.has(id)) unboundReferences++;
+        seen.push({ vacancyId, id, firstSeenAt, unbound: !candidateById.has(id) });
       }
     }
     const snapshots = [];
@@ -106,7 +113,8 @@ export class R03LegacyContentImporter {
     for (const entry of input.snapshots) {
       const payload = entry?.payload;
       const vacancyId = String(payload?.vacancy_id ?? '');
-      if (!sourceFile(entry?.sourceFile) || files.has(entry.sourceFile) || !object(payload) || !owned(vacancyId) ||
+      if (!sourceFile(entry?.sourceFile) || !entry.sourceFile.endsWith(`-${vacancyId}.json`) ||
+          files.has(entry.sourceFile) || !object(payload) || !owned(vacancyId) ||
           !validDate(payload.searched_at) || !bound(payload.candidates, 20_000) ||
           payload.candidates.some(candidate => !object(candidate) || !safeId(candidate.id) ||
             !linked(candidate.id, vacancyId)) ||
@@ -114,21 +122,35 @@ export class R03LegacyContentImporter {
           Buffer.byteLength(JSON.stringify(payload)) > 32 * 1024 * 1024)
         throw new Error('invalid_legacy_content_snapshot');
       files.add(entry.sourceFile);
-      snapshots.push({ sourceFile: entry.sourceFile, vacancyId, payload });
+      const unbound = payload.candidates.filter(candidate => !candidateById.has(candidate.id)).length;
+      unboundReferences += unbound;
+      snapshots.push({ sourceFile: entry.sourceFile, vacancyId, payload, unbound });
     }
     const comments = [];
     for (const [vacancyId, bucket] of Object.entries(input.comments)) {
       if (!owned(vacancyId) || !object(bucket)) throw new Error('invalid_legacy_content_comment');
       for (const [id, row] of Object.entries(bucket)) {
         if (!safeId(id) || !linked(id, vacancyId) || !object(row) ||
-            typeof row.text !== 'string' || row.text.length > 1000 ||
+            typeof row.text !== 'string' || Buffer.byteLength(row.text) > 128 * 1024 ||
             row.updatedAt !== undefined && !validDate(row.updatedAt))
           throw new Error('invalid_legacy_content_comment');
-        comments.push({ vacancyId, id, row });
+        if (!candidateById.has(id)) unboundReferences++;
+        comments.push({ vacancyId, id, row, unbound: !candidateById.has(id), scopeStatus: 'bound' });
+      }
+    }
+    const globalComments = input.globalComments ?? null;
+    if (globalComments) {
+      for (const [id, row] of Object.entries(globalComments)) {
+        if (!safeId(id) || !object(row) || typeof row.text !== 'string' || Buffer.byteLength(row.text) > 128 * 1024 ||
+            row.updatedAt !== undefined && !validDate(row.updatedAt))
+          throw new Error('invalid_legacy_content_global_comment');
+        if (!candidateById.has(id)) unboundReferences++;
+        comments.push({ vacancyId: '', id, row, unbound: !candidateById.has(id), scopeStatus: 'unbound' });
       }
     }
     const counts = { allCandidates: candidates.length, seenIds: seen.length,
-      snapshots: snapshots.length, comments: comments.length, wildcardQuarantined: wildcard };
+      snapshots: snapshots.length, comments: comments.length, globalComments: Object.keys(globalComments ?? {}).length,
+      wildcardQuarantined: wildcard, unboundReferences };
     if (Object.keys(input.expectedCounts).length !== Object.keys(counts).length ||
         Object.entries(counts).some(([key, value]) => input.expectedCounts[key] !== value))
       throw new Error('legacy_content_count_mismatch');
@@ -136,7 +158,8 @@ export class R03LegacyContentImporter {
       ['all-candidates.json', input.allCandidates], ['seen-ids.json', input.seenIds],
       ...snapshots.map(({ sourceFile, payload }) => [sourceFile, payload]),
       ...Object.entries(input.comments).map(([vacancyId, payload]) =>
-        [`candidate-comments-${encodeURIComponent(vacancyId)}.json`, payload])
+        [`candidate-comments-${encodeURIComponent(vacancyId)}.json`, payload]),
+      ...(globalComments ? [['candidate-comments.json', globalComments]] : [])
     ]);
     if (Object.keys(input.sourceFiles).length !== expectedFiles.size || expectedFiles.size > 2002)
       throw new Error('legacy_content_source_files_mismatch');
@@ -173,15 +196,16 @@ export class R03LegacyContentImporter {
           vacancyIds.length === 0 ? 1 : 0, JSON.stringify(record));
       }
       this.onStep('candidates');
-      for (const { vacancyId, id, firstSeenAt } of plan.seen)
-        this.addSeen.run(migrationId, profileId, vacancyId, id, firstSeenAt);
+      for (const { vacancyId, id, firstSeenAt, unbound } of plan.seen)
+        this.addSeen.run(migrationId, profileId, vacancyId, id, firstSeenAt, unbound ? 1 : 0);
       this.onStep('seen');
-      for (const { sourceFile, vacancyId, payload } of plan.snapshots)
+      for (const { sourceFile, vacancyId, payload, unbound } of plan.snapshots)
         this.addSnapshot.run(migrationId, profileId, sourceFile, vacancyId, payload.searched_at,
-          JSON.stringify(payload.candidates.map(candidate => candidate.id)), JSON.stringify(payload), 'quarantined');
+          JSON.stringify(payload.candidates.map(candidate => candidate.id)), JSON.stringify(payload), unbound, 'quarantined');
       this.onStep('snapshots');
-      for (const { vacancyId, id, row } of plan.comments)
-        this.addComment.run(migrationId, profileId, vacancyId, id, row.text, row.updatedAt ?? null);
+      for (const { vacancyId, id, row, unbound, scopeStatus } of plan.comments)
+        this.addComment.run(migrationId, profileId, vacancyId, id, row.text, row.updatedAt ?? null,
+          unbound ? 1 : 0, scopeStatus);
       this.onStep('comments');
       this.addImport.run(migrationId, profileId, sourceDigest, JSON.stringify(counts), JSON.stringify(sourceReceipts));
       return { kind: 'imported', migrationId, profileId, sourceDigest, counts, sourceReceipts };
