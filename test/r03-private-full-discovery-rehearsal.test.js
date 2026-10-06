@@ -108,6 +108,9 @@ test('all queries and pages produce one disposable discovery snapshot with pendi
   assert.equal(replay.disposableDiscoveryComplete, true);
   const receipt = JSON.parse(readFileSync(join(f.outputDirectory, 'receipt.json')));
   assert.equal(receipt.published, false);
+  assert.equal(receipt.morningFreshness, 'latest_completed');
+  assert.equal(receipt.morningFeedCount, receipt.candidateCount);
+  assert.match(receipt.morningFeedRevision, /^[a-f0-9]{24}$/);
 });
 
 test('later HH 429 is typed unknown with no full snapshot', async t => {
@@ -159,6 +162,8 @@ test('one reviewed imported daily slot runs at its natural due time and replays 
   copy.close();
   const receipt = JSON.parse(readFileSync(join(f.outputDirectory, 'receipt.json')));
   assert.equal(receipt.disposition, 'disposable_natural');
+  assert.equal(receipt.morningFreshness, 'latest_completed');
+  assert.equal(receipt.morningFeedCount, receipt.candidateCount);
   const replay = await runPrivateFullDiscoveryRehearsal({ ...input,
     fetchImpl: async () => { throw new Error('replay dispatched HH'); } });
   assert.equal(replay.status, 'replayed');
