@@ -5,6 +5,7 @@ import { once } from 'node:events';
 import { chmodSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { createPrivateWebRuntime } from '../src/r03-private-web-runtime.js';
 import { createPrivateWebAuth } from '../src/r03-private-web-auth.js';
 import { renderRealProactivePage } from '../src/r03-real-proactive-page.js';
@@ -36,7 +37,7 @@ function fixture(t, vacancyIds = [vacancyId]) {
   server.listen(0, '127.0.0.1');
   t.after(async () => { await new Promise(resolve => server.close(resolve)); rmSync(directory, { recursive: true, force: true }); });
   const token = createHmac('sha256', secret).update(legacyUsername).digest('hex').slice(0, 16);
-  return { server, token };
+  return { server, token, dbPath: join(directory, 'state.sqlite') };
 }
 
 test('private web runtime accepts only exact old signed link then scopes session to configured vacancy', async t => {
@@ -98,7 +99,7 @@ test('unsigned vacancy selector never widens a legacy signed link to another pro
 });
 
 test('old open-tab JSON commands receive an actionable reload without executing writes', async t => {
-  const { server, token } = fixture(t);
+  const { server, token, dbPath } = fixture(t);
   await once(server, 'listening');
   const base = `http://127.0.0.1:${server.address().port}`;
   const post = (route, fields, headers = {}) => fetch(`${base}/api/hh/proactive/${route}`, {
@@ -131,8 +132,16 @@ test('old open-tab JSON commands receive an actionable reload without executing 
   assert.equal((await post('search', { vacancy_id: vacancyId }, { Cookie: '__Host-r03-proactive=invalid' })).status, 409);
   const page = await fetch(`${base}/hh/proactive?username=${legacyUsername}&token=${token}&vacancy_id=${vacancyId}`);
   const cookie = page.headers.get('set-cookie').split(';')[0];
+  for (const [route, fields] of oldCommands)
+    assert.equal((await post(route, fields, { Cookie: cookie })).status, 409,
+      `a new tab's cookie must not authorize the old ${route} payload`);
   const result = await fetch(`${base}/api/hh/proactive/candidates?vacancy_id=${vacancyId}`, { headers: { Cookie: cookie } });
   assert.equal((await result.json()).total, 0);
+  const db = new Database(dbPath, { readonly: true });
+  t.after(() => db.close());
+  for (const table of ['cold_search_schedules', 'real_hh_manual_run', 'real_hh_seen',
+    'real_hh_assessment', 'real_hh_candidate_overlay', 'r03_private_query_override'])
+    assert.equal(db.prepare(`SELECT count(*) AS n FROM ${table}`).get().n, 0, table);
 });
 
 test('removing legacy mapping revokes both signed entry and existing profile cookie', async () => {
