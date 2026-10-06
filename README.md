@@ -4,7 +4,7 @@ Independent recruiting application and versioned platform contracts.
 
 ## Initial service and R-01 foundation
 
-This repository owns the recruiting domain boundary. The platform/agent can consume the versioned HTTP contract without importing recruiting implementation code. This prototype uses synthetic fixtures only; its local job, draft and schedule state is process-local and it performs no production domain writes.
+This repository owns the recruiting domain boundary. The platform/agent can consume the versioned HTTP contract without importing recruiting implementation code. The default local server uses synthetic fixtures and process-local state. The opt-in private R-03 stack has durable SQLite storage and host templates; it is not installed on the RU host or connected to the public route.
 
 Run locally with Node.js 20 or newer:
 
@@ -98,4 +98,4 @@ The R-04 lifecycle foundation creates a profile-scoped synthetic draft from a ca
 
 These are **R-01 and R-04 foundations**, not completion of the production scenarios. Actual identity-to-profile mapping, tenant semantics, response meaning/fields, trusted scope grants, freshness against a live canonical store, report owner, client-field approval, and report-source revision semantics remain open under issue #3. See [`docs/R-04-REPORT-FOUNDATION.md`](docs/R-04-REPORT-FOUNDATION.md) for inspected legacy behavior and deliberate differences.
 
-The existing `trained-assist-hh-skill` is coupled to in-process execution and profile files. It is a source of requirements to inspect during a later migration, not code to copy blindly into this service. This repository has no production integration, credentials, real candidate data, database, or deployment configuration. The schema and endpoint names are initial proposals and need review before a real integration or persistence layer is added.
+The existing `trained-assist-hh-skill` is coupled to in-process execution and profile files and remains the source for differential behavior checks. This repository has SQLite state and uninstalled RU deployment templates, but no production credentials or candidate data. The public route, live provider integration and agent-owned profile/MCP binding still require acceptance before use.
