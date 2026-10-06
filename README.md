@@ -4,7 +4,7 @@ Independent recruiting application and versioned platform contracts.
 
 ## Initial service and R-01 foundation
 
-This repository owns the recruiting domain boundary. The platform/agent can consume the versioned HTTP contract without importing recruiting implementation code. This prototype uses synthetic fixtures only; its local job, draft and schedule state is process-local and it performs no production domain writes.
+This repository owns the recruiting domain boundary. The platform/agent can consume the versioned HTTP contract without importing recruiting implementation code. The default local server uses synthetic fixtures and process-local state. The opt-in private R-03 stack has durable SQLite storage and host templates; it is not installed on the RU host or connected to the public route.
 
 Run locally with Node.js 20 or newer:
 
@@ -70,8 +70,36 @@ The [R-03 legacy schedule activation port](docs/R-03-LEGACY-SCHEDULE-ACTIVATION.
 
 The [private HH search stack](docs/R-03-PRIVATE-HH-SEARCH-STACK.md) composes imported schedule activation, private profile plan, credential refresh, paginated HH transport, atomic candidate snapshot and morning read in an invented offline fixture. It has no production binding or installed timer.
 
+The [HH query generator](docs/R-03-HH-QUERY-GENERATOR.md) provides a bounded service-ladder chat port and vacancy-derived fallback for review-aware query refresh. Its chat client is injected. [Base query regeneration](docs/R-03-BASE-QUERY-REGENERATION.md) now reuses the same generator for missing/stale private source caches and stores the result in target SQLite, without changing frozen legacy files.
+
+The [service-ladder query client](docs/R-03-SERVICE-LADDER-CHAT.md) now supplies the exact HTTP request boundary through injected private token and fetch ports. The composed morning fixture exercises it with invented responses only.
+
+The [free-ladder ATS evaluator](docs/R-03-FREE-LADDER-ASSESSMENT.md) now scores the accepted morning snapshot through an injected private HTTP/token boundary; the offline composition verifies the first 10 assessments appear on the morning page.
+
+The [occurrence heartbeat](docs/R-03-OCCURRENCE-HEARTBEAT.md) extends a long HH search's SQLite lease while it runs; a lost lease quarantines even a committed snapshot instead of showing false freshness.
+
+The [private host minute tick](docs/R-03-PRIVATE-MINUTE-TICK.md) also renews the singleton timer lease across a long run and skips overlapping processes. It awaits an installed host timer and private configuration.
+
+The [private host binding](docs/R-03-PRIVATE-HOST-CONFIG.md) now loads exact profile/vacancy and directory ownership from an owner-only JSON file and reads named host secrets through no-follow private file descriptors. No real mapping or secret is committed.
+
+The [private host CLI](docs/R-03-PRIVATE-HOST-CLI.md) now has explicit check, minute and five-minute scoring modes. Live modes require private secret files and an opt-in execution flag; no timer is installed by this PR.
+
+Disabled [systemd unit and timer templates](docs/R-03-SYSTEMD-TIMERS.md) now define the minute and five-minute clocks for a prepared private host. They were syntax-checked on the candidate RU host; installation and activation remain separate cutover steps.
+
+The [private legacy content importer](docs/R-03-LEGACY-CONTENT-IMPORT.md) atomically stages all-candidates, seen IDs, snapshots and comments with exact profile/vacancy binding, replay checks and wildcard quarantine. It does not create accepted search receipts or surface imported content on the live page.
+
+The [private proactive web runtime](docs/R-03-PRIVATE-WEB-RUNTIME.md) now composes the private HH/SQLite stack with real page and action routes behind the old signed page-link HMAC, a short profile session and exact vacancy ownership. It is loopback-only and opt-in; legacy API and UI gaps still block nginx cutover.
+
+The [morning page controls](docs/R-03-PRIVATE-WEB-CONTROLS.md) add schedule, manual search/polling and candidate review actions to the private page with browser-session authentication and revision checks. Remaining legacy features and live canaries still block cutover.
+
+The [private web service unit and nginx cutover snippet](docs/R-03-PRIVATE-WEB-SERVICE.md) are uninstalled templates for the loopback runtime. RU systemd 249 and temporary nginx syntax checks passed read-only; no web service or route is running on the target.
+
+The [private query editor](docs/R-03-PRIVATE-PROMPT-EDITOR.md) stores manual HH search queries and reset tombstones with target-side revisions in SQLite. Both scheduled and manual searches read the same override; the frozen source files remain untouched.
+
+The [private seen-ID import](docs/R-03-PRIVATE-SEEN-IMPORT.md) marks exact HH resume IDs as already viewed for one trusted profile/vacancy in the target SQLite ledger, so the next search does not count them as new. It creates no candidate or snapshot and never falls back to an unspecified vacancy.
+
 The R-04 lifecycle foundation creates a profile-scoped synthetic draft from a candidate/vacancy source revision, allows edits only to client-audience fields, renders through the same escaped renderer, records explicit review state, and supports publication/revoke only through an injected server-side adapter. The identity resolver and publication adapter both default to deny. Publish/revoke requests carry stable operation IDs; concurrent duplicates are coalesced in-process. An adapter exception returns a stored unknown outcome and leaves local state unchanged, but the external effect may already have happened. Repeating the operation does not call the adapter again; the report remains blocked from further lifecycle mutations because there is no reconciliation endpoint. Any live adapter must deduplicate by operation ID and reconcile uncertain outcomes before retry; this prototype does not provide production retry safety. Edits and review transitions are rejected while publication/revoke is in flight. A successful fixture publish returns a stable report reference and synthetic receipt, not a public URL. Routes remain absent from C14 discovery. Approved client fields, consent, real access policy, publication owner, canonical source freshness, persistence/audit and production authorization remain open. See [`docs/R-04-DRAFT-LIFECYCLE-FOUNDATION.md`](docs/R-04-DRAFT-LIFECYCLE-FOUNDATION.md).
 
 These are **R-01 and R-04 foundations**, not completion of the production scenarios. Actual identity-to-profile mapping, tenant semantics, response meaning/fields, trusted scope grants, freshness against a live canonical store, report owner, client-field approval, and report-source revision semantics remain open under issue #3. See [`docs/R-04-REPORT-FOUNDATION.md`](docs/R-04-REPORT-FOUNDATION.md) for inspected legacy behavior and deliberate differences.
 
-The existing `trained-assist-hh-skill` is coupled to in-process execution and profile files. It is a source of requirements to inspect during a later migration, not code to copy blindly into this service. This repository has no production integration, credentials, real candidate data, database, or deployment configuration. The schema and endpoint names are initial proposals and need review before a real integration or persistence layer is added.
+The existing `trained-assist-hh-skill` is coupled to in-process execution and profile files and remains the source for differential behavior checks. This repository has SQLite state and uninstalled RU deployment templates, but no production credentials or candidate data. The public route, live provider integration and agent-owned profile/MCP binding still require acceptance before use.
