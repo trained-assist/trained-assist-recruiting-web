@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { checkReportPolicy } from './report-policy.js';
 
 const safeId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 const sourceHash = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
@@ -16,6 +17,7 @@ function publicReport(record) {
     vacancyId: record.vacancyId, sourceRevision: record.sourceRevision,
     reportRevision: revisionOf(record.revision), status: record.status,
     reviewState: record.reviewState, clientFields: structuredClone(record.clientFields),
+    policyRevision: `policy-r${record.policyRevision}`,
     createdAt: record.createdAt, updatedAt: record.updatedAt,
   };
 }
@@ -52,7 +54,7 @@ function validClientEdits(value) {
 // assessment returned alongside the source is never copied to the store/API.
 export function createAcceptedReportDrafts({ sourceRead, store, clock = () => new Date() } = {}) {
   if (typeof sourceRead !== 'function' || !store ||
-      !['create', 'get', 'update'].every(method => typeof store[method] === 'function') ||
+      !['create', 'get', 'update', 'getPolicy'].every(method => typeof store[method] === 'function') ||
       typeof clock !== 'function') throw new TypeError('accepted_report_draft_ports_required');
 
   async function currentSource(context, record) {
@@ -69,7 +71,14 @@ export function createAcceptedReportDrafts({ sourceRead, store, clock = () => ne
         !sourceHash(result.body.sourceRevision) || !validClientFields(result.body.clientDraftFields))
       return { kind: 'source_unavailable' };
     if (result.body.sourceRevision !== record.sourceRevision) return { kind: 'stale_source' };
-    return { kind: 'current', source: result.body };
+    let policy;
+    try { policy = await store.getPolicy(context.profileId, record.candidateId, record.vacancyId); }
+    catch { return { kind: 'policy_unavailable' }; }
+    const policyRevision = policy?.revision ?? 0;
+    if (record.policyRevision !== policyRevision) return { kind: 'stale_policy', policyRevision };
+    const violations = checkReportPolicy(record.clientFields, policy ?? { forbiddenPhrases: [] });
+    if (violations.length) return { kind: 'policy_violation', violations, policyRevision };
+    return { kind: 'current', source: result.body, policy, policyRevision };
   }
 
   return {
@@ -91,18 +100,31 @@ export function createAcceptedReportDrafts({ sourceRead, store, clock = () => ne
           !sourceHash(source?.sourceRevision) || !validClientFields(source?.clientDraftFields))
         return { kind: result?.status === 404 ? 'source_not_found' : 'source_unavailable' };
       if (source.sourceRevision !== request.expectedSourceRevision) return { kind: 'stale_source', currentSourceRevision: source.sourceRevision };
+      let policy;
+      try { policy = await store.getPolicy(context.profileId, request.candidateId, request.vacancyId); }
+      catch { return { kind: 'policy_unavailable' }; }
+      const policyRevision = policy?.revision ?? 0;
+      const expectedPolicyRevision = request.expectedPolicyRevision ?? 0;
+      if (!Number.isSafeInteger(expectedPolicyRevision) || expectedPolicyRevision !== policyRevision)
+        return { kind: 'stale_policy', policyRevision };
+      const violations = checkReportPolicy(source.clientDraftFields, policy ?? { forbiddenPhrases: [] });
+      if (violations.length) return { kind: 'policy_violation', violations, policyRevision };
       const now = clock().toISOString();
       const record = {
         reportRef: reportRef(), profileId: context.profileId, sourceKind,
         candidateId: request.candidateId, vacancyId: request.vacancyId,
-        sourceRevision: source.sourceRevision, revision: 1, status: 'draft', reviewState: 'unreviewed',
+        sourceRevision: source.sourceRevision, policyRevision, revision: 1, status: 'draft', reviewState: 'unreviewed',
         clientFields: structuredClone(source.clientDraftFields), createdAt: now, updatedAt: now,
         audit: [{ action: 'draft_created', revision: 1, actorProfileId: context.profileId, at: now, sourceRevision: source.sourceRevision }],
       };
       const created = await store.create({ profileId: context.profileId, idempotencyKey: key,
-        requestFingerprint: JSON.stringify([sourceKind, request.candidateId, request.vacancyId, request.expectedSourceRevision]), record });
+        requestFingerprint: JSON.stringify([sourceKind, request.candidateId, request.vacancyId, request.expectedSourceRevision, policyRevision]), record });
       if (created.kind === 'created' || created.kind === 'existing')
         return { kind: created.kind, report: publicReport(created.record) };
+      if (created.kind === 'stale_policy') {
+        const latest = await store.getPolicy(context.profileId, request.candidateId, request.vacancyId);
+        return { kind: 'stale_policy', policyRevision: latest?.revision ?? 0 };
+      }
       return created;
     },
     async get(context, ref) {
@@ -149,13 +171,20 @@ export function createAcceptedReportDrafts({ sourceRead, store, clock = () => ne
       if (expectedReportRevision !== revisionOf(record.revision)) return { kind: 'stale_report', report: publicReport(record) };
       const clientFields = { ...record.clientFields, ...structuredClone(clientEdits) };
       if (!validClientFields(clientFields)) return { kind: 'invalid_request' };
+      const violations = checkReportPolicy(clientFields, current.policy ?? { forbiddenPhrases: [] });
+      if (violations.length) return { kind: 'policy_violation', violations,
+        policyRevision: current.policyRevision };
       const now = clock().toISOString();
-      const updated = { ...record, clientFields, revision: record.revision + 1,
+      const updated = { ...record, clientFields, policyRevision: current.policyRevision, revision: record.revision + 1,
         reviewState: 'unreviewed', updatedAt: now,
         audit: [...record.audit, { action: 'client_fields_edited', revision: record.revision + 1,
           actorProfileId: context.profileId, at: now, sourceRevision: record.sourceRevision,
           fields: Object.keys(clientEdits).sort() }] };
       const result = await store.update(context.profileId, ref, record.revision, updated);
+      if (result.kind === 'stale_policy') {
+        const latest = await store.getPolicy(context.profileId, record.candidateId, record.vacancyId);
+        return { kind: 'stale_policy', policyRevision: latest?.revision ?? 0 };
+      }
       return result.kind === 'updated' ? { kind: 'edited', report: publicReport(result.record) } : result;
     },
   };
@@ -163,7 +192,25 @@ export function createAcceptedReportDrafts({ sourceRead, store, clock = () => ne
 
 export function createMemoryAcceptedReportDraftStore() {
   const byRef = new Map(); const byKey = new Map();
+  const policies = new Map();
   return {
+    getPolicy(profileId, candidateId, vacancyId) {
+      const value = policies.get(JSON.stringify([profileId, candidateId, vacancyId]));
+      return value ? structuredClone(value) : null;
+    },
+    replacePolicy({ profileId, candidateId, vacancyId, expectedRevision, record }) {
+      const key = JSON.stringify([profileId, candidateId, vacancyId]);
+      const current = policies.get(key) ?? null;
+      const revision = current?.revision ?? 0;
+      if (revision !== expectedRevision) return { kind: 'stale_policy', policy: current && structuredClone(current) };
+      if (current && JSON.stringify(current.forbiddenPhrases) === JSON.stringify(record.forbiddenPhrases))
+        return { kind: 'existing', policy: structuredClone(current) };
+      const next = { ...structuredClone(record), revision: revision + 1,
+        audit: [...(current?.audit ?? []), { action: 'policy_updated', revision: revision + 1,
+          actorProfileId: profileId, at: record.updatedAt, forbiddenCount: record.forbiddenPhrases.length }] };
+      policies.set(key, next);
+      return { kind: 'updated', policy: structuredClone(next) };
+    },
     create({ profileId, idempotencyKey, requestFingerprint, record }) {
       const key = JSON.stringify([profileId, idempotencyKey]);
       const existing = byKey.get(key);
@@ -172,6 +219,8 @@ export function createMemoryAcceptedReportDraftStore() {
         return prior?.requestFingerprint === requestFingerprint
           ? { kind: 'existing', record: structuredClone(prior.record) } : { kind: 'idempotency_conflict' };
       }
+      const policyRevision = policies.get(JSON.stringify([profileId, record.candidateId, record.vacancyId]))?.revision ?? 0;
+      if (policyRevision !== record.policyRevision) return { kind: 'stale_policy' };
       byRef.set(record.reportRef, { requestFingerprint, record: structuredClone(record) });
       byKey.set(key, record.reportRef);
       return { kind: 'created', record: structuredClone(record) };
@@ -184,6 +233,8 @@ export function createMemoryAcceptedReportDraftStore() {
       const current = byRef.get(ref)?.record;
       if (!current || current.profileId !== profileId) return { kind: 'not_found' };
       if (current.revision !== expectedRevision) return { kind: 'stale_report', record: publicReport(current) };
+      const policyRevision = policies.get(JSON.stringify([profileId, next.candidateId, next.vacancyId]))?.revision ?? 0;
+      if (policyRevision !== next.policyRevision) return { kind: 'stale_policy' };
       byRef.get(ref).record = structuredClone(next);
       return { kind: 'updated', record: structuredClone(next) };
     },

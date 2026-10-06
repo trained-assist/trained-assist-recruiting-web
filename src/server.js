@@ -7,6 +7,7 @@ import { getProfile, listProfileVacancies, profileHasScope, readVacancyResponses
 import { createClientReportPreview, findReportSource, findReportVacancy } from './report-preview.js';
 import { createReportDrafts } from './report-drafts.js';
 import { createAcceptedReportDrafts } from './accepted-report-drafts.js';
+import { createReportPolicyService } from './report-policy.js';
 import { evaluateSyntheticResponse, getResponseScenario, makeEvaluationId, validEvaluatorOutput } from './response-evaluation.js';
 import { createCandidateSearchJobs } from './candidate-search-jobs.js';
 import { createCandidateState, createMemoryCandidateStateStore } from './candidate-state.js';
@@ -190,9 +191,12 @@ function validReportDraftStart(value) {
 
 function validAcceptedReportDraftStart(value) {
   return isPlainObject(value) && ['candidateId,expectedSourceRevision,vacancyId',
-      'candidateId,expectedSourceRevision,sourceKind,vacancyId'].includes(Object.keys(value).sort().join(',')) &&
+      'candidateId,expectedSourceRevision,sourceKind,vacancyId',
+      'candidateId,expectedPolicyRevision,expectedSourceRevision,vacancyId',
+      'candidateId,expectedPolicyRevision,expectedSourceRevision,sourceKind,vacancyId'].includes(Object.keys(value).sort().join(',')) &&
     isRealProactiveVacancy(value.candidateId) && isRealProactiveVacancy(value.vacancyId) &&
     (value.sourceKind === undefined || ['accepted_cold_search', 'accepted_hh_response'].includes(value.sourceKind)) &&
+    (value.expectedPolicyRevision === undefined || Number.isSafeInteger(value.expectedPolicyRevision) && value.expectedPolicyRevision >= 0) &&
     /^[a-f0-9]{64}$/.test(value.expectedSourceRevision ?? '');
 }
 
@@ -268,6 +272,8 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
   };
   const acceptedReportDrafts = acceptedReportDraftStore === null ? null :
     createAcceptedReportDrafts({ sourceRead: reportSourceRead, store: acceptedReportDraftStore });
+  const acceptedReportPolicies = acceptedReportDraftStore === null ? null :
+    createReportPolicyService({ sourceRead: reportSourceRead, store: acceptedReportDraftStore });
   const currentSearchCriteriaRevision = async (context, vacancyId) => {
     try {
       const revision = await resolveCurrentSearchCriteriaRevision(context, vacancyId);
@@ -331,10 +337,12 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
     const acceptedReportDraftRoot = '/api/v1/ui/accepted-report-drafts';
     const isAcceptedReportDraftPath = acceptedReportDrafts !== null &&
       (path === acceptedReportDraftRoot || new RegExp(`^${acceptedReportDraftRoot}/report_[a-f0-9]{32}(?:/preview|/review|/edit)?$`).test(path));
+    const acceptedReportPolicyPath = acceptedReportPolicies !== null && path === '/api/v1/ui/accepted-report-policy';
     const acceptedReportRouteMethodAllowed = isAcceptedReportDraftPath &&
       (['GET', 'HEAD'].includes(req.method) && path !== acceptedReportDraftRoot ||
         req.method === 'POST' && (path === acceptedReportDraftRoot || /\/review$/.test(path)) ||
-        req.method === 'PATCH' && /\/edit$/.test(path));
+        req.method === 'PATCH' && /\/edit$/.test(path)) ||
+      acceptedReportPolicyPath && (req.method === 'GET' || req.method === 'PUT');
     const isAcceptedReportPagePath = acceptedReportDrafts !== null &&
       (path === '/hh/candidate-report' || path === '/hh/candidate-report/app.js' ||
         path === '/api/v1/ui/accepted-report-source' || path === '/api/v1/ui/accepted-report-client-source');
@@ -349,11 +357,11 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
           liveResponseConversationRead !== null && (path === '/hh/response-conversation' || path === '/hh/response-conversation/app.js') ||
           liveAssignmentRead !== null &&
           (path === '/hh/assignment' || path === '/hh/assignment/app.js' || path === '/api/v1/ui/vacancy-assignment') ||
-          isAcceptedReportDraftPath || isAcceptedReportPagePath))) {
+          isAcceptedReportDraftPath || acceptedReportPolicyPath || isAcceptedReportPagePath))) {
       status = 404;
       body = { error: 'not_found' };
     } else if (isAcceptedReportDraftPath && !acceptedReportRouteMethodAllowed ||
-        req.method !== 'GET' && req.method !== 'HEAD' && !(req.method === 'POST' && (isCandidateSearchPath || isReportDraftPath || isAcceptedReportDraftPath || path === '/api/v1/ui/vacancy-assignment' && liveAssignmentSave !== null || path === '/hh/response-conversation' && liveResponseConversationRead !== null || path === '/api/hh/proactive/vacancy-state' || path === '/api/hh/proactive/search' || realProactiveFeed !== null && path.startsWith('/api/hh/proactive/'))) && !(req.method === 'PATCH' && (isReportDraftPath || isAcceptedReportDraftPath))) {
+        req.method !== 'GET' && req.method !== 'HEAD' && !(req.method === 'POST' && (isCandidateSearchPath || isReportDraftPath || isAcceptedReportDraftPath || path === '/api/v1/ui/vacancy-assignment' && liveAssignmentSave !== null || path === '/hh/response-conversation' && liveResponseConversationRead !== null || path === '/api/hh/proactive/vacancy-state' || path === '/api/hh/proactive/search' || realProactiveFeed !== null && path.startsWith('/api/hh/proactive/'))) && !(req.method === 'PATCH' && (isReportDraftPath || isAcceptedReportDraftPath)) && !(acceptedReportPolicyPath && req.method === 'PUT')) {
       status = 405;
       body = { error: 'method_not_allowed' };
       res.setHeader('Allow', isAcceptedReportDraftPath ? 'GET, HEAD, POST, PATCH' : isCandidateSearchPath || isReportDraftPath ? 'GET, HEAD, POST, PATCH' : path === '/api/v1/ui/vacancy-assignment' && liveAssignmentSave !== null ? 'GET, HEAD, POST' : 'GET, HEAD');
@@ -994,6 +1002,62 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
           res.setHeader('Allow', path === '/api/hh/proactive/vacancy-state' || path === '/api/hh/proactive/search' ? 'POST' : 'GET, HEAD');
         }
       }
+    } else if (acceptedReportPolicyPath) {
+      let context;
+      try { context = await trustedReadResolver(req, url, res); }
+      catch (error) { status = 503; body = { error: error instanceof ConnectedAppIntrospectionUnavailable
+        ? 'connected_app_introspection_unavailable' : 'trusted_profile_unavailable' }; }
+      if (status === 200 && (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes))) {
+        status = 401; body = { error: 'trusted_profile_context_required' };
+      } else if (status === 200 && !context.scopes.includes(req.method === 'GET'
+        ? 'recruiting.reports.read' : 'recruiting.reports.edit')) {
+        status = 403; body = { error: 'report_scope_required' };
+      } else if (status === 200 && req.method === 'GET') {
+        const keys = [...url.searchParams.keys()];
+        const candidateId = url.searchParams.get('candidateId');
+        const vacancyId = url.searchParams.get('vacancyId');
+        const sourceKind = url.searchParams.get('sourceKind') ?? 'accepted_cold_search';
+        if (!['candidateId,vacancyId', 'candidateId,sourceKind,vacancyId'].includes([...new Set(keys)].sort().join(',')) ||
+            keys.some(key => !['candidateId', 'vacancyId', 'sourceKind'].includes(key)) ||
+            !isRealProactiveVacancy(candidateId) || !isRealProactiveVacancy(vacancyId) ||
+            !['accepted_cold_search', 'accepted_hh_response'].includes(sourceKind)) {
+          status = 400; body = { error: 'invalid_report_policy_request' };
+        } else {
+          const result = await acceptedReportPolicies.get(context, { candidateId, vacancyId, sourceKind });
+          if (result.kind === 'found') body = result.policy;
+          else if (result.kind === 'source_not_found') { status = 404; body = { error: 'not_found' }; }
+          else if (result.kind === 'stale_source') { status = 409; body = { error: 'stale_report_source' }; }
+          else if (result.kind === 'invalid_request') { status = 400; body = { error: 'invalid_report_policy_request' }; }
+          else { status = 503; body = { error: 'report_source_unavailable' }; }
+        }
+      } else if (status === 200 && req.method === 'PUT') {
+        if (url.search !== '') { status = 400; body = { error: 'unexpected_query_parameters' }; }
+        else {
+          let request;
+          try { request = await readJsonBody(req); } catch (error) {
+            status = error.message === 'body_too_large' ? 413 : 400;
+            body = { error: error.message === 'body_too_large' ? 'request_too_large' : 'invalid_json' };
+          }
+          if (status === 200 && (!isPlainObject(request) ||
+              Object.keys(request).sort().join(',') !== 'candidateId,expectedPolicyRevision,policy,sourceKind,vacancyId' ||
+              !isRealProactiveVacancy(request.candidateId) || !isRealProactiveVacancy(request.vacancyId) ||
+              !['accepted_cold_search', 'accepted_hh_response'].includes(request.sourceKind) ||
+              !Number.isSafeInteger(request.expectedPolicyRevision) || request.expectedPolicyRevision < 0 ||
+              !isPlainObject(request.policy) || Object.keys(request.policy).join(',') !== 'forbiddenPhrases' ||
+              !Array.isArray(request.policy.forbiddenPhrases) || request.policy.forbiddenPhrases.length > 50 ||
+              !request.policy.forbiddenPhrases.every(value => typeof value === 'string' && value.trim() && value.length <= 200))) {
+            status = 400; body = { error: 'invalid_report_policy' };
+          } else if (status === 200) {
+            const result = await acceptedReportPolicies.update(context, request, request.expectedPolicyRevision, request.policy);
+            if (result.kind === 'updated' || result.kind === 'existing') body = result.policy;
+            else if (result.kind === 'stale_policy') { status = 409; body = { error: 'stale_report_policy', policyRevision: `policy-r${result.policyRevision}` }; }
+            else if (result.kind === 'source_not_found') { status = 404; body = { error: 'not_found' }; }
+            else if (result.kind === 'stale_source') { status = 409; body = { error: 'stale_report_source' }; }
+            else if (result.kind === 'invalid_request') { status = 400; body = { error: 'invalid_report_policy' }; }
+            else { status = 503; body = { error: 'report_source_unavailable' }; }
+          }
+        }
+      }
     } else if (isAcceptedReportDraftPath) {
       let context;
       try { context = await trustedReadResolver(req, url, res); }
@@ -1023,6 +1087,8 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
             if (result.kind === 'created' || result.kind === 'existing') {
               status = result.kind === 'created' ? 201 : 200; body = result.report;
             } else if (result.kind === 'stale_source') { status = 409; body = { error: 'stale_report_source' }; }
+            else if (result.kind === 'stale_policy') { status = 409; body = { error: 'stale_report_policy', policyRevision: `policy-r${result.policyRevision}` }; }
+            else if (result.kind === 'policy_violation') { status = 422; body = { error: 'report_policy_violation', policyRevision: `policy-r${result.policyRevision}`, violations: result.violations }; }
             else if (result.kind === 'source_not_found') { status = 404; body = { error: 'not_found' }; }
             else if (result.kind === 'idempotency_conflict') { status = 409; body = { error: 'idempotency_key_reused' }; }
             else { status = 503; body = { error: 'report_source_unavailable' }; }
@@ -1031,6 +1097,8 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
           const result = await acceptedReportDrafts.get(context, ref);
           if (result.kind === 'found') body = result.report;
           else if (result.kind === 'stale_source') { status = 409; body = { error: 'stale_report_source' }; }
+          else if (result.kind === 'stale_policy') { status = 409; body = { error: 'stale_report_policy', policyRevision: `policy-r${result.policyRevision}` }; }
+          else if (result.kind === 'policy_violation') { status = 422; body = { error: 'report_policy_violation', policyRevision: `policy-r${result.policyRevision}`, violations: result.violations }; }
           else if (result.kind === 'source_not_found') { status = 404; body = { error: 'not_found' }; }
           else if (result.kind === 'not_found') { status = 404; body = { error: 'not_found' }; }
           else { status = 503; body = { error: 'report_source_unavailable' }; }
@@ -1038,6 +1106,8 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
           const result = await acceptedReportDrafts.preview(context, ref);
           if (result.kind === 'preview') body = result.body;
           else if (result.kind === 'stale_source') { status = 409; body = { error: 'stale_report_source' }; }
+          else if (result.kind === 'stale_policy') { status = 409; body = { error: 'stale_report_policy', policyRevision: `policy-r${result.policyRevision}` }; }
+          else if (result.kind === 'policy_violation') { status = 422; body = { error: 'report_policy_violation', policyRevision: `policy-r${result.policyRevision}`, violations: result.violations }; }
           else if (result.kind === 'source_not_found') { status = 404; body = { error: 'not_found' }; }
           else if (result.kind === 'not_found') { status = 404; body = { error: 'not_found' }; }
           else { status = 503; body = { error: 'report_source_unavailable' }; }
@@ -1055,6 +1125,8 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
             if (result.kind === 'reviewed') body = result.report;
             else if (result.kind === 'stale_report') { status = 409; body = { error: 'stale_report_revision', report: result.report }; }
             else if (result.kind === 'stale_source') { status = 409; body = { error: 'stale_report_source' }; }
+            else if (result.kind === 'stale_policy') { status = 409; body = { error: 'stale_report_policy', policyRevision: `policy-r${result.policyRevision}` }; }
+            else if (result.kind === 'policy_violation') { status = 422; body = { error: 'report_policy_violation', policyRevision: `policy-r${result.policyRevision}`, violations: result.violations }; }
             else if (result.kind === 'source_not_found') { status = 404; body = { error: 'not_found' }; }
             else if (result.kind === 'not_found') { status = 404; body = { error: 'not_found' }; }
             else { status = 503; body = { error: 'report_source_unavailable' }; }
@@ -1073,6 +1145,8 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
             else if (result.kind === 'stale_report') { status = 409; body = { error: 'stale_report_revision', report: result.report }; }
             else if (result.kind === 'not_editable') { status = 409; body = { error: 'report_not_editable' }; }
             else if (result.kind === 'stale_source') { status = 409; body = { error: 'stale_report_source' }; }
+            else if (result.kind === 'stale_policy') { status = 409; body = { error: 'stale_report_policy', policyRevision: `policy-r${result.policyRevision}` }; }
+            else if (result.kind === 'policy_violation') { status = 422; body = { error: 'report_policy_violation', policyRevision: `policy-r${result.policyRevision}`, violations: result.violations }; }
             else if (result.kind === 'source_not_found' || result.kind === 'not_found') { status = 404; body = { error: 'not_found' }; }
             else if (result.kind === 'invalid_request') { status = 400; body = { error: 'invalid_report_edit' }; }
             else { status = 503; body = { error: 'report_source_unavailable' }; }

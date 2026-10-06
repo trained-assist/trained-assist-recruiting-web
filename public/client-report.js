@@ -10,11 +10,15 @@ const saveEditsButton = document.querySelector('#save-edits');
 const approvalNode = document.querySelector('#approval');
 const approveButton = document.querySelector('#approve');
 const requestChangesButton = document.querySelector('#request-changes');
+const policyListNode = document.querySelector('#policy-list');
+const policyPhraseNode = document.querySelector('#policy-phrase');
+const addPolicyPhraseButton = document.querySelector('#add-policy-phrase');
 const params = new URLSearchParams(location.search);
 const candidateId = params.get('candidate_id');
 const vacancyId = params.get('vacancy_id');
 const sourceKind = params.get('source_kind') ?? 'accepted_cold_search';
 let report = null;
+let policy = null;
 let csrfToken = null;
 
 function showStatus(text) { statusNode.textContent = text; }
@@ -25,6 +29,8 @@ async function request(path, options = {}) {
 function reportError(response, payload) {
   const known = {
     stale_report_source: 'Источник изменился. Откройте кандидата заново и создайте новый черновик.',
+    stale_report_policy: 'Ограничения отчёта изменились. Обновите страницу перед продолжением.',
+    report_policy_violation: `Черновик содержит запретную формулировку в полях: ${(payload?.violations ?? []).map(item => item.fieldPath).join(', ')}. Исправьте ограничения или источник и откройте отчёт заново.`,
     connected_app_introspection_unavailable: 'Проверка профиля временно недоступна.',
     report_source_unavailable: 'Не удалось проверить источник кандидата.',
     not_found: 'Кандидат или черновик не найден для выбранного профиля.',
@@ -33,6 +39,33 @@ function reportError(response, payload) {
     report_not_editable: 'Этот черновик уже подтверждён и больше не редактируется.',
   };
   return known[payload?.error] ?? `Запрос не выполнен (${response.status}).`;
+}
+
+function policyRevisionNumber() { return Number(String(policy?.policyRevision ?? 'policy-r0').replace(/^policy-r/, '')); }
+function renderPolicy() {
+  policyListNode.replaceChildren();
+  for (const [index, phrase] of (policy?.forbiddenPhrases ?? []).entries()) {
+    const item = document.createElement('li'); item.append(document.createTextNode(phrase + ' '));
+    const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = 'Убрать';
+    remove.addEventListener('click', () => savePolicy(policy.forbiddenPhrases.filter((_, i) => i !== index)));
+    item.append(remove); policyListNode.append(item);
+  }
+}
+
+async function savePolicy(forbiddenPhrases) {
+  if (!policy || forbiddenPhrases.length > 50) return;
+  addPolicyPhraseButton.disabled = true;
+  try {
+    const response = await request('/api/v1/ui/accepted-report-policy', { method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ candidateId, vacancyId, sourceKind,
+        expectedPolicyRevision: policyRevisionNumber(), policy: { forbiddenPhrases } }) });
+    const result = await response.json();
+    if (!response.ok) { showStatus(reportError(response, result)); addPolicyPhraseButton.disabled = false; return; }
+    policy = result; renderPolicy(); policyPhraseNode.value = '';
+    showStatus('Ограничения сохранены. Проверяю источник и открываю черновик с новой ревизией правил…');
+    await load();
+  } catch { showStatus('Не удалось сохранить ограничения отчёта.'); addPolicyPhraseButton.disabled = false; }
 }
 
 function experienceRow(value = { role: '', company: '', period: '' }) {
@@ -105,10 +138,20 @@ async function load() {
     if (!sourceResponse.ok) { showStatus(reportError(sourceResponse, source)); return; }
     summaryNode.textContent = `${source.clientDraftFields.candidateName} · ${source.clientDraftFields.position} · ${source.clientDraftFields.vacancyTitle}`;
     revisionNode.textContent = `Ревизия принятого источника: ${source.sourceRevision}`;
-    const key = `r04:${source.sourceRevision}`;
+    const policyUrl = new URL('/api/v1/ui/accepted-report-policy', location.origin);
+    policyUrl.searchParams.set('candidateId', candidateId);
+    policyUrl.searchParams.set('vacancyId', vacancyId);
+    policyUrl.searchParams.set('sourceKind', sourceKind);
+    const policyResponse = await request(policyUrl.pathname + policyUrl.search);
+    policy = await policyResponse.json();
+    if (!policyResponse.ok) { showStatus(reportError(policyResponse, policy)); return; }
+    addPolicyPhraseButton.disabled = false; renderPolicy();
+    const policyRevision = policyRevisionNumber();
+    const key = `r04:${source.sourceRevision}:p${policyRevision}`;
     const createResponse = await request('/api/v1/ui/accepted-report-drafts', {
       method: 'POST', headers: { 'content-type': 'application/json', 'Idempotency-Key': key },
-      body: JSON.stringify({ candidateId, vacancyId, sourceKind, expectedSourceRevision: source.sourceRevision }),
+      body: JSON.stringify({ candidateId, vacancyId, sourceKind, expectedSourceRevision: source.sourceRevision,
+        expectedPolicyRevision: policyRevision }),
     });
     report = await createResponse.json();
     if (!createResponse.ok) { showStatus(reportError(createResponse, report)); return; }
@@ -166,6 +209,12 @@ approvalNode.addEventListener('change', syncReviewControls);
 addExperienceButton.addEventListener('click', () => {
   if (experienceNode.querySelectorAll('fieldset').length >= 5) { showStatus('Можно указать не более пяти мест работы.'); return; }
   experienceRow(); saveEditsButton.disabled = false;
+});
+
+addPolicyPhraseButton.addEventListener('click', async () => {
+  const phrase = policyPhraseNode.value.trim();
+  if (!phrase) { showStatus('Введите точную запретную фразу.'); return; }
+  await savePolicy([...policy.forbiddenPhrases, phrase]);
 });
 positionNode.addEventListener('input', () => { saveEditsButton.disabled = false; });
 vacancyTitleNode.addEventListener('input', () => { saveEditsButton.disabled = false; });

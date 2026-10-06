@@ -151,11 +151,51 @@ test('private runtime composes accepted HH response source, encrypted draft, BFF
   assert.equal(JSON.stringify(source).includes('private@example.test'), false);
   assert.equal(JSON.stringify(source).includes('internalAssessment'), false);
 
+  const policyUrl = new URL('/api/v1/ui/accepted-report-policy', base);
+  policyUrl.searchParams.set('candidateId', negotiationId);
+  policyUrl.searchParams.set('vacancyId', vacancyId);
+  policyUrl.searchParams.set('sourceKind', 'accepted_hh_response');
+  const emptyPolicyResponse = await fetch(policyUrl, { headers: { cookie: sessionCookie } });
+  assert.equal(emptyPolicyResponse.status, 200);
+  const emptyPolicy = await emptyPolicyResponse.json();
+  assert.equal(emptyPolicy.policyRevision, 'policy-r0');
+  const forbiddenPhrase = 'synthetic platform engineer';
+  const policyWithoutCsrf = await fetch(base + '/api/v1/ui/accepted-report-policy', { method: 'PUT', headers: {
+    cookie: sessionCookie, origin, 'content-type': 'application/json' },
+    body: JSON.stringify({ candidateId: negotiationId, vacancyId, sourceKind: 'accepted_hh_response',
+      expectedPolicyRevision: 0, policy: { forbiddenPhrases: [forbiddenPhrase] } }) });
+  assert.equal(policyWithoutCsrf.status, 401);
+  const setPolicy = await fetch(base + '/api/v1/ui/accepted-report-policy', { method: 'PUT', headers: {
+    cookie: sessionCookie, origin, 'x-csrf-token': session.csrfToken, 'content-type': 'application/json' },
+    body: JSON.stringify({ candidateId: negotiationId, vacancyId, sourceKind: 'accepted_hh_response',
+      expectedPolicyRevision: 0, policy: { forbiddenPhrases: [forbiddenPhrase] } }) });
+  assert.equal(setPolicy.status, 200);
+  assert.equal((await setPolicy.json()).policyRevision, 'policy-r1');
+  const blockedCreate = await fetch(base + '/api/v1/ui/accepted-report-drafts', { method: 'POST',
+    headers: { cookie: sessionCookie, origin, 'x-csrf-token': session.csrfToken,
+      'content-type': 'application/json', 'Idempotency-Key': 'runtime-policy-block-001' },
+    body: JSON.stringify({ candidateId: negotiationId, vacancyId, sourceKind: 'accepted_hh_response',
+      expectedSourceRevision: source.sourceRevision, expectedPolicyRevision: 1 }) });
+  assert.equal(blockedCreate.status, 422);
+  const blockedBody = await blockedCreate.json();
+  assert.equal(blockedBody.error, 'report_policy_violation');
+  assert.deepEqual(blockedBody.violations, [
+    { fieldPath: 'position', rule: 'forbidden', ruleIndex: 0 },
+    { fieldPath: 'vacancyTitle', rule: 'forbidden', ruleIndex: 0 },
+  ]);
+  assert.equal(JSON.stringify(blockedBody).includes(forbiddenPhrase), false);
+  const clearPolicy = await fetch(base + '/api/v1/ui/accepted-report-policy', { method: 'PUT', headers: {
+    cookie: sessionCookie, origin, 'x-csrf-token': session.csrfToken, 'content-type': 'application/json' },
+    body: JSON.stringify({ candidateId: negotiationId, vacancyId, sourceKind: 'accepted_hh_response',
+      expectedPolicyRevision: 1, policy: { forbiddenPhrases: [] } }) });
+  assert.equal(clearPolicy.status, 200);
+  assert.equal((await clearPolicy.json()).policyRevision, 'policy-r2');
+
   const create = await fetch(base + '/api/v1/ui/accepted-report-drafts', { method: 'POST',
     headers: { cookie: sessionCookie, origin, 'x-csrf-token': session.csrfToken,
       'content-type': 'application/json', 'Idempotency-Key': 'runtime-hh-response-report-001' },
     body: JSON.stringify({ candidateId: negotiationId, vacancyId, sourceKind: 'accepted_hh_response',
-      expectedSourceRevision: source.sourceRevision }) });
+      expectedSourceRevision: source.sourceRevision, expectedPolicyRevision: 2 }) });
   assert.equal(create.status, 201);
   const draft = await create.json();
   const preview = await fetch(base + '/api/v1/ui/accepted-report-drafts/' + draft.reportRef + '/preview',
@@ -211,6 +251,16 @@ test('private runtime composes accepted HH response source, encrypted draft, BFF
   const afterRestart = await fetch(restartedBase + '/api/v1/ui/accepted-report-drafts/' +
     draft.reportRef + '/preview', { headers: { cookie: sessionCookie } });
   assert.equal(afterRestart.status, 200, 'encrypted report and BFF session survive process restart');
+  const changedPolicy = await fetch(restartedBase + '/api/v1/ui/accepted-report-policy', { method: 'PUT', headers: {
+    cookie: sessionCookie, origin, 'x-csrf-token': session.csrfToken, 'content-type': 'application/json' },
+    body: JSON.stringify({ candidateId: negotiationId, vacancyId, sourceKind: 'accepted_hh_response',
+      expectedPolicyRevision: 2, policy: { forbiddenPhrases: ['confidential'] } }) });
+  assert.equal(changedPolicy.status, 200);
+  assert.equal((await changedPolicy.json()).policyRevision, 'policy-r3');
+  const staleByPolicy = await fetch(restartedBase + '/api/v1/ui/accepted-report-drafts/' +
+    draft.reportRef + '/preview', { headers: { cookie: sessionCookie } });
+  assert.equal(staleByPolicy.status, 409);
+  assert.equal((await staleByPolicy.json()).error, 'stale_report_policy');
   currentResume = { ...currentResume, title: 'Changed outside the accepted ATS input' };
   const stale = await fetch(restartedBase + '/api/v1/ui/accepted-report-drafts/' +
     draft.reportRef + '/preview', { headers: { cookie: sessionCookie } });

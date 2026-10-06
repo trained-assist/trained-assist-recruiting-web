@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import Ajv2020 from 'ajv/dist/2020.js';
 import { createRecruitingConnectedAppBff, createMemoryConnectedAppBffStore } from '../src/connected-app-bff.js';
 import { createMemoryAcceptedReportDraftStore } from '../src/accepted-report-drafts.js';
+import { checkReportPolicy, createReportPolicyService, normalizeReportPolicy } from '../src/report-policy.js';
 import { createHhResponseReportSourceRead } from '../src/r04-hh-response-report-source.js';
 import { SqliteAcceptedReportDraftStore } from '../src/sqlite-accepted-report-draft-store.js';
 import { createRecruitingServer } from '../src/server.js';
@@ -260,22 +261,34 @@ test('SQLite report drafts survive restart, encrypt candidate fields at rest, an
   const context = { profileId: profileOne, scopes: requestedScopes };
   const request = { candidateId, vacancyId, expectedSourceRevision: sourceRevision };
   const firstStore = new SqliteAcceptedReportDraftStore({ filename, encryptionKey: key });
+  const firstPolicyService = createReportPolicyService({ sourceRead, store: firstStore, clock: () => nowDate });
+  const policyContext = { candidateId, vacancyId, sourceKind: 'accepted_cold_search' };
+  const policyUpdate = await firstPolicyService.update(context, policyContext, 0,
+    { forbiddenPhrases: ['private promise'] });
+  assert.equal(policyUpdate.kind, 'updated');
+  assert.equal(policyUpdate.policy.policyRevision, 'policy-r1');
   const firstDomain = (await import('../src/accepted-report-drafts.js')).createAcceptedReportDrafts({
     sourceRead, store: firstStore, clock: () => nowDate });
-  const created = await firstDomain.create(context, 'r04-persist-restart-001', request);
+  const created = await firstDomain.create(context, 'r04-persist-restart-001',
+    { ...request, expectedPolicyRevision: 1 });
   assert.equal(created.kind, 'created');
   const ref = created.report.reportRef;
   firstStore.close();
   const mode = (await stat(filename)).mode & 0o777;
   assert.equal(mode, 0o600);
   const bytes = await readFile(filename);
-  for (const privateText of ['Synthetic Candidate', 'INTERNAL_PRIVATE_COMMENT', 'candidate@example.invalid', 'ATS_CONTEXT_PRIVATE'])
+  for (const privateText of ['Synthetic Candidate', 'INTERNAL_PRIVATE_COMMENT', 'candidate@example.invalid', 'ATS_CONTEXT_PRIVATE', 'private promise'])
     assert.equal(bytes.includes(Buffer.from(privateText)), false, `${privateText} is encrypted or excluded at rest`);
 
   const secondStore = new SqliteAcceptedReportDraftStore({ filename, encryptionKey: key });
   t.after(async () => { secondStore.close(); await rm(dir, { recursive: true, force: true }); });
   const secondDomain = (await import('../src/accepted-report-drafts.js')).createAcceptedReportDrafts({
     sourceRead, store: secondStore, clock: () => nowDate });
+  const loadedPolicy = await secondStore.getPolicy(profileOne, candidateId, vacancyId);
+  assert.equal(loadedPolicy.revision, 1);
+  assert.deepEqual(loadedPolicy.forbiddenPhrases, ['private promise']);
+  assert.equal(loadedPolicy.audit.length, 1);
+  assert.equal(secondStore.getPolicy(profileTwo, candidateId, vacancyId), null);
   const loaded = await secondDomain.get(context, ref);
   assert.equal(loaded.kind, 'found');
   assert.equal(loaded.report.sourceRevision, sourceRevision);
@@ -284,23 +297,65 @@ test('SQLite report drafts survive restart, encrypt candidate fields at rest, an
   assert.equal(internal.audit.length, 1);
   assert.equal(internal.audit[0].actorProfileId, profileOne);
   assert.equal(secondStore.get(profileTwo, ref), null);
-  const edited = await secondDomain.edit(context, ref, 'report-r1', { position: 'Reviewed Synthetic Role' });
+  const secondPolicyService = createReportPolicyService({ sourceRead, store: secondStore, clock: () => nowDate });
+  const policyChanged = await secondPolicyService.update(context, policyContext, 1,
+    { forbiddenPhrases: ['private promise', 'never share a phone number'] });
+  assert.equal(policyChanged.kind, 'updated');
+  assert.equal((await secondDomain.preview(context, ref)).kind, 'stale_policy');
+  assert.equal((await secondDomain.review(context, ref, 'report-r1', 'approved')).kind, 'stale_policy');
+  assert.equal((await secondDomain.edit(context, ref, 'report-r1', { position: 'Reviewed Synthetic Role' })).kind, 'stale_policy');
+  const regenerated = await secondDomain.create(context, 'r04-persist-restart-002',
+    { ...request, expectedPolicyRevision: 2 });
+  assert.equal(regenerated.kind, 'created');
+  const edited = await secondDomain.edit(context, regenerated.report.reportRef, 'report-r1',
+    { position: 'Reviewed Synthetic Role' });
   assert.equal(edited.kind, 'edited');
   assert.equal(edited.report.reportRevision, 'report-r2');
   assert.equal(edited.report.clientFields.position, 'Reviewed Synthetic Role');
-  const afterEdit = secondStore.get(profileOne, ref);
+  const afterEdit = secondStore.get(profileOne, regenerated.report.reportRef);
   assert.equal(afterEdit.audit.length, 2);
   assert.equal(afterEdit.audit[1].action, 'client_fields_edited');
   assert.deepEqual(afterEdit.audit[1].fields, ['position']);
   assert.equal((await readFile(filename)).includes(Buffer.from('Reviewed Synthetic Role')), false);
-  const approved = await secondDomain.review(context, ref, 'report-r2', 'approved');
+  const approved = await secondDomain.review(context, regenerated.report.reportRef, 'report-r2', 'approved');
   assert.equal(approved.kind, 'reviewed');
   assert.equal(approved.report.reviewState, 'approved');
-  assert.equal((await secondDomain.review(context, ref, 'report-r2', 'approved')).kind, 'stale_report');
-  assert.equal((await secondDomain.edit(context, ref, 'report-r3', { position: 'Forbidden' })).kind, 'not_editable');
+  assert.equal((await secondDomain.review(context, regenerated.report.reportRef, 'report-r2', 'approved')).kind, 'stale_report');
+  assert.equal((await secondDomain.edit(context, regenerated.report.reportRef, 'report-r3', { position: 'Forbidden' })).kind, 'not_editable');
 
   revision = 'c'.repeat(64);
   assert.equal((await secondDomain.preview(context, ref)).kind, 'stale_source');
+});
+
+test('report policy phrase matching normalizes case, whitespace and ё/e without returning rule text', () => {
+  const policy = normalizeReportPolicy({ forbiddenPhrases: ['Рассматривает удалённый формат'] });
+  assert.ok(policy);
+  assert.deepEqual(checkReportPolicy({ summary: 'РАССМАТРИВАЕТ   удаленный формат работы' }, policy),
+    [{ fieldPath: 'summary', rule: 'forbidden', ruleIndex: 0 }]);
+  assert.equal(normalizeReportPolicy({ forbiddenPhrases: [' one ', 'ONE'] }), null);
+  assert.equal(normalizeReportPolicy({ forbiddenPhrases: ['x'], other: 'hidden' }), null);
+});
+
+test('report policy is source-bound, profile-scoped and optimistic on revision', async () => {
+  const store = createMemoryAcceptedReportDraftStore();
+  const sourceRead = async (context, request) => context.profileId === profileOne &&
+    request.candidateId === candidateId && request.vacancyId === vacancyId
+    ? { status: 200, body: { profileId: profileOne, candidateId, vacancyId,
+      sourceKind: 'accepted_cold_search', sourceRevision, publication: 'disabled' } }
+    : { status: 404, body: { error: 'not_found' } };
+  const policies = createReportPolicyService({ sourceRead, store, clock: () => new Date(now) });
+  const params = { candidateId, vacancyId, sourceKind: 'accepted_cold_search' };
+  const context = { profileId: profileOne, scopes: ['recruiting.reports.read', 'recruiting.reports.edit'] };
+  assert.equal((await policies.get(context, params)).policy.policyRevision, 'policy-r0');
+  const changed = await policies.update(context, params, 0, { forbiddenPhrases: ['private formula'] });
+  assert.equal(changed.kind, 'updated');
+  assert.equal(changed.policy.policyRevision, 'policy-r1');
+  const policySchema = JSON.parse(await readFile(new URL('../contracts/v1-accepted-report-policy.schema.json', import.meta.url), 'utf8'));
+  assert.equal(new Ajv2020().compile(policySchema)(changed.policy), true);
+  assert.equal((await policies.update(context, params, 0, { forbiddenPhrases: [] })).kind, 'stale_policy');
+  assert.equal((await policies.get({ ...context, profileId: profileTwo }, params)).kind, 'source_not_found');
+  assert.equal((await policies.get(context, { ...params, vacancyId: 'vacancy_other' })).kind, 'source_not_found');
+  assert.equal(store.getPolicy(profileTwo, candidateId, vacancyId), null);
 });
 
 test('HH response source reaches the shared report draft over real BFF/HTTP without opening messages', async t => {
