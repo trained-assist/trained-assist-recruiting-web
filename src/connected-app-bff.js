@@ -79,7 +79,7 @@ export function createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins, 
       redirectUri !== `${publicOrigin}/auth/connected/callback` ||
       !store || !['putPending', 'takePending', 'putSession', 'getSession', 'deleteSession'].every(method => typeof store[method] === 'function') ||
       typeof exchangeCode !== 'function' || typeof introspectToken !== 'function' || typeof clock !== 'function' ||
-      !Array.isArray(scopes) || scopes.length < 1 || scopes.some(scope => !['recruiting.responses.read', 'recruiting.reports.read'].includes(scope)))
+      !Array.isArray(scopes) || scopes.length < 1 || scopes.some(scope => !['recruiting.responses.read', 'recruiting.reports.read', 'recruiting.candidateSearch'].includes(scope)))
     throw new TypeError('connected_app_bff_ports_required');
 
   const inspect = async token => {

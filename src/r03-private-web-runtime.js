@@ -24,7 +24,8 @@ import { createRecruitingServer } from './server.js';
 // SQLite handles and closes them with the server.
 export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImpl = globalThis.fetch,
   clock = () => new Date(), publicOrigin = 'https://recruiter-assistant.ru',
-  historicalImportConfigFile, historicalReceiptFile, historicalReceiptSha256 } = {}) {
+  historicalImportConfigFile, historicalReceiptFile, historicalReceiptSha256,
+  connectedAppBff = null } = {}) {
   if (typeof fetchImpl !== 'function' || typeof clock !== 'function')
     throw new TypeError('private_web_runtime_unavailable');
   const historyOptions = [historicalImportConfigFile, historicalReceiptFile, historicalReceiptSha256];
@@ -34,7 +35,7 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
   const historicalRead = historicalReceiptFile === undefined ? null : loadPrivateHistoricalRead({
     importConfigFile: historicalImportConfigFile, receiptFile: historicalReceiptFile,
     receiptSha256: historicalReceiptSha256, hostConfig: config });
-  const legacySecret = loadPrivateHostSecret(secretsDirectory, 'legacy_page_secret');
+  const legacySecret = connectedAppBff === null ? loadPrivateHostSecret(secretsDirectory, 'legacy_page_secret') : null;
   const encryptionKey = loadPrivateHostSecret(secretsDirectory, 'hh_encryption_key');
   if (!/^[a-fA-F0-9]{64}$/.test(encryptionKey)) throw new Error('invalid_private_encryption_key');
   const clientId = loadPrivateHostSecret(secretsDirectory, 'hh_client_id');
@@ -74,18 +75,18 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
     const manualCandidate = createR03PrivateManualCandidate({ candidateState: candidates,
       loadBasePlan: stack.loadBasePlan, credentialBroker: stack.credentialBroker,
       isVacancyOwned: config.isVacancyOwned, fetchImpl, clock });
-    const auth = createPrivateWebAuth({ legacySecret,
+    const auth = connectedAppBff === null ? createPrivateWebAuth({ legacySecret,
       resolveLegacyProfile: config.resolveLegacyProfile,
       isWebProfileMapped: config.isWebProfileMapped, publicOrigin,
-      clock: () => clock().getTime() });
+      clock: () => clock().getTime() }) : null;
     const server = createRecruitingServer({ realProactiveFeed: feed,
       realProactiveHistoricalRead: historicalRead,
       realProactiveActions: actions, realProactivePrompt: prompt,
       realProactiveSeenImport: seenImport,
       realProactiveAiScore: aiScore,
       realProactiveManualCandidate: manualCandidate,
-      resolveTrustedProfileContext: auth,
-      resolveLegacyOpenTab: auth.resolveLegacyOpenTab,
+      resolveTrustedProfileContext: auth ?? (() => null), connectedAppBff,
+      resolveLegacyOpenTab: auth?.resolveLegacyOpenTab ?? null,
       resolveRealVacancyOwnership: (context, vacancyId) => config.isVacancyOwned(context.profileId, vacancyId),
       resolveRealDefaultVacancy: context => {
         const ids = config.vacancyIdsForProfile(context.profileId);
