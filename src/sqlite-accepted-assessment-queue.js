@@ -71,10 +71,38 @@ export class SqliteAcceptedAssessmentQueue {
       PRIMARY KEY(profile_id,vacancy_id,job_id,resume_id)
     );
     CREATE INDEX IF NOT EXISTS r03_assessment_due ON r03_accepted_assessment_queue
-      (profile_id,vacancy_id,status,retry_at,created_at)`);
+      (profile_id,vacancy_id,status,retry_at,created_at);
+    CREATE TABLE IF NOT EXISTS r03_assessment_dispatch_budget (
+      window_start TEXT PRIMARY KEY, dispatched INTEGER NOT NULL CHECK(dispatched >= 0)
+    )`);
   }
 
   close() { this.db.close(); }
+
+  // One shared host budget, durable across processes and restarts. A reserved
+  // dispatch is charged even if the process dies before the provider replies.
+  budgetWindow() {
+    const ms = this.clock().getTime();
+    if (!Number.isFinite(ms)) throw new Error('assessment_clock_invalid');
+    return new Date(Math.floor(ms / 300_000) * 300_000).toISOString();
+  }
+
+  remainingDispatches(cap = 6) {
+    if (!Number.isSafeInteger(cap) || cap < 1 || cap > 6) throw new TypeError('assessment_budget_invalid');
+    const spent = this.db.prepare('SELECT dispatched FROM r03_assessment_dispatch_budget WHERE window_start=?')
+      .get(this.budgetWindow())?.dispatched ?? 0;
+    return Math.max(0, cap - spent);
+  }
+
+  reserveDispatch(cap = 6) {
+    const window = this.budgetWindow();
+    return this.db.transaction(() => {
+      this.db.prepare(`INSERT OR IGNORE INTO r03_assessment_dispatch_budget(window_start,dispatched)
+        VALUES(?,0)`).run(window);
+      return this.db.prepare(`UPDATE r03_assessment_dispatch_budget SET dispatched=dispatched+1
+        WHERE window_start=? AND dispatched<?`).run(window, cap).changes === 1;
+    }).immediate();
+  }
 
   accepted(profileId, vacancyId) {
     this.candidateState.assertScope(profileId, vacancyId);
@@ -127,10 +155,26 @@ export class SqliteAcceptedAssessmentQueue {
         lease_owner=NULL,lease_until=NULL,updated_at=?
         WHERE profile_id=? AND vacancy_id=? AND status='running' AND lease_until<=?`)
         .run(at, profileId, vacancyId, at);
-      const rows = this.db.prepare(`SELECT * FROM r03_accepted_assessment_queue
-        WHERE profile_id=? AND vacancy_id=? AND
-          (status='pending' OR status='deferred' AND retry_at<=?)
-        ORDER BY created_at,job_id,resume_id LIMIT ?`).all(profileId, vacancyId, at, limit);
+      // Reserve one third for the oldest backlog so fresh snapshots cannot
+      // starve it. The rest prefers recent, high pre-score candidates for the
+      // recruiter opening the morning page. Both lanes are deterministic.
+      const due = `q.profile_id=? AND q.vacancy_id=? AND
+        (q.status='pending' OR q.status='deferred' AND q.retry_at<=?)`;
+      const oldest = this.db.prepare(`SELECT q.* FROM r03_accepted_assessment_queue q
+        WHERE ${due} ORDER BY q.created_at,q.job_id,q.resume_id LIMIT ?`)
+        .all(profileId, vacancyId, at, Math.max(1, Math.floor(limit / 3)));
+      const recent = this.db.prepare(`SELECT q.* FROM r03_accepted_assessment_queue q
+        JOIN real_hh_snapshot_member m ON m.profile_id=q.profile_id AND
+          m.vacancy_id=q.vacancy_id AND m.job_id=q.job_id AND m.resume_id=q.resume_id
+        WHERE ${due} ORDER BY q.created_at DESC,
+          CAST(json_extract(m.projection,'$.preScore') AS REAL) DESC,
+          q.job_id,q.resume_id LIMIT ?`).all(profileId, vacancyId, at, limit + oldest.length);
+      const rows = [...oldest];
+      const selected = new Set(oldest.map(row => `${row.job_id}\0${row.resume_id}`));
+      for (const row of recent) {
+        const key = `${row.job_id}\0${row.resume_id}`;
+        if (!selected.has(key) && rows.length < limit) { rows.push(row); selected.add(key); }
+      }
       for (const row of rows) this.db.prepare(`UPDATE r03_accepted_assessment_queue
         SET status='running',lease_owner=?,lease_until=?,attempts=attempts+1,updated_at=?
         WHERE profile_id=? AND vacancy_id=? AND job_id=? AND resume_id=? AND status IN ('pending','deferred')`)
@@ -177,12 +221,18 @@ export class SqliteAcceptedAssessmentQueue {
     }).immediate();
   }
 
-  async tick(profileId, vacancyId, owner, limit = 10) {
+  async tick(profileId, vacancyId, owner, limit = 6, { deadlineMs = Infinity } = {}) {
     const synced = this.sync(profileId, vacancyId);
-    const rows = this.claim(profileId, vacancyId, owner, limit);
+    const available = this.remainingDispatches();
+    const rows = available && this.clock().getTime() + 50_000 <= deadlineMs
+      ? this.claim(profileId, vacancyId, owner, Math.min(limit, available)) : [];
     const totals = { ...synced, claimed: rows.length, written: 0, deferred: 0,
-      blocked: 0, unknown: 0 };
+      blocked: 0, unknown: 0, budgetRemaining: this.remainingDispatches() };
     for (const row of rows) {
+      if (this.clock().getTime() + 50_000 > deadlineMs) {
+        if (this.finish(row, owner, 'deferred')) totals.deferred++; else totals.unknown++;
+        continue;
+      }
       const snapshot = this.candidateState.resultPage({ profileId, vacancyId,
         jobId: row.job_id, limit: 1 })?.snapshot;
       const member = this.db.prepare(`SELECT projection FROM real_hh_snapshot_member
@@ -193,31 +243,50 @@ export class SqliteAcceptedAssessmentQueue {
         else totals.unknown++;
         continue;
       }
-      const currentCriteria = await this.currentCriteriaRevision({ profileId, vacancyId });
+      let currentCriteria;
+      try { currentCriteria = await this.currentCriteriaRevision({ profileId, vacancyId }); }
+      catch {
+        if (this.finish(row, owner, 'deferred')) totals.deferred++; else totals.unknown++;
+        continue;
+      }
       if (currentCriteria !== snapshot.criteriaRevision) {
         if (this.finish(row, owner, 'blocked_criteria_stale')) totals.blocked++;
         else totals.unknown++;
         continue;
       }
       let assessment;
+      if (!this.reserveDispatch()) {
+        if (this.finish(row, owner, 'deferred')) totals.deferred++; else totals.unknown++;
+        continue;
+      }
       try {
         assessment = await this.evaluate({ profileId, vacancyId, candidate: JSON.parse(member.projection),
           criteriaRevision: snapshot.criteriaRevision, inputRevision: row.input_revision });
       } catch {
-        const outcome = row.attempts >= 3 ? 'blocked_evaluator' : 'deferred';
-        if (this.finish(row, owner, outcome)) totals[outcome === 'deferred' ? 'deferred' : 'blocked']++;
+        // The evaluator may have reached the model before failing. Retrying
+        // here would duplicate a charge and possibly a side effect.
+        if (this.finish(row, owner, 'outcome_unknown')) totals.unknown++;
         else totals.unknown++;
         continue;
       }
-      const afterCriteria = await this.currentCriteriaRevision({ profileId, vacancyId });
+      let afterCriteria;
+      try { afterCriteria = await this.currentCriteriaRevision({ profileId, vacancyId }); }
+      catch { afterCriteria = null; }
       if (afterCriteria !== currentCriteria) {
         if (this.finish(row, owner, 'blocked_criteria_stale')) totals.blocked++;
         else totals.unknown++;
         continue;
       }
-      if (this.finish(row, owner, 'completed', assessment)) totals.written++;
-      else totals.unknown++;
+      try {
+        if (this.finish(row, owner, 'completed', assessment)) totals.written++;
+        else totals.unknown++;
+      } catch {
+        // A malformed response is still post-dispatch. Hold it for review.
+        this.finish(row, owner, 'outcome_unknown');
+        totals.unknown++;
+      }
     }
+    totals.budgetRemaining = this.remainingDispatches();
     return totals;
   }
 

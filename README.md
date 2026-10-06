@@ -82,6 +82,8 @@ The [service-ladder query client](docs/R-03-SERVICE-LADDER-CHAT.md) now supplies
 
 The [free-ladder ATS evaluator](docs/R-03-FREE-LADDER-ASSESSMENT.md) now scores the accepted morning snapshot through an injected private HTTP/token boundary; the offline composition verifies the first 10 assessments appear on the morning page.
 
+The [accepted ATS worker](docs/R-03-ACCEPTED-ATS-WORKER.md) uses the five-minute private score mode to drain all accepted scheduled and manual snapshots under a durable six-dispatch host budget. It prioritizes fresh, high pre-score candidates while reserving old-backlog progress, and holds uncertain provider outcomes for review.
+
 The [occurrence heartbeat](docs/R-03-OCCURRENCE-HEARTBEAT.md) extends a long HH search's SQLite lease while it runs; a lost lease quarantines even a committed snapshot instead of showing false freshness.
 
 The [private host minute tick](docs/R-03-PRIVATE-MINUTE-TICK.md) also renews the singleton timer lease across a long run and skips overlapping processes. It awaits an installed host timer and private configuration.
