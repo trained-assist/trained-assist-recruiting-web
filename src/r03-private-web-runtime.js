@@ -44,7 +44,8 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
       manualRuns, feed, loadSearchPlan: stack.loadSearchPlan,
       isVacancyOwned: config.isVacancyOwned, clock });
     const auth = createPrivateWebAuth({ legacySecret,
-      isKnownProfile: profileId => config.profileIds.includes(profileId), publicOrigin,
+      resolveLegacyProfile: config.resolveLegacyProfile,
+      isWebProfileMapped: config.isWebProfileMapped, publicOrigin,
       clock: () => clock().getTime() });
     const server = createRecruitingServer({ realProactiveFeed: feed,
       realProactiveActions: actions, resolveTrustedProfileContext: auth,

@@ -6,9 +6,11 @@ import { chmodSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createPrivateWebRuntime } from '../src/r03-private-web-runtime.js';
+import { createPrivateWebAuth } from '../src/r03-private-web-auth.js';
 import { renderRealProactivePage } from '../src/r03-real-proactive-page.js';
 
 const profileId = 'invented_recruiter';
+const legacyUsername = 'old_invented_login';
 const vacancyId = 'invented_vacancy';
 const secret = 'invented-legacy-page-secret-32-characters-minimum';
 
@@ -26,14 +28,14 @@ function fixture(t, vacancyIds = [vacancyId]) {
     writeFileSync(join(secrets, name), value, { mode: 0o600 });
   const configFile = join(directory, 'config.json');
   writeFileSync(configFile, JSON.stringify({ version: 'r03-private-host-v1',
-    dbPath: join(directory, 'state.sqlite'), profiles: [{ profileId, vacancyIds,
+    dbPath: join(directory, 'state.sqlite'), profiles: [{ profileId, legacyUsername, vacancyIds,
       contextDirectory: contexts, proactiveDirectory: proactive, tokenDirectory: tokens }] }), { mode: 0o600 });
   const server = createPrivateWebRuntime({ configFile, secretsDirectory: secrets,
     fetchImpl: async () => { throw new Error('unexpected_provider_call'); },
     clock: () => new Date('2026-10-06T08:00:00.000Z') });
   server.listen(0, '127.0.0.1');
   t.after(async () => { await new Promise(resolve => server.close(resolve)); rmSync(directory, { recursive: true, force: true }); });
-  const token = createHmac('sha256', secret).update(profileId).digest('hex').slice(0, 16);
+  const token = createHmac('sha256', secret).update(legacyUsername).digest('hex').slice(0, 16);
   return { server, token };
 }
 
@@ -41,7 +43,7 @@ test('private web runtime accepts only exact old signed link then scopes session
   const { server, token } = fixture(t);
   await once(server, 'listening');
   const base = `http://127.0.0.1:${server.address().port}`;
-  const link = `${base}/hh/proactive?username=${profileId}&token=${token}&vacancy_id=${vacancyId}`;
+  const link = `${base}/hh/proactive?username=${legacyUsername}&token=${token}&vacancy_id=${vacancyId}`;
   assert.equal((await fetch(`${base}/hh/proactive?vacancy_id=${vacancyId}`)).status, 401);
   assert.equal((await fetch(link.replace(token, '0'.repeat(16)))).status, 401);
   assert.equal((await fetch(`${base}/hh/proactive?username=other&token=${token}&vacancy_id=${vacancyId}`)).status, 401);
@@ -74,11 +76,29 @@ test('unsigned vacancy selector never widens a legacy signed link to another pro
   const { server, token } = fixture(t, [vacancyId, 'invented_other_vacancy']);
   await once(server, 'listening');
   const base = `http://127.0.0.1:${server.address().port}`;
-  const path = `/hh/proactive?username=${profileId}&token=${token}`;
+  const path = `/hh/proactive?username=${legacyUsername}&token=${token}`;
   assert.equal((await fetch(base + path)).status, 400);
   assert.equal((await fetch(base + path + '&vacancy_id=unowned')).status, 404);
   assert.equal((await fetch(base + path + `&vacancy_id=${vacancyId}`)).status, 200);
-  assert.equal((await fetch(base + path + `&vacancy_id=${vacancyId}&username=${profileId}`)).status, 401);
+  assert.equal((await fetch(base + path + `&vacancy_id=${vacancyId}&username=${legacyUsername}`)).status, 401);
+});
+
+test('removing legacy mapping revokes both signed entry and existing profile cookie', async () => {
+  const mappings = new Map([[legacyUsername, profileId]]);
+  const auth = createPrivateWebAuth({ legacySecret: secret,
+    resolveLegacyProfile: username => mappings.get(username) ?? null,
+    isWebProfileMapped: target => [...mappings.values()].includes(target),
+    clock: () => Date.parse('2026-10-06T08:00:00.000Z') });
+  const token = createHmac('sha256', secret).update(legacyUsername).digest('hex').slice(0, 16);
+  const url = new URL(`https://recruiter-assistant.ru/hh/proactive?username=${legacyUsername}&token=${token}`);
+  const headers = new Map();
+  const first = await auth({ method: 'GET', headers: {} }, url, { setHeader: (key, value) => headers.set(key, value) });
+  assert.equal(first.profileId, profileId);
+  const cookie = headers.get('Set-Cookie').split(';')[0];
+  mappings.clear();
+  assert.equal(await auth({ method: 'GET', headers: {} }, url, { setHeader: () => {} }), null);
+  assert.equal(await auth({ method: 'GET', headers: { cookie } },
+    new URL('https://recruiter-assistant.ru/api/hh/proactive/candidates'), { setHeader: () => {} }), null);
 });
 
 test('private result page does not link to an imported non-HH URL', () => {
