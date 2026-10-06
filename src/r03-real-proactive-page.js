@@ -9,7 +9,7 @@ const safeResumeUrl = value => {
   } catch { return null; }
 };
 
-export function renderRealProactivePage({ profileId = '', vacancyId, feed, listView = 'active' }) {
+export function renderRealProactivePage({ profileId = '', vacancyId, feed, listView = 'active', historicalAvailable = false }) {
   if (!['active', 'starred', 'archived'].includes(listView)) throw new TypeError('invalid_list_view');
   const freshness = feed.freshness === 'latest_run_incomplete' ? 'Последний поиск не завершён; показаны ранее принятые кандидаты.' :
     feed.status === 'never_run' ? 'Принятых результатов пока нет.' : 'Показаны принятые результаты поиска.';
@@ -55,5 +55,5 @@ nav a{margin-right:1rem}button{cursor:pointer}#action-status{min-height:1.5rem}
 <textarea id="seen-ids" rows="4" maxlength="16000" aria-label="Уже просмотренные резюме"></textarea>
 <button id="seen-import" type="button">Отметить просмотренными</button>
 <p id="seen-status" role="status" aria-live="polite"></p></section>
-<nav aria-label="Списки кандидатов">${tabs}</nav><p>Всего: ${feed.total}</p>${cards}</main></body></html>`;
+<nav aria-label="Списки кандидатов">${tabs}</nav>${historicalAvailable ? `<p><a href="/hh/proactive/history?vacancy_id=${encodeURIComponent(vacancyId)}">Исторические результаты</a></p>` : ''}<p>Всего: ${feed.total}</p>${cards}</main></body></html>`;
 }

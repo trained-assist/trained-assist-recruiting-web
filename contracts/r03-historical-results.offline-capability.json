@@ -1,0 +1,12 @@
+{
+  "toolId": "recruiting.candidateSearch.getHistoricalResults",
+  "name": "candidateSearch.getHistoricalResults",
+  "description": "Read explicitly labelled historical HH candidates for the caller's trusted profile and an owned vacancy.",
+  "mutates": false,
+  "operationRef": "createR03HistoricalRead",
+  "inputSchemaRef": "v1-historical-results-query.schema.json",
+  "outputSchemaRef": "v1-historical-results.schema.json",
+  "effect": "read",
+  "requiredScopes": ["recruiting.candidateSearch"],
+  "testOnly": true
+}
