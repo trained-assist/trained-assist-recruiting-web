@@ -82,7 +82,7 @@ export function createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins, 
       !Array.isArray(scopes) || scopes.length < 1 || scopes.some(scope => !['recruiting.responses.read', 'recruiting.reports.read', 'recruiting.candidateSearch'].includes(scope)))
     throw new TypeError('connected_app_bff_ports_required');
 
-  const allowedScopes = new Set([...scopes, 'recruiting.responses.read']);
+  const allowedScopes = new Set([...scopes, 'recruiting.candidateSearch', 'recruiting.responses.read']);
   const inspect = async token => {
     let claims;
     try { claims = await introspectToken(token); }
@@ -123,6 +123,13 @@ export function createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins, 
       if (!url.pathname.startsWith('/auth/connected/')) return false;
       if (url.pathname === '/auth/connected/start' && req.method === 'GET') {
         const entries = [...url.searchParams.keys()];
+        if (entries.length === 0) {
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',
+            'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer',
+            'content-security-policy': "default-src 'none'; base-uri 'none'; frame-ancestors 'none'" });
+          res.end('<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="referrer" content="no-referrer"><title>Рекрутинг</title><main><h1>Выберите раздел</h1><ul><li><a href="/auth/connected/start?from=proactive">Холодный поиск</a></li><li><a href="/auth/connected/start?from=responses">Отклики HH</a></li></ul></main></html>');
+          return true;
+        }
         const from = url.searchParams.get('from');
         const fromProactive = from === 'proactive';
         const fromResponses = from === 'responses';
@@ -134,7 +141,7 @@ export function createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins, 
           respond(res, 400, { error: 'invalid_auth_request' }); return true;
         }
         const returnPath = `${fromResponses ? '/hh/responses' : '/hh/proactive'}${vacancyId ? `?vacancy_id=${encodeURIComponent(vacancyId)}` : ''}`;
-        const requestedScopes = fromResponses ? ['recruiting.responses.read'] : scopes;
+        const requestedScopes = fromResponses ? ['recruiting.responses.read'] : ['recruiting.candidateSearch'];
         const pendingHandle = random(); const state = random(); const verifier = random();
         await store.putPending(hash(pendingHandle), { state, verifier, returnPath, requestedScopes, createdAt: clock() });
         const auth = new URL(`${issuer}/v1/connected-app-sessions/authorize`);

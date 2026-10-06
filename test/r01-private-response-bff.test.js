@@ -94,7 +94,12 @@ test('private response entry requests one step-up scope, real HTTP reader and ow
   const f = fixture(t); await once(f.server, 'listening');
   const base = `http://127.0.0.1:${f.server.address().port}`;
   const queryless = await fetch(`${base}/auth/connected/start`, { redirect: 'manual' });
-  assert.equal(new URL(queryless.headers.get('location')).searchParams.get('scope'), 'recruiting.candidateSearch');
+  assert.equal(queryless.status, 200);
+  assert.equal(queryless.headers.get('set-cookie'), null);
+  const chooser = await queryless.text();
+  assert.match(chooser, /href="\/auth\/connected\/start\?from=proactive"/);
+  assert.match(chooser, /href="\/auth\/connected\/start\?from=responses"/);
+  assert.doesNotMatch(chooser, /profile_A|hh_token_A|state=/);
   const entrance = await fetch(`${base}/hh/responses?vacancy_id=vacancy_A`, { redirect: 'manual' });
   assert.equal(entrance.status, 303);
   assert.equal(entrance.headers.get('location'), '/auth/connected/start?from=responses&vacancy_id=vacancy_A');
@@ -144,7 +149,7 @@ test('response BFF denies missing scope/profile switch and outages; refreshes on
   const f = fixture(t); await once(f.server, 'listening');
   const base = `http://127.0.0.1:${f.server.address().port}`;
   f.setScope('recruiting.candidateSearch');
-  const candidateOnly = await signIn(base, null, null);
+  const candidateOnly = await signIn(base, 'proactive', null);
   assert.equal(candidateOnly.accepted.status, 303);
   const stepUp = await fetch(`${base}/hh/responses?vacancy_id=vacancy_A`,
     { headers: { cookie: candidateOnly.session }, redirect: 'manual' });
