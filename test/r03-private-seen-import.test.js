@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRecruitingServer } from '../src/server.js';
 import { createR03PrivateSeenImport } from '../src/r03-private-seen-import.js';
+import { createR03AccumulatedRealFeed } from '../src/r03-accumulated-real-feed.js';
 import { mapHhResumeCandidate } from '../src/hh-resume-mapping.js';
 import { REAL_HH_RESULT_VERSION, SqliteRealHhCandidateState } from '../src/sqlite-real-hh-candidate-state.js';
 
@@ -83,4 +84,39 @@ test('real HTTP import-seen requires explicit vacancy and trusted profile, never
   assert.equal((await replay.json()).imported, 0);
   assert.equal((await fetch(base + path, { headers: { 'X-Test-Principal': profileId } })).status, 405);
   assert.equal(state.seenTotal(profileId, vacancyId), 1);
+});
+
+test('imported HH ID stays visible in the accepted morning feed but is not counted as new', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'r03-seen-morning-feed-'));
+  const state = new SqliteRealHhCandidateState({ filename: join(directory, 'target.sqlite'), isVacancyOwned: owned });
+  t.after(() => { state.close(); rmSync(directory, { recursive: true, force: true }); });
+  const context = { profileId, scopes: ['recruiting.candidateSearch'] };
+  const seenImport = createR03PrivateSeenImport({ candidateState: state, isVacancyOwned: owned,
+    clock: () => new Date(time) });
+  assert.equal(seenImport(context, { vacancy_id: vacancyId, ids: ['resumeSeen1'] }).body.imported, 1);
+
+  const searchedAt = '2026-10-06T10:05:00.000Z';
+  const snapshot = state.recordCompletedSearch({ version: REAL_HH_RESULT_VERSION,
+    profileId, vacancyId, jobId: 'morning_job_1', searchedAt,
+    criteriaRevision: 'invented_criteria', sourceRevision: 'invented_source',
+    source: 'scheduled', totalCollected: 1, candidates: [candidate('resumeSeen1', vacancyId)] });
+  assert.equal(snapshot.newCount, 0, 'imported resume is already seen before the scheduled snapshot commits');
+
+  const scheduleRepository = { listOccurrences: owner => owner === profileId ? [{
+    occurrenceId: 'occurrence_1', profileId, vacancyId, jobId: snapshot.jobId,
+    scheduledAt: searchedAt, status: 'succeeded', snapshot: {
+      resultRevision: snapshot.resultRevision, sourceRevision: snapshot.sourceRevision,
+      resultCount: snapshot.candidateCount
+    }
+  }] : [] };
+  const feed = createR03AccumulatedRealFeed({ scheduleRepository, candidateState: state });
+  const morning = feed.read(context, vacancyId);
+  assert.equal(morning.status, 'completed');
+  assert.equal(morning.freshness, 'latest_completed');
+  assert.equal(morning.total, 1, 'seen does not suppress the candidate from the morning results');
+  assert.equal(morning.items[0].id, 'resumeSeen1');
+  assert.equal(state.resultPage({ profileId, vacancyId, jobId: snapshot.jobId, limit: 1 }).snapshot.newCount, 0,
+    'the stored morning snapshot exposes no newly discovered resumes');
+  assert.equal(feed.read({ profileId: otherProfile, scopes: context.scopes }, vacancyId).total, 0,
+    'another trusted profile cannot read the imported candidate');
 });
