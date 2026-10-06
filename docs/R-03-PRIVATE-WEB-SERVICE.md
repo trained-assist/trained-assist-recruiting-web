@@ -1,0 +1,5 @@
+# R-03 private proactive web service unit
+
+`infra/systemd/trained-recruiting-hh-web.service` is an uninstalled template for the RU host. It starts the private web CLI on `127.0.0.1:18083` under the dedicated `trained-recruiting` user. The CLI's loopback bind is fixed in code; the unit supplies only the port. The five required secrets are delivered through systemd credentials from owner-only files, with no values in the unit or release. The SQLite path and profile/vacancy/legacy username bindings remain in the owner-only host config.
+
+The target port was free in a read-only `ss` probe on 2026-10-06. The unit syntax was verified with the RU host's systemd 249; this is not an installation, credential check or provider canary. The existing nginx routes must keep pointing to the old host until the private restore, app route parity, real HH/ladder calls, manual/scheduled cycle and rollback tests pass. Installing the service without enabling nginx would be the next reversible staging step after those inputs exist.
