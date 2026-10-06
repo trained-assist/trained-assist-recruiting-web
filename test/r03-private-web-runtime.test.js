@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { once } from 'node:events';
-import { chmodSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -23,11 +23,14 @@ function fixture(t, vacancyIds = [vacancyId], runtimeOptions = {}) {
   const proactive = privateDir('proactive');
   const tokens = privateDir('tokens');
   const secrets = privateDir('secrets');
+  const reportDraftDbPath = runtimeOptions.reportDraftDbPath === 'fixture'
+    ? join(directory, 'reports.sqlite') : runtimeOptions.reportDraftDbPath;
   for (const [name, value] of Object.entries({ ...(runtimeOptions.connectedAppBff || runtimeOptions.connectedBffConfig ? {} : { legacy_page_secret: secret }),
     hh_encryption_key: 'a'.repeat(64), hh_client_id: 'invented-client',
     hh_client_secret: 'invented-client-secret', ladder_token: 'invented-ladder',
     ...(runtimeOptions.connectedBffConfig ? { cp_service_key: 'invented-service-key-32-characters-minimum',
       bff_encryption_key: 'b'.repeat(64) } : {}),
+    ...(reportDraftDbPath ? { report_drafts_encryption_key: 'c'.repeat(64) } : {}),
     hh_user_agent: 'invented-recruiting/1.0 (contact@example.test)' }))
     writeFileSync(join(secrets, name), value, { mode: 0o600 });
   const configFile = join(directory, 'config.json');
@@ -37,12 +40,13 @@ function fixture(t, vacancyIds = [vacancyId], runtimeOptions = {}) {
   const server = createPrivateWebRuntime({ configFile, secretsDirectory: secrets,
     fetchImpl: async () => { throw new Error('unexpected_provider_call'); },
     clock: () => new Date('2026-10-06T08:00:00.000Z'), ...runtimeOptions,
+    ...(reportDraftDbPath ? { reportDraftDbPath } : {}),
     ...(runtimeOptions.connectedBffConfig ? { connectedBffConfig: {
       ...runtimeOptions.connectedBffConfig, dbPath: join(directory, 'bff.sqlite') } } : {}) });
   server.listen(0, '127.0.0.1');
   t.after(async () => { await new Promise(resolve => server.close(resolve)); rmSync(directory, { recursive: true, force: true }); });
   const token = createHmac('sha256', secret).update(legacyUsername).digest('hex').slice(0, 16);
-  return { server, token, dbPath: join(directory, 'state.sqlite') };
+  return { server, token, dbPath: join(directory, 'state.sqlite'), reportDraftDbPath };
 }
 
 test('private runtime can use injected Connected App BFF without legacy page secret', async t => {
@@ -53,6 +57,8 @@ test('private runtime can use injected Connected App BFF without legacy page sec
   const base = `http://127.0.0.1:${server.address().port}`;
   assert.equal((await fetch(`${base}/hh/proactive?vacancy_id=${vacancyId}`)).status, 200);
   assert.equal((await fetch(`${base}/api/hh/proactive/candidates?vacancy_id=${vacancyId}`)).status, 200);
+  assert.equal((await fetch(`${base}/hh/candidate-report?vacancy_id=${vacancyId}&candidate_id=synthetic_candidate`)).status, 404,
+    'report route is absent unless a separate encrypted report database is explicitly configured');
   assert.equal((await fetch(`${base}/hh/proactive?username=${legacyUsername}&token=deadbeef&vacancy_id=${vacancyId}`)).status, 400);
 });
 
@@ -65,6 +71,23 @@ test('private CLI keeps BFF opt-in and requires exact issuer, origin and durable
     '--public-origin', 'https://recruiter-assistant.ru', '--bff-db', '/private/bff.sqlite']);
   assert.deepEqual(args.connectedBffConfig, { issuer: 'https://cp.example.invalid',
     publicOrigin: 'https://recruiter-assistant.ru', dbPath: '/private/bff.sqlite' });
+  assert.throws(() => parsePrivateWebArgs([...common, '--report-drafts-db', '/private/reports.sqlite']));
+  const reportArgs = parsePrivateWebArgs([...common, '--connected-bff', '--cp-issuer', 'https://cp.example.invalid',
+    '--public-origin', 'https://recruiter-assistant.ru', '--bff-db', '/private/bff.sqlite',
+    '--report-drafts-db', '/private/reports.sqlite']);
+  assert.equal(reportArgs.reportDraftDbPath, '/private/reports.sqlite');
+});
+
+test('explicit report database mounts report routes and is owner-only; BFF alone leaves them absent', async t => {
+  const scopes = ['recruiting.candidateSearch', 'recruiting.reports.read', 'recruiting.reports.create', 'recruiting.reports.review'];
+  const bff = { resolve: async () => ({ profileId, scopes }), handle: async () => false };
+  const f = fixture(t, [vacancyId], { connectedAppBff: bff, reportDraftDbPath: 'fixture' });
+  await once(f.server, 'listening');
+  assert.equal(statSync(f.reportDraftDbPath).mode & 0o777, 0o600);
+  const base = `http://127.0.0.1:${f.server.address().port}`;
+  const response = await fetch(`${base}/hh/candidate-report?vacancy_id=${vacancyId}&candidate_id=synthetic_candidate&source_kind=accepted_hh_response`);
+  assert.equal(response.status, 200);
+  assert.match(await response.text(), /Черновик отчёта кандидата/);
 });
 
 test('private BFF persists browser session across web restart, rejects replay, CSRF, outage and profile switch', async t => {

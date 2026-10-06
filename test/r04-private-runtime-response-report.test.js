@@ -1,0 +1,174 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { once } from 'node:events';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { SqliteColdSearchScheduleRepository } from '../src/sqlite-cold-search-schedule-repository.js';
+import { REAL_HH_RESULT_VERSION, SqliteRealHhCandidateState } from '../src/sqlite-real-hh-candidate-state.js';
+import { intervalPlan } from '../src/cold-search-schedules.js';
+import { mapHhResumeCandidate } from '../src/hh-resume-mapping.js';
+import { createPrivateWebRuntime } from '../src/r03-private-web-runtime.js';
+
+const profileId = 'profile_synthetic_owner';
+const vacancyId = 'vacancy_synthetic_owned';
+const resumeId = 'resumesynthetic001';
+const negotiationId = 'negotiationsynthetic001';
+const issuer = 'https://cp.example.test';
+const origin = 'https://recruiter-assistant.ru';
+const now = Date.parse('2026-10-06T09:00:00.000Z');
+const token = 'a'.repeat(64);
+const scopes = ['recruiting.reports.read', 'recruiting.reports.create', 'recruiting.reports.review'];
+const atsConfig = { vacancy_id: vacancyId, vacancy_title: 'Synthetic Platform Engineer',
+  vacancy_context: 'Synthetic vacancy context', filters: { min_experience_years: 0, area: null }, area: null,
+  required: [], preferred: [], knockout: [] };
+const rawResume = { id: resumeId, title: 'Synthetic Platform Engineer', first_name: 'Синтетический',
+  last_name: 'Кандидат', total_experience: { months: 60 }, area: { name: 'Тестовый регион' }, salary: null,
+  email: 'private@example.test', alternate_url: 'https://hh.ru/resume/' + resumeId,
+  experience: [{ position: 'Platform Engineer', company: 'Synthetic Company', start: '2021', end: null }] };
+
+const response = (value, status = 200) => ({
+  status, ok: status >= 200 && status < 300, headers: { get: () => null }, json: async () => value
+});
+function cookie(responseValue, prefix) {
+  const match = responseValue.headers.getSetCookie().find(value => value.startsWith(prefix + '='));
+  assert.ok(match, prefix + ' cookie exists');
+  return match.split(';')[0];
+}
+
+test('private runtime composes accepted HH response source, encrypted draft, BFF and stale-source fence', async t => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'r04-private-runtime-')));
+  chmodSync(root, 0o700);
+  const privateDir = name => { const value = join(root, name); mkdirSync(value, { mode: 0o700 }); return value; };
+  const contexts = privateDir('contexts'); const proactive = privateDir('proactive');
+  const tokens = privateDir('tokens'); const secrets = privateDir('secrets');
+  const stateDb = join(root, 'state.sqlite'); const bffDb = join(root, 'bff.sqlite');
+  const reportDb = join(root, 'reports.sqlite'); const configFile = join(root, 'host.json');
+  writeFileSync(join(contexts, 'ats_config:' + vacancyId + '.json'),
+    JSON.stringify({ value: atsConfig }), { mode: 0o600 });
+  writeFileSync(join(tokens, 'hh'), JSON.stringify({ access_token: 'synthetic-hh-token' }), { mode: 0o600 });
+  const secretsData = { hh_encryption_key: '1'.repeat(64), hh_client_id: 'synthetic-client',
+    hh_client_secret: 'synthetic-client-secret', hh_user_agent: 'synthetic-recruiting/1.0 (support@example.test)',
+    ladder_token: 'synthetic-ladder-token', cp_service_key: 'synthetic-cp-service-key-32-characters',
+    bff_encryption_key: '2'.repeat(64), report_drafts_encryption_key: '3'.repeat(64) };
+  for (const [name, value] of Object.entries(secretsData)) writeFileSync(join(secrets, name), value, { mode: 0o600 });
+  writeFileSync(configFile, JSON.stringify({ version: 'r03-private-host-v1', dbPath: stateDb,
+    profiles: [{ profileId, contextDirectory: contexts, proactiveDirectory: proactive,
+      tokenDirectory: tokens, vacancyIds: [vacancyId] }] }), { mode: 0o600 });
+
+  let currentResume = structuredClone(rawResume);
+  let messageCalls = 0; let responseReads = 0; let resumeReads = 0;
+  const claims = { active: true, iss: issuer, aud: 'recruiting-web', sub: 'synthetic_actor',
+    profileId, sessionId: 'synthetic_session', nbf: now / 1000 - 10, exp: now / 1000 + 600, scopes };
+  const fetchImpl = async url => {
+    if (url === issuer + '/v1/connected-app-sessions/exchange') return response({ token, expiresAt: now / 1000 + 600 });
+    if (url === issuer + '/v1/connected-app-sessions/introspect') return response(claims);
+    if (url === 'https://api.hh.ru/negotiations/' + negotiationId) {
+      responseReads++;
+      return response({ id: negotiationId, vacancy: { id: vacancyId }, resume: { id: resumeId },
+        state: { id: 'response' }, updated_at: '2026-10-06T08:00:00Z' });
+    }
+    if (url === 'https://api.hh.ru/resumes/' + resumeId) { resumeReads++; return response(currentResume); }
+    if (/\/messages(?:\?|$)/.test(url)) { messageCalls++; throw new Error('message_reads_forbidden'); }
+    throw new Error('unexpected_provider_url:' + new URL(url).pathname);
+  };
+  const runtimeOptions = { configFile, secretsDirectory: secrets, fetchImpl, clock: () => new Date(now),
+    connectedBffConfig: { issuer, publicOrigin: origin, dbPath: bffDb }, reportDraftDbPath: reportDb };
+  let server = createPrivateWebRuntime(runtimeOptions);
+  t.after(async () => {
+    if (server?.listening) await new Promise(resolve => server.close(resolve));
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const candidateState = new SqliteRealHhCandidateState({ filename: stateDb,
+    isVacancyOwned: (profile, vacancy) => profile === profileId && vacancy === vacancyId });
+  const candidate = mapHhResumeCandidate(rawResume, atsConfig, vacancyId, { bypassMinExperience: true }).candidate;
+  const criteriaRevision = 'criteria-' + createHash('sha256').update(JSON.stringify(atsConfig)).digest('hex').slice(0, 24);
+  const snapshot = candidateState.recordCompletedSearch({ version: REAL_HH_RESULT_VERSION, profileId, vacancyId,
+    jobId: 'jobaccepted0001', source: 'scheduled', searchedAt: '2026-10-06T06:00:00.000Z',
+    criteriaRevision, sourceRevision: 'synthetic-source-revision', totalCollected: 1, candidates: [candidate] });
+  const pending = candidateState.unassessedLatest({ profileId, vacancyId })[0];
+  candidateState.recordAssessment({ profileId, vacancyId, jobId: snapshot.jobId, candidateId: resumeId,
+    inputRevision: pending.inputRevision,
+    assessment: { atsScore: 8.5, atsTag: 'PASS', knockout: { status: 'passed', criteria: [] } },
+    assessedAt: '2026-10-06T06:05:00.000Z' });
+  candidateState.close();
+
+  const schedules = new SqliteColdSearchScheduleRepository(stateDb);
+  schedules.upsertSchedule({ scheduleId: 'scheduleaccepted001', profileId, vacancyId,
+    legacyJobId: 'legacyaccepted001', enabled: true, nextRunAt: '2026-10-06T05:00:00.000Z',
+    plan: intervalPlan(24, vacancyId), leaseOwner: null, leaseUntil: null, blockedByUnknownOccurrenceId: null });
+  const claim = schedules.claimDueOccurrences({ now: '2026-10-06T09:00:00.000Z',
+    workerId: 'seed_worker', leaseUntil: '2026-10-06T10:00:00.000Z' })[0];
+  assert.ok(claim);
+  assert.equal(schedules.finishOccurrence(claim.occurrence.occurrenceId, 'seed_worker', {
+    status: 'succeeded', jobId: snapshot.jobId, criteriaRevision,
+    snapshot: { resultRevision: snapshot.resultRevision, sourceRevision: snapshot.sourceRevision,
+      resultCount: snapshot.candidateCount },
+  }, '2026-10-06T09:01:00.000Z'), true);
+  schedules.close();
+
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const base = 'http://127.0.0.1:' + server.address().port;
+  const entry = await fetch(base + '/hh/candidate-report?vacancy_id=' + vacancyId +
+    '&candidate_id=' + negotiationId + '&source_kind=accepted_hh_response', { redirect: 'manual' });
+  assert.equal(entry.status, 303);
+  const start = await fetch(base + entry.headers.get('location'), { redirect: 'manual' });
+  assert.equal(start.status, 303);
+  const pendingCookie = cookie(start, '__Host-recruiting-oauth-pending');
+  const authorize = new URL(start.headers.get('location'));
+  const callbackUrl = new URL('/auth/connected/callback', base);
+  callbackUrl.searchParams.set('code', 'c'.repeat(64));
+  callbackUrl.searchParams.set('state', authorize.searchParams.get('state'));
+  callbackUrl.searchParams.set('iss', issuer);
+  const callback = await fetch(callbackUrl, { redirect: 'manual', headers: { cookie: pendingCookie } });
+  assert.equal(callback.status, 303);
+  assert.equal(new URL(callback.headers.get('location')).pathname + new URL(callback.headers.get('location')).search,
+    '/hh/candidate-report?vacancy_id=' + vacancyId + '&candidate_id=' + negotiationId + '&source_kind=accepted_hh_response');
+  const sessionCookie = cookie(callback, '__Host-recruiting-app-session');
+  const session = await (await fetch(base + '/auth/connected/session', { headers: { cookie: sessionCookie } })).json();
+
+  const sourceUrl = new URL('/api/v1/ui/accepted-report-client-source', base);
+  sourceUrl.searchParams.set('candidateId', negotiationId);
+  sourceUrl.searchParams.set('vacancyId', vacancyId);
+  sourceUrl.searchParams.set('sourceKind', 'accepted_hh_response');
+  const sourceResponse = await fetch(sourceUrl, { headers: { cookie: sessionCookie } });
+  assert.equal(sourceResponse.status, 200);
+  const source = await sourceResponse.json();
+  assert.equal(source.sourceKind, 'accepted_hh_response');
+  assert.equal(source.clientDraftFields.candidateName, 'Синтетический Кандидат');
+  assert.equal(JSON.stringify(source).includes('private@example.test'), false);
+  assert.equal(JSON.stringify(source).includes('internalAssessment'), false);
+
+  const create = await fetch(base + '/api/v1/ui/accepted-report-drafts', { method: 'POST',
+    headers: { cookie: sessionCookie, origin, 'x-csrf-token': session.csrfToken,
+      'content-type': 'application/json', 'Idempotency-Key': 'runtime-hh-response-report-001' },
+    body: JSON.stringify({ candidateId: negotiationId, vacancyId, sourceKind: 'accepted_hh_response',
+      expectedSourceRevision: source.sourceRevision }) });
+  assert.equal(create.status, 201);
+  const draft = await create.json();
+  const preview = await fetch(base + '/api/v1/ui/accepted-report-drafts/' + draft.reportRef + '/preview',
+    { headers: { cookie: sessionCookie } });
+  assert.equal(preview.status, 200);
+  assert.match((await preview.json()).html, /Синтетический Кандидат/);
+  assert.equal(statSync(reportDb).mode & 0o777, 0o600);
+  assert.equal(messageCalls, 0);
+  assert.ok(responseReads >= 2 && resumeReads >= 2);
+
+  await new Promise(resolve => server.close(resolve));
+  server = createPrivateWebRuntime(runtimeOptions);
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const restartedBase = 'http://127.0.0.1:' + server.address().port;
+  const afterRestart = await fetch(restartedBase + '/api/v1/ui/accepted-report-drafts/' +
+    draft.reportRef + '/preview', { headers: { cookie: sessionCookie } });
+  assert.equal(afterRestart.status, 200, 'encrypted report and BFF session survive process restart');
+  currentResume = { ...currentResume, title: 'Changed outside the accepted ATS input' };
+  const stale = await fetch(restartedBase + '/api/v1/ui/accepted-report-drafts/' +
+    draft.reportRef + '/preview', { headers: { cookie: sessionCookie } });
+  assert.equal(stale.status, 409);
+  assert.equal((await stale.json()).error, 'stale_report_source');
+  assert.equal(messageCalls, 0);
+  assert.equal(readFileSync(reportDb, 'utf8').includes('Synthetic'), false,
+    'encrypted database bytes do not contain report content');
+});

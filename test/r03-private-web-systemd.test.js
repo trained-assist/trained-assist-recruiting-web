@@ -28,11 +28,14 @@ test('BFF unit uses service credentials and separate private SQLite without lega
   assert.match(bffUnit, /^LoadCredential=bff_encryption_key:/m);
   assert.match(bffUnit, /^LoadCredential=hh_user_agent:/m);
   const requiredSecrets = [...runtimeSource.matchAll(/loadPrivateHostSecret\(secretsDirectory, '([^']+)'\)/g)]
-    .map(match => match[1]).filter(name => name !== 'legacy_page_secret');
+    .map(match => match[1]).filter(name => !['legacy_page_secret', 'report_drafts_encryption_key'].includes(name));
   for (const name of requiredSecrets) {
     assert.match(bffUnit, new RegExp(`^LoadCredential=${name}:`, 'm'));
   }
   assert.doesNotMatch(bffUnit, /^LoadCredential=legacy_page_secret:/m);
+  assert.doesNotMatch(bffUnit, /^LoadCredential=report_drafts_encryption_key:/m,
+    'report encryption key stays outside the default BFF unit until the explicit report runtime is installed');
+  assert.doesNotMatch(bffUnit, /--report-drafts-db/);
   assert.match(bffUnit, /--connected-bff --cp-issuer \$\{CP_ISSUER\} --public-origin https:\/\/recruiter-assistant\.ru --bff-db \/var\/lib\/trained-assist\/recruiting-web\/bff\.sqlite/);
   assert.match(bffUnit, /^ReadWritePaths=\/var\/lib\/trained-assist\/recruiting-web$/m);
   assert.match(bffNginx, /^location \^~ \/auth\/connected\/ \{$/m);

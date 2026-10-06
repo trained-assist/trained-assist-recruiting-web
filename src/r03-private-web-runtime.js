@@ -23,6 +23,11 @@ import { SqliteConnectedAppBffStore } from './sqlite-connected-app-bff-store.js'
 import { createHhResponseRead } from './r01-live-responses.js';
 import { createHhResponseDetailRead } from './r01-live-response-detail.js';
 import { createPrivateVacancyAssignmentRead, createPrivateVacancyAssignmentSave } from './r01-private-vacancy-assignment.js';
+import { SqliteAcceptedReportDraftStore } from './sqlite-accepted-report-draft-store.js';
+import { createAcceptedReportSourceRead } from './r04-accepted-report-source.js';
+import { createAcceptedHhAssessmentReportReader } from './r04-accepted-hh-assessment-reader.js';
+import { createHhResponseReportSourceRead } from './r04-hh-response-report-source.js';
+import { createHhResponseResumeRead } from './r01-live-response-resume.js';
 
 // Constructing the server makes no provider request or public bind. The owner
 // explicitly supplies private config/credentials; the HTTP process owns its
@@ -30,11 +35,14 @@ import { createPrivateVacancyAssignmentRead, createPrivateVacancyAssignmentSave 
 export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImpl = globalThis.fetch,
   clock = () => new Date(), publicOrigin = 'https://recruiter-assistant.ru',
   historicalImportConfigFile, historicalReceiptFile, historicalReceiptSha256,
-  connectedAppBff = null, connectedBffConfig = null } = {}) {
+  connectedAppBff = null, connectedBffConfig = null, reportDraftDbPath = null } = {}) {
   if (typeof fetchImpl !== 'function' || typeof clock !== 'function')
     throw new TypeError('private_web_runtime_unavailable');
   if (connectedAppBff !== null && connectedBffConfig !== null)
     throw new TypeError('private_web_auth_modes_conflict');
+  if (reportDraftDbPath !== null && (typeof reportDraftDbPath !== 'string' ||
+      connectedAppBff === null && connectedBffConfig === null))
+    throw new TypeError('private_report_runtime_requires_connected_bff_and_database');
   const historyOptions = [historicalImportConfigFile, historicalReceiptFile, historicalReceiptSha256];
   if (historyOptions.some(value => value !== undefined) &&
       historyOptions.some(value => value === undefined)) throw new TypeError('historical_receipt_binding_required');
@@ -43,6 +51,7 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
     importConfigFile: historicalImportConfigFile, receiptFile: historicalReceiptFile,
     receiptSha256: historicalReceiptSha256, hostConfig: config });
   let bffStore = null;
+  let reportDraftStore = null;
   const legacySecret = connectedAppBff === null && connectedBffConfig === null
     ? loadPrivateHostSecret(secretsDirectory, 'legacy_page_secret') : null;
   const encryptionKey = loadPrivateHostSecret(secretsDirectory, 'hh_encryption_key');
@@ -96,6 +105,24 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
     const liveAssignmentSave = connectedAppBff !== null || connectedBffConfig !== null
       ? createPrivateVacancyAssignmentSave({ resolveProfileBinding: config.resolveProfileBinding,
         isVacancyOwned: config.isVacancyOwned }) : null;
+    let acceptedReportSourceRead = null;
+    let acceptedHhResponseReportSourceRead = null;
+    if (reportDraftDbPath !== null) {
+      reportDraftStore = new SqliteAcceptedReportDraftStore({ filename: reportDraftDbPath,
+        encryptionKey: loadPrivateHostSecret(secretsDirectory, 'report_drafts_encryption_key') });
+      acceptedReportSourceRead = createAcceptedReportSourceRead({ feed, candidateState: candidates,
+        loadBasePlan: stack.loadBasePlan, isVacancyOwned: config.isVacancyOwned });
+      acceptedHhResponseReportSourceRead = createHhResponseReportSourceRead({
+        readResponseDetail: liveResponseDetailRead,
+        readResume: createHhResponseResumeRead({ loadCredential: stack.credentialBroker.loadCredential,
+          refreshCredential: stack.credentialBroker.refreshCredential, fetchImpl,
+          loadBasePlan: stack.loadBasePlan, isVacancyOwned: config.isVacancyOwned, userAgent }),
+        loadBasePlan: stack.loadBasePlan,
+        loadAcceptedAssessment: createAcceptedHhAssessmentReportReader({ scheduleRepository: schedules,
+          candidateState: candidates, manualRuns, isVacancyOwned: config.isVacancyOwned }),
+        isVacancyOwned: config.isVacancyOwned,
+      });
+    }
     if (connectedBffConfig !== null) {
       if (typeof connectedBffConfig !== 'object' ||
           typeof connectedBffConfig.dbPath !== 'string' ||
@@ -128,6 +155,9 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
       liveResponseDetailRead,
       liveAssignmentRead,
       liveAssignmentSave,
+      acceptedReportSourceRead,
+      acceptedHhResponseReportSourceRead,
+      acceptedReportDraftStore: reportDraftStore,
       resolveTrustedProfileContext: auth ?? (() => null), connectedAppBff,
       resolveLegacyOpenTab: auth?.resolveLegacyOpenTab ?? null,
       resolveRealVacancyOwnership: (context, vacancyId) => config.isVacancyOwned(context.profileId, vacancyId),
@@ -136,12 +166,14 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
         return ids.length === 1 ? ids[0] : null;
       }, listRealVacancies: context => config.vacancyIdsForProfile(context.profileId),
       privateProactiveOnly: true });
-    server.on('close', () => { manualRuns.close(); candidates.close(); schedules.close(); bffStore?.close(); });
+    server.on('close', () => { manualRuns.close(); candidates.close(); schedules.close();
+      reportDraftStore?.close(); bffStore?.close(); });
     return server;
   } catch (error) {
     manualRuns?.close();
     candidates?.close();
     schedules.close();
+    reportDraftStore?.close();
     bffStore?.close();
     throw error;
   }
@@ -165,6 +197,8 @@ export function parsePrivateWebArgs(args) {
     else if (arg === '--cp-issuer' && options.cpIssuer === undefined) options.cpIssuer = args[++i];
     else if (arg === '--public-origin' && options.publicOrigin === undefined) options.publicOrigin = args[++i];
     else if (arg === '--bff-db' && options.bffDbPath === undefined) options.bffDbPath = args[++i];
+    else if (arg === '--report-drafts-db' && options.reportDraftDbPath === undefined)
+      options.reportDraftDbPath = args[++i];
     else throw new Error('invalid_private_web_arguments');
   }
   if (!options.liveExecution || !Number.isSafeInteger(options.port) || options.port < 1 || options.port > 65535)
@@ -175,6 +209,9 @@ export function parsePrivateWebArgs(args) {
     options.connectedBffConfig = { issuer: options.cpIssuer,
       publicOrigin: options.publicOrigin, dbPath: options.bffDbPath };
   } else if (options.cpIssuer || options.bffDbPath || options.publicOrigin)
+    throw new Error('invalid_private_web_arguments');
+  if (options.reportDraftDbPath !== undefined &&
+      (typeof options.reportDraftDbPath !== 'string' || !options.reportDraftDbPath.startsWith('/') || !options.connectedBff))
     throw new Error('invalid_private_web_arguments');
   delete options.connectedBff;
   delete options.cpIssuer;

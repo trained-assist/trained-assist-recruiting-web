@@ -261,7 +261,8 @@ test('HH response source reaches the shared report draft over real BFF/HTTP with
       return { status: 200, body: { profileId: profileOne, vacancyId, resumeId,
         sourceRevision: resumeRevision, resume: { firstName: 'Response', lastName: 'Candidate',
           title: 'Platform Engineer', experience: [{ position: 'Engineer', company: 'Example Works',
-            start: '2021', end: '2025' }], email: 'private@example.invalid', alternateUrl: 'https://hh.ru/private' } } };
+            start: '2021', end: '2025' }], email: 'private@example.invalid', alternateUrl: 'https://hh.ru/private' },
+        candidateProjection: { id: resumeId, vacancyId, title: 'Platform Engineer' } } };
     },
     async loadBasePlan(profileId, requestedVacancy) {
       return profileId === profileOne && requestedVacancy === vacancyId
@@ -350,7 +351,8 @@ test('HH response report source rejects a changed assessment revision during pro
       updatedAt: '2026-10-06T08:00:00Z' } }; },
     async readResume() { return { status: 200, body: { profileId: profileOne, vacancyId,
       resumeId: 'resume_response_race', sourceRevision: 'e'.repeat(64), resume: { firstName: 'Candidate',
-        lastName: 'One', title: 'Engineer', experience: [] } } }; },
+        lastName: 'One', title: 'Engineer', experience: [] },
+      candidateProjection: { id: 'resume_response_race', vacancyId, title: 'Engineer' } } }; },
     async loadBasePlan() { return { profileId: profileOne, vacancyId, criteriaRevision: 'criteria-race-v1',
       atsConfig: { vacancy_title: 'Engineer' } }; },
     async loadAcceptedAssessment() {

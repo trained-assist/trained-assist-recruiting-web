@@ -300,6 +300,28 @@ export class SqliteRealHhCandidateState {
     if (failure?.retry_at > at) return { kind: 'retry_later', retryAt: failure.retry_at };
     return { kind: 'pending', snapshot, candidate, inputRevision };
   }
+  assessmentForSnapshot({ profileId, vacancyId, jobId, candidateId }) {
+    this.assertScope(profileId, vacancyId);
+    if (![jobId, candidateId].every(safeId)) throw new TypeError('invalid_assessment_target');
+    const row = this.getSnapshot.get(profileId, vacancyId, jobId);
+    if (!row) return { kind: 'not_found' };
+    const snapshot = this.publicSnapshot(row);
+    const member = this.memberById.get(profileId, vacancyId, jobId, candidateId);
+    if (!member) return { kind: 'not_found' };
+    const candidate = JSON.parse(member.projection);
+    const inputRevision = this.assessmentInputRevision(snapshot, candidate);
+    const prior = this.assessmentById.get(profileId, vacancyId, jobId, candidateId);
+    if (prior?.input_revision !== inputRevision) return { kind: 'pending', snapshot, candidate, inputRevision };
+    return { kind: 'scored', snapshot, candidate, inputRevision,
+      assessment: JSON.parse(prior.assessment) };
+  }
+  candidateOverlayFor({ profileId, vacancyId, candidateId }) {
+    this.assertScope(profileId, vacancyId);
+    if (!safeId(candidateId)) throw new TypeError('invalid_candidate_overlay_target');
+    const row = this.overlayById.get(profileId, vacancyId, candidateId);
+    return { status: row?.status ?? 'active', revision: row?.revision ?? 0,
+      comment: row?.comment ?? null, excludeFromSearch: Boolean(row?.exclude_from_search) };
+  }
   recordAssessmentFailure({ profileId, vacancyId, jobId, candidateId, inputRevision, failedAt }) {
     this.assertScope(profileId, vacancyId);
     if (![jobId, candidateId].every(safeId) || !/^[a-f0-9]{32}$/.test(inputRevision) || !isoTime(failedAt))
