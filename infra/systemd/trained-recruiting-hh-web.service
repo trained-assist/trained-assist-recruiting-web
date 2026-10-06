@@ -1,0 +1,33 @@
+[Unit]
+Description=Trained Assist private HH proactive web service
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=60s
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=trained-recruiting
+Group=trained-recruiting
+WorkingDirectory=/opt/trained-assist-recruiting-web/current
+Environment=NODE_ENV=production
+UMask=0077
+StateDirectory=trained-assist/recruiting-web
+StateDirectoryMode=0700
+LoadCredential=legacy_page_secret:/etc/trained-assist/recruiting-web/secrets/legacy_page_secret
+LoadCredential=hh_encryption_key:/etc/trained-assist/recruiting-web/secrets/hh_encryption_key
+LoadCredential=hh_client_id:/etc/trained-assist/recruiting-web/secrets/hh_client_id
+LoadCredential=hh_client_secret:/etc/trained-assist/recruiting-web/secrets/hh_client_secret
+LoadCredential=ladder_token:/etc/trained-assist/recruiting-web/secrets/ladder_token
+ExecStart=/usr/bin/node /opt/trained-assist-recruiting-web/current/src/r03-private-web-runtime.js --config /etc/trained-assist/recruiting-web/config.json --secrets ${CREDENTIALS_DIRECTORY} --port 18083 --live-execution
+Restart=on-failure
+RestartSec=10s
+TimeoutStartSec=30s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/trained-assist/recruiting-web
+
+[Install]
+WantedBy=multi-user.target

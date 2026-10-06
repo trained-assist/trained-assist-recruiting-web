@@ -41,10 +41,13 @@ export function loadPrivateHostConfig(filename) {
     if (!info.isFile() || info.mode & 0o077) fail();
   } catch (error) { if (error?.code !== 'ENOENT') fail(); }
   const bindings = new Map();
+  const legacyProfiles = new Map();
   for (const row of record.profiles) {
-    if (!object(row) || Object.keys(row).sort().join(',') !==
-        'contextDirectory,proactiveDirectory,profileId,tokenDirectory,vacancyIds' ||
+    if (!object(row) || !['contextDirectory,proactiveDirectory,profileId,tokenDirectory,vacancyIds',
+      'contextDirectory,legacyUsername,proactiveDirectory,profileId,tokenDirectory,vacancyIds']
+      .includes(Object.keys(row).sort().join(',')) ||
         !safeId(row.profileId) || bindings.has(row.profileId) ||
+        row.legacyUsername !== undefined && (!safeId(row.legacyUsername) || legacyProfiles.has(row.legacyUsername)) ||
         !Array.isArray(row.vacancyIds) || row.vacancyIds.length < 1 || row.vacancyIds.length > 1000 ||
         row.vacancyIds.some(id => !safeId(id)) || new Set(row.vacancyIds).size !== row.vacancyIds.length) fail();
     for (const path of [row.contextDirectory, row.proactiveDirectory, row.tokenDirectory])
@@ -52,15 +55,19 @@ export function loadPrivateHostConfig(filename) {
     bindings.set(row.profileId, { profileId: row.profileId,
       contextDirectory: row.contextDirectory, proactiveDirectory: row.proactiveDirectory,
       tokenDirectory: row.tokenDirectory, vacancyIds: new Set(row.vacancyIds) });
+    if (row.legacyUsername !== undefined) legacyProfiles.set(row.legacyUsername, row.profileId);
   }
   return {
     dbPath: record.dbPath,
     profileIds: [...bindings.keys()],
+    resolveLegacyProfile: username => legacyProfiles.get(username) ?? null,
+    isWebProfileMapped: profileId => [...legacyProfiles.values()].includes(profileId),
     resolveProfileBinding: async profileId => {
       const row = bindings.get(profileId);
       return row ? { profileId: row.profileId, contextDirectory: row.contextDirectory,
         proactiveDirectory: row.proactiveDirectory, tokenDirectory: row.tokenDirectory } : null;
     },
+    vacancyIdsForProfile: profileId => [...(bindings.get(profileId)?.vacancyIds ?? [])],
     isVacancyOwned: (profileId, vacancyId) => bindings.get(profileId)?.vacancyIds.has(vacancyId) === true
   };
 }
