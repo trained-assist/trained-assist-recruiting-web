@@ -88,7 +88,8 @@ export function createPrivateBaseSearchPlan({ resolveProfileBinding, isVacancyOw
     throw new TypeError('private query regeneration ports required together');
   if (queryOverrides !== undefined && typeof queryOverrides?.get !== 'function')
     throw new TypeError('private query override port required');
-  return async (profileId, vacancyId) => {
+  return async (profileId, vacancyId, { allowGeneration = true } = {}) => {
+    if (typeof allowGeneration !== 'boolean') fail();
     if (!safeId(profileId) || !safeId(vacancyId) || !isVacancyOwned(profileId, vacancyId)) fail();
     let binding;
     try { binding = await resolveProfileBinding(profileId); } catch { fail(); }
@@ -115,16 +116,18 @@ export function createPrivateBaseSearchPlan({ resolveProfileBinding, isVacancyOw
     if (override.mode === 'reset') queryRecord = null;
     const effectiveHash = override.mode === 'reset' ? createHash('md5')
       .update(JSON.stringify([configHash, override.revision])).digest('hex').slice(0, 12) : configHash;
+    let pendingGeneration = false;
     if (!queryRecord || queryRecord.manual !== true && queryRecord.config_hash !== configHash) {
       if (generateQueries === undefined) fail();
       let queries;
       try {
         queries = queryCache.get(profileId, vacancyId, effectiveHash);
-        if (queries === null) queries = queryCache.store(profileId, vacancyId, effectiveHash,
+        if (queries === null && allowGeneration) queries = queryCache.store(profileId, vacancyId, effectiveHash,
           await generateQueries({ profileId, vacancyId, atsConfig: config, comments,
             baseQueries: queryRecord?.queries ?? [] }));
       } catch { fail(); }
-      if (!validQueries(queries)) fail();
+      pendingGeneration = queries === null;
+      if (!pendingGeneration && !validQueries(queries)) fail();
       queryRecord = { vacancy_id: vacancyId, queries, config_hash: effectiveHash, manual: false };
     }
     const manual = queryRecord.manual === true;
@@ -135,6 +138,6 @@ export function createPrivateBaseSearchPlan({ resolveProfileBinding, isVacancyOw
     if (area === undefined) fail();
     return { profileId, vacancyId, criteriaRevision: `criteria-${sha(config)}`,
       queryCache: { revision: `queries-${sha([queryRecord.queries, queryRecord.config_hash, manual, override.revision])}`,
-        queries: [...queryRecord.queries], manual }, atsConfig: config, area };
+        queries: pendingGeneration ? [] : [...queryRecord.queries], manual, pendingGeneration }, atsConfig: config, area };
   };
 }

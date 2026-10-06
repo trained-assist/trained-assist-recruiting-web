@@ -80,8 +80,8 @@ test('profile-bound prompt editor pins target queries, rejects stale writes and 
   assert.equal((await post(invalid)).status, 400);
   const reset = await post({ ...command, queries: '', expected_revision: manual.query_revision,
     expected_override_revision: 1 });
-  assert.equal(reset.status, 202);
-  assert.equal((await reset.json()).pending_regeneration, true);
+  assert.equal(reset.status, 200);
+  assert.equal((await reset.json()).queries_state, 'reset');
   const regenerated = await (await get()).json();
   assert.deepEqual(regenerated.queries, ['новый запрос 1']);
   assert.equal(regenerated.queries_manual, false);
@@ -90,3 +90,50 @@ test('profile-bound prompt editor pins target queries, rejects stale writes and 
   assert.equal(readFileSync(queryFile, 'utf8'), source);
   assert.equal(overrides.get(profileId, vacancyId).mode, 'reset');
 });
+
+for (const sourceMode of ['missing', 'stale']) {
+  test(`GET and manual save never call ladder for ${sourceMode} source cache; explicit reset regenerates`, async t => {
+    const directory = mkdtempSync(join(tmpdir(), 'r03-prompt-no-read-llm-'));
+    const contexts = join(directory, 'contexts');
+    const proactive = join(directory, 'proactive');
+    mkdirSync(contexts, { mode: 0o700 });
+    mkdirSync(proactive, { mode: 0o700 });
+    writeFileSync(join(contexts, `ats_config:${vacancyId}.json`), JSON.stringify({ value: JSON.stringify({
+      vacancy_id: vacancyId, vacancy_title: 'Вымышленный инженер', filters: { area: 1 },
+      required: [{ name: 'проектирование станков', weight: 2 }] }) }));
+    const queryFile = join(proactive, `queries-${vacancyId}.json`);
+    const frozen = sourceMode === 'stale' ? JSON.stringify({ vacancy_id: vacancyId,
+      queries: ['устаревший запрос'], config_hash: '0'.repeat(12) }) : null;
+    if (frozen) writeFileSync(queryFile, frozen);
+    const owned = (profile, vacancy) => profile === profileId && vacancy === vacancyId;
+    const state = new SqliteRealHhCandidateState({ filename: join(directory, 'target.sqlite'), isVacancyOwned: owned });
+    t.after(() => { state.close(); rmSync(directory, { recursive: true, force: true }); });
+    const overrides = new SqlitePrivateQueryOverrides({ db: state.db });
+    let ladderCalls = 0;
+    const loadBasePlan = createPrivateBaseSearchPlan({ isVacancyOwned: owned, queryOverrides: overrides,
+      resolveProfileBinding: async profile => profile === profileId ?
+        { profileId, contextDirectory: contexts, proactiveDirectory: proactive } : null,
+      queryCache: new SqlitePrivateBaseQueryCache({ db: state.db }),
+      generateQueries: async () => { ladderCalls++; return ['новый сгенерированный запрос']; } });
+    const prompt = createR03PrivatePromptSettings({ loadBasePlan, queryOverrides: overrides,
+      isVacancyOwned: owned });
+    const initial = await prompt.read(context, vacancyId);
+    assert.equal(initial.status, 200);
+    assert.deepEqual(initial.body.queries, []);
+    assert.equal(initial.body.pending_regeneration, true);
+    assert.equal(ladderCalls, 0);
+    const manual = await prompt.save(context, { vacancy_id: vacancyId, queries: 'ручной запрос',
+      expected_revision: initial.body.query_revision, expected_override_revision: 0 });
+    assert.equal(manual.status, 200);
+    assert.equal(ladderCalls, 0);
+    assert.deepEqual((await loadBasePlan(profileId, vacancyId)).queryCache.queries, ['ручной запрос']);
+    assert.equal(ladderCalls, 0);
+    const reset = await prompt.save(context, { vacancy_id: vacancyId, queries: '',
+      expected_revision: manual.body.query_revision, expected_override_revision: 1 });
+    assert.equal(reset.status, 200);
+    assert.equal(ladderCalls, 1);
+    assert.deepEqual(reset.body.queries, ['новый сгенерированный запрос']);
+    if (frozen) assert.equal(readFileSync(queryFile, 'utf8'), frozen);
+    else assert.throws(() => readFileSync(queryFile), { code: 'ENOENT' });
+  });
+}

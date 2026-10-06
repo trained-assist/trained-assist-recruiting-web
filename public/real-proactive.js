@@ -41,7 +41,8 @@ if (root) {
     const result = await request(`/api/hh/proactive/prompt?vacancy_id=${encodeURIComponent(vacancyId)}`);
     promptState = result;
     promptInput.value = result.queries.join('\n');
-    promptStatus.textContent = result.queries_manual ? 'Запросы сохранены вручную.' : 'Показаны запросы, созданные из вакансии.';
+    promptStatus.textContent = result.pending_regeneration ? 'Запросы ещё не созданы. Можно задать их вручную или выполнить сброс с генерацией.' :
+      result.queries_manual ? 'Запросы сохранены вручную.' : 'Показаны запросы, созданные из вакансии.';
   };
   refreshPrompt().catch(error => { promptStatus.textContent = `Запросы недоступны: ${message(error)}`; });
   const savePrompt = async (queries, reset = false) => {

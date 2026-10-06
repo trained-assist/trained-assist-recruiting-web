@@ -24,13 +24,14 @@ export function createR03PrivatePromptSettings({ loadBasePlan, queryOverrides, i
   async function read(context, vacancyId) {
     if (!scope(context, vacancyId)) return { status: 404, body: { error: 'vacancy_not_found' } };
     try {
-      const plan = await loadBasePlan(context.profileId, vacancyId);
+      const plan = await loadBasePlan(context.profileId, vacancyId, { allowGeneration: false });
       const override = queryOverrides.get(context.profileId, vacancyId);
       if (plan?.profileId !== context.profileId || plan?.vacancyId !== vacancyId ||
           !Array.isArray(plan.queryCache?.queries) || !plan.queryCache?.revision)
         return unavailable;
       return { status: 200, body: { ok: true, vacancy_id: vacancyId,
         queries: plan.queryCache.queries, queries_manual: plan.queryCache.manual === true,
+        pending_regeneration: plan.queryCache.pendingGeneration === true,
         queries_generated_at: override.mode === 'manual' ? override.updatedAt : null,
         query_revision: plan.queryCache.revision, override_revision: override.revision } };
     } catch { return unavailable; }
@@ -61,9 +62,17 @@ export function createR03PrivatePromptSettings({ loadBasePlan, queryOverrides, i
     catch { return unavailable; }
     if (result.kind === 'conflict') return { status: 409, body: { error: 'query_revision_conflict',
       current_override_revision: result.currentRevision } };
-    if (!queries.length) return { status: 202, body: { ok: true, vacancy_id: command.vacancy_id,
-      queries_state: 'reset', queries_manual: false, override_revision: result.state.revision,
-      pending_regeneration: true } };
+    if (!queries.length) {
+      try { await loadBasePlan(context.profileId, command.vacancy_id, { allowGeneration: true }); }
+      catch { return { status: 202, body: { ok: true, vacancy_id: command.vacancy_id,
+        queries_state: 'reset', queries_manual: false, override_revision: result.state.revision,
+        pending_regeneration: true } }; }
+      const resetView = await read(context, command.vacancy_id);
+      return resetView.status === 200 ? { status: 200, body: { ...resetView.body, queries_state: 'reset' } } :
+        { status: 202, body: { ok: true, vacancy_id: command.vacancy_id,
+          queries_state: 'reset', queries_manual: false, override_revision: result.state.revision,
+          pending_regeneration: true } };
+    }
     const updated = await read(context, command.vacancy_id);
     return updated.status === 200 ? { status: 200, body: { ...updated.body, queries_state: 'manual' } } :
       { status: 202, body: { ok: true, vacancy_id: command.vacancy_id, queries_state: 'manual',
