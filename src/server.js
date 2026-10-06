@@ -12,6 +12,7 @@ import { createCandidateState, createMemoryCandidateStateStore } from './candida
 import { createColdSearchScheduleHandler, InMemoryColdSearchScheduleRepository, validSearchContext } from './cold-search-schedules.js';
 import { renderRealProactivePage } from './r03-real-proactive-page.js';
 import { createRealProactiveRead } from './r03-real-proactive-read.js';
+import { ConnectedAppIntrospectionUnavailable } from './connected-app-bff.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
@@ -220,9 +221,10 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
     const path = url.pathname;
     if (connectedAppBff && path.startsWith('/auth/connected/')) {
       try { if (await connectedAppBff.handle(req, res, url)) return; }
-      catch {
+      catch (error) {
         res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-        res.end(JSON.stringify({ error: 'connected_app_auth_unavailable' }));
+        res.end(JSON.stringify({ error: error instanceof ConnectedAppIntrospectionUnavailable
+          ? 'connected_app_introspection_unavailable' : 'connected_app_auth_unavailable' }));
         return;
       }
     }
@@ -256,7 +258,8 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
     } else if (path === '/api/v1/ui/accepted-report-source' && acceptedReportSourceRead !== null) {
       let context;
       try { context = await trustedReadResolver(req, url, res); }
-      catch { status = 503; body = { error: 'trusted_profile_unavailable' }; }
+      catch (error) { status = 503; body = { error: error instanceof ConnectedAppIntrospectionUnavailable
+        ? 'connected_app_introspection_unavailable' : 'trusted_profile_unavailable' }; }
       if (status === 200 && (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes))) {
         status = 401; body = { error: 'trusted_profile_context_required' };
       } else if (status === 200 && !context.scopes.includes('recruiting.reports.read')) {
@@ -279,7 +282,8 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
     } else if (path === '/api/v1/ui/hh-responses' && liveResponseRead !== null) {
       let context;
       try { context = await trustedReadResolver(req, url, res); }
-      catch { status = 503; body = { error: 'trusted_profile_unavailable' }; }
+      catch (error) { status = 503; body = { error: error instanceof ConnectedAppIntrospectionUnavailable
+        ? 'connected_app_introspection_unavailable' : 'trusted_profile_unavailable' }; }
       if (status === 200 && (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes))) {
         status = 401; body = { error: 'trusted_profile_context_required' };
       } else if (status === 200 && !context.scopes.includes('recruiting.responses.read')) {

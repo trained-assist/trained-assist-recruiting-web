@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { createRecruitingServer } from '../src/server.js';
 import { createControlPlaneConnectedAppClient, createMemoryConnectedAppBffStore,
   createRecruitingConnectedAppBff } from '../src/connected-app-bff.js';
@@ -18,7 +19,7 @@ async function fixture(t) {
   let current = { ...claims };
   let exchangeCalls = 0;
   let readCalls = 0;
-  const bff = createRecruitingConnectedAppBff({ issuer, publicOrigin, redirectUri,
+  const bff = createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins: [issuer], publicOrigin, redirectUri,
     store: createMemoryConnectedAppBffStore(), clock: () => now,
     exchangeCode: async ({ code, state, verifier, redirectUri: callback }) => {
       exchangeCalls++;
@@ -56,7 +57,7 @@ async function callback(base, state, pendingCookie, params = {}) {
   url.searchParams.set('code', params.code ?? 'b'.repeat(64));
   url.searchParams.set('state', params.state ?? state);
   url.searchParams.set('iss', params.iss ?? issuer);
-  return fetch(url, { redirect: 'manual', headers: { cookie: pendingCookie } });
+  return fetch(url, { redirect: 'manual', headers: { cookie: [pendingCookie, params.previousCookie].filter(Boolean).join('; ') } });
 }
 
 test('BFF exchanges one code and stores token only on the server', async t => {
@@ -85,6 +86,14 @@ test('BFF exchanges one code and stores token only on the server', async t => {
   assert.equal(f.readCalls, 1);
   assert.equal((await callback(f.base, authorize.searchParams.get('state'), pendingCookie)).status, 401);
   assert.equal(f.exchangeCalls, 1);
+  const second = await start(f.base);
+  const rotated = await callback(f.base, second.authorize.searchParams.get('state'), second.pendingCookie,
+    { previousCookie: appCookie });
+  assert.equal(rotated.status, 303);
+  const newCookie = getCookie(rotated, '__Host-recruiting-app-session');
+  assert.notEqual(newCookie, appCookie);
+  assert.equal((await fetch(`${f.base}/auth/connected/session`, { headers: { cookie: appCookie } })).status, 401);
+  assert.equal((await fetch(`${f.base}/auth/connected/session`, { headers: { cookie: newCookie } })).status, 200);
 });
 
 test('callback rejects state and issuer mismatch before token exchange', async t => {
@@ -93,10 +102,25 @@ test('callback rejects state and issuer mismatch before token exchange', async t
   assert.equal((await callback(f.base, started.authorize.searchParams.get('state'), started.pendingCookie,
     { state: 'attacker-state' })).status, 401);
   assert.equal(f.exchangeCalls, 0);
+  assert.equal((await fetch(`${f.base}/auth/connected/start?returnTo=https://evil.example.invalid`,
+    { redirect: 'manual' })).status, 400);
+  started = await start(f.base);
+  const target = new URL(`${f.base}/auth/connected/callback`);
+  target.searchParams.set('code', 'b'.repeat(64));
+  target.searchParams.set('state', started.authorize.searchParams.get('state'));
+  target.searchParams.set('iss', issuer);
+  target.searchParams.set('returnTo', 'https://evil.example.invalid');
+  assert.equal((await fetch(target, { redirect: 'manual', headers: { cookie: started.pendingCookie } })).status, 401);
+  assert.equal(f.exchangeCalls, 0);
   started = await start(f.base);
   assert.equal((await callback(f.base, started.authorize.searchParams.get('state'), started.pendingCookie,
     { iss: 'https://wrong.example.invalid' })).status, 401);
   assert.equal(f.exchangeCalls, 0);
+});
+
+test('BFF contains no token/code logging path', async () => {
+  const source = await readFile(new URL('../src/connected-app-bff.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /\bconsole\./);
 });
 
 test('CSRF and current introspection gate browser requests, then logout clears local session', async t => {
@@ -113,7 +137,14 @@ test('CSRF and current introspection gate browser requests, then logout clears l
   assert.equal((await fetch(`${f.base}/api/v1/ui/hh-responses?vacancyId=vac_demo_001`,
     { headers: { cookie: appCookie } })).status, 401);
   assert.equal(f.readCalls, 0);
-  f.setClaims({ ...claims });
+  f.setClaims(null);
+  const unavailableRead = await fetch(`${f.base}/api/v1/ui/hh-responses?vacancyId=vac_demo_001`,
+    { headers: { cookie: appCookie } });
+  assert.equal(unavailableRead.status, 503);
+  assert.deepEqual(await unavailableRead.json(), { error: 'connected_app_introspection_unavailable' });
+  const unavailableSession = await fetch(`${f.base}/auth/connected/session`, { headers: { cookie: appCookie } });
+  assert.equal(unavailableSession.status, 503);
+  assert.deepEqual(await unavailableSession.json(), { error: 'connected_app_introspection_unavailable' });
   assert.equal((await logout({ origin: publicOrigin, 'x-csrf-token': info.csrfToken })).status, 204);
   assert.equal((await fetch(`${f.base}/auth/connected/session`, { headers: { cookie: appCookie } })).status, 401);
 });
@@ -139,7 +170,7 @@ test('PKCE challenge generated by BFF corresponds to the server-side verifier', 
   const store = createMemoryConnectedAppBffStore();
   const original = store.putPending;
   store.putPending = async (key, value) => { captured = value; return original(key, value); };
-  const bff = createRecruitingConnectedAppBff({ issuer, publicOrigin, redirectUri, store,
+  const bff = createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins: [issuer], publicOrigin, redirectUri, store,
     exchangeCode: async () => null, introspectToken: async () => null });
   const server = createRecruitingServer({ connectedAppBff: bff });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -151,7 +182,7 @@ test('PKCE challenge generated by BFF corresponds to the server-side verifier', 
 
 test('CP client exchanges code and introspects with its server-side service credential', async () => {
   const calls = [];
-  const client = createControlPlaneConnectedAppClient({ issuer,
+  const client = createControlPlaneConnectedAppClient({ issuer, allowedIssuerOrigins: [issuer],
     serviceKey: 'app-service-secret-at-least-thirty-two-characters',
     fetcher: async (url, options) => {
       calls.push({ url, options });
@@ -166,5 +197,13 @@ test('CP client exchanges code and introspects with its server-side service cred
   assert.equal(calls[0].options.body.get('code_verifier'), 'v'.repeat(43));
   assert.equal(calls[0].options.body.get('client_id'), 'recruiting-web');
   assert.deepEqual(JSON.parse(calls[1].options.body), { token, audience: 'recruiting-web' });
+  assert.ok(calls.every(call => call.options.redirect === 'manual'));
   assert.ok(calls.every(call => call.options.headers.authorization.startsWith('Bearer app-service-secret-')));
+  assert.throws(() => createControlPlaneConnectedAppClient({ issuer, allowedIssuerOrigins: ['https://wrong.example.invalid'],
+    serviceKey: 'app-service-secret-at-least-thirty-two-characters', fetcher: async () => { throw Error('must not call'); } }),
+  /configuration_required/);
+  const unavailable = createControlPlaneConnectedAppClient({ issuer, allowedIssuerOrigins: [issuer],
+    serviceKey: 'app-service-secret-at-least-thirty-two-characters',
+    fetcher: async () => new Response(null, { status: 503 }) });
+  await assert.rejects(() => unavailable.introspectToken(token), /connected_app_introspection_unavailable/);
 });

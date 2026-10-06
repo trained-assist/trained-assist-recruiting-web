@@ -11,6 +11,9 @@ const equal = (a, b) => {
   const left = Buffer.from(a); const right = Buffer.from(b);
   return left.length === right.length && timingSafeEqual(left, right);
 };
+export class ConnectedAppIntrospectionUnavailable extends Error {
+  constructor() { super('connected_app_introspection_unavailable'); this.name = 'ConnectedAppIntrospectionUnavailable'; }
+}
 const cookie = (name, value, maxAge, sameSite = 'Strict') =>
   `${name}=${value}; Path=/; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=${sameSite}`;
 const clearCookie = name => cookie(name, '', 0);
@@ -40,8 +43,9 @@ export function createMemoryConnectedAppBffStore() {
 }
 
 /** CP service calls remain server-side. No app or browser receives this credential. */
-export function createControlPlaneConnectedAppClient({ issuer, serviceKey, fetcher = fetch } = {}) {
+export function createControlPlaneConnectedAppClient({ issuer, allowedIssuerOrigins, serviceKey, fetcher = fetch } = {}) {
   if (typeof issuer !== 'string' || !issuer.startsWith('https://') || new URL(issuer).origin !== issuer ||
+      !Array.isArray(allowedIssuerOrigins) || !allowedIssuerOrigins.includes(issuer) ||
       typeof serviceKey !== 'string' || serviceKey.length < 32 || typeof fetcher !== 'function')
     throw new TypeError('connected_app_client_configuration_required');
   const headers = { authorization: `Bearer ${serviceKey}` };
@@ -51,24 +55,26 @@ export function createControlPlaneConnectedAppClient({ issuer, serviceKey, fetch
         redirect_uri: redirectUri, code, state, code_verifier: verifier });
       const response = await fetcher(`${issuer}/v1/connected-app-sessions/exchange`, {
         method: 'POST', headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded' },
-        body, signal: AbortSignal.timeout(5000) });
+        body, redirect: 'manual', signal: AbortSignal.timeout(5000) });
       if (!response.ok) return null;
       return response.json();
     },
     async introspectToken(token) {
       const response = await fetcher(`${issuer}/v1/connected-app-sessions/introspect`, {
         method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
-        body: JSON.stringify({ token, audience }), signal: AbortSignal.timeout(5000) });
-      if (!response.ok) return null;
-      return response.json();
+        body: JSON.stringify({ token, audience }), redirect: 'manual', signal: AbortSignal.timeout(5000) });
+      if (!response.ok) throw new ConnectedAppIntrospectionUnavailable();
+      try { return await response.json(); }
+      catch { throw new ConnectedAppIntrospectionUnavailable(); }
     },
   };
 }
 
 /** Explicit opt-in Node BFF boundary; never constructed by the default server. */
-export function createRecruitingConnectedAppBff({ issuer, publicOrigin, redirectUri, store,
+export function createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins, publicOrigin, redirectUri, store,
   exchangeCode, introspectToken, clock = () => Date.now(), scopes = ['recruiting.responses.read', 'recruiting.reports.read'] } = {}) {
   if (typeof issuer !== 'string' || !issuer.startsWith('https://') || new URL(issuer).origin !== issuer ||
+      !Array.isArray(allowedIssuerOrigins) || !allowedIssuerOrigins.includes(issuer) ||
       typeof publicOrigin !== 'string' || !publicOrigin.startsWith('https://') || new URL(publicOrigin).origin !== publicOrigin ||
       redirectUri !== `${publicOrigin}/auth/connected/callback` ||
       !store || !['putPending', 'takePending', 'putSession', 'getSession', 'deleteSession'].every(method => typeof store[method] === 'function') ||
@@ -78,9 +84,14 @@ export function createRecruitingConnectedAppBff({ issuer, publicOrigin, redirect
 
   const inspect = async token => {
     let claims;
-    try { claims = await introspectToken(token); } catch { return null; }
+    try { claims = await introspectToken(token); }
+    catch { throw new ConnectedAppIntrospectionUnavailable(); }
+    if (claims === null || claims === undefined) throw new ConnectedAppIntrospectionUnavailable();
+    if (typeof claims !== 'object' || ![true, false].includes(claims.active))
+      throw new ConnectedAppIntrospectionUnavailable();
+    if (claims.active === false) return null;
     const now = Math.floor(clock() / 1000);
-    if (!claims || claims.active !== true || claims.iss !== issuer || claims.aud !== audience ||
+    if (claims.iss !== issuer || claims.aud !== audience ||
         !safeId(claims.sub) || !safeId(claims.profileId) || !safeId(claims.sessionId) ||
         !Number.isSafeInteger(claims.nbf) || claims.nbf > now ||
         !Number.isSafeInteger(claims.exp) || claims.exp <= now || claims.exp - claims.nbf > 3600 ||
@@ -138,13 +149,19 @@ export function createRecruitingConnectedAppBff({ issuer, publicOrigin, redirect
             !Number.isSafeInteger(exchanged.expiresAt) || exchanged.expiresAt <= Math.floor(clock() / 1000)) {
           respond(res, 502, { error: 'token_exchange_unavailable' }, { 'set-cookie': clearCookie(pendingCookie) }); return true;
         }
-        const claims = await inspect(exchanged.token);
+        let claims;
+        try { claims = await inspect(exchanged.token); }
+        catch {
+          respond(res, 503, { error: 'token_introspection_unavailable' }, { 'set-cookie': clearCookie(pendingCookie) }); return true;
+        }
         if (!claims || claims.exp > exchanged.expiresAt) {
           respond(res, 502, { error: 'token_introspection_unavailable' }, { 'set-cookie': clearCookie(pendingCookie) }); return true;
         }
         const handle = random();
         await store.putSession(hash(handle), { token: exchanged.token, csrf: random(), createdAt: clock(),
           sub: claims.sub, profileId: claims.profileId, sessionId: claims.sessionId });
+        const prior = cookieValue(req, sessionCookie);
+        if (prior) await store.deleteSession(hash(prior));
         respond(res, 303, null, { location: publicOrigin, 'set-cookie': [clearCookie(pendingCookie), cookie(sessionCookie, handle, 3600)] });
         return true;
       }
@@ -155,9 +172,12 @@ export function createRecruitingConnectedAppBff({ issuer, publicOrigin, redirect
         return true;
       }
       if (url.pathname === '/auth/connected/logout' && req.method === 'POST') {
-        const result = await active(req);
-        if (!result) { respond(res, 403, { error: 'csrf_or_session_invalid' }); return true; }
-        await store.deleteSession(hash(result.handle));
+        const handle = cookieValue(req, sessionCookie);
+        const record = handle ? await store.getSession(hash(handle)) : null;
+        if (!record || req.headers.origin !== publicOrigin || !equal(req.headers['x-csrf-token'], record.csrf)) {
+          respond(res, 403, { error: 'csrf_or_session_invalid' }); return true;
+        }
+        await store.deleteSession(hash(handle));
         respond(res, 204, null, { 'set-cookie': clearCookie(sessionCookie) });
         return true;
       }
