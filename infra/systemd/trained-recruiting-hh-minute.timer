@@ -1,0 +1,11 @@
+[Unit]
+Description=Every-minute Trained Assist HH private cold-search clock
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+AccuracySec=1s
+Persistent=false
+Unit=trained-recruiting-hh-minute.service
+
+[Install]
+WantedBy=timers.target
