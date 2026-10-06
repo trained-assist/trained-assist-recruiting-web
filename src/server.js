@@ -170,7 +170,7 @@ function validReportAction(value) {
   return isPlainObject(value) && Object.keys(value).sort().join(',') === 'expectedReportRevision' && isReportRevision(value.expectedReportRevision);
 }
 
-export function createRecruitingServer({ resolveTrustedProfileContext = () => null, connectedAppBff = null, resolveLegacyOpenTab = null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, candidateSearchJobStore = null, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), scheduleLeaseMs = 5 * 60_000, maxCandidateSearchJobs = 100, publicationAdapter, realProactiveFeed = null, realProactiveHistoricalRead = null, realProactiveActions = null, realProactivePrompt = null, realProactiveSeenImport = null, realProactiveAiScore = null, realProactiveManualCandidate = null, liveResponseRead = null, liveAssignmentRead = null, acceptedReportSourceRead = null, resolveRealVacancyOwnership = null, resolveRealDefaultVacancy = () => null, listRealVacancies = () => [], privateProactiveOnly = false, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
+export function createRecruitingServer({ resolveTrustedProfileContext = () => null, connectedAppBff = null, resolveLegacyOpenTab = null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, candidateSearchJobStore = null, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), scheduleLeaseMs = 5 * 60_000, maxCandidateSearchJobs = 100, publicationAdapter, realProactiveFeed = null, realProactiveHistoricalRead = null, realProactiveActions = null, realProactivePrompt = null, realProactiveSeenImport = null, realProactiveAiScore = null, realProactiveManualCandidate = null, liveResponseRead = null, liveAssignmentRead = null, liveAssignmentSave = null, acceptedReportSourceRead = null, resolveRealVacancyOwnership = null, resolveRealDefaultVacancy = () => null, listRealVacancies = () => [], privateProactiveOnly = false, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
   if (realProactiveFeed !== null && (typeof realProactiveFeed.read !== 'function' || typeof resolveRealVacancyOwnership !== 'function'))
     throw new TypeError('real proactive feed and trusted vacancy ownership ports required');
   if (realProactiveActions !== null && realProactiveFeed === null) throw new TypeError('real actions require real feed mode');
@@ -182,6 +182,8 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
     throw new TypeError('live response read port required');
   if (liveAssignmentRead !== null && typeof liveAssignmentRead !== 'function')
     throw new TypeError('live assignment read port required');
+  if (liveAssignmentSave !== null && (typeof liveAssignmentSave !== 'function' || liveAssignmentRead === null || connectedAppBff === null))
+    throw new TypeError('live assignment save requires connected read boundary');
   if (acceptedReportSourceRead !== null && typeof acceptedReportSourceRead !== 'function')
     throw new TypeError('report source read port required');
   if (resolveLegacyOpenTab !== null && (!privateProactiveOnly || typeof resolveLegacyOpenTab !== 'function'))
@@ -270,10 +272,10 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
           (path === '/hh/assignment' || path === '/api/v1/ui/vacancy-assignment')))) {
       status = 404;
       body = { error: 'not_found' };
-    } else if (req.method !== 'GET' && req.method !== 'HEAD' && !(req.method === 'POST' && (isCandidateSearchPath || isReportDraftPath || path === '/api/hh/proactive/vacancy-state' || path === '/api/hh/proactive/search' || realProactiveFeed !== null && path.startsWith('/api/hh/proactive/'))) && !(req.method === 'PATCH' && isReportDraftPath)) {
+    } else if (req.method !== 'GET' && req.method !== 'HEAD' && !(req.method === 'POST' && (isCandidateSearchPath || isReportDraftPath || path === '/api/v1/ui/vacancy-assignment' && liveAssignmentSave !== null || path === '/api/hh/proactive/vacancy-state' || path === '/api/hh/proactive/search' || realProactiveFeed !== null && path.startsWith('/api/hh/proactive/'))) && !(req.method === 'PATCH' && isReportDraftPath)) {
       status = 405;
       body = { error: 'method_not_allowed' };
-      res.setHeader('Allow', isCandidateSearchPath || isReportDraftPath ? 'GET, HEAD, POST, PATCH' : 'GET, HEAD');
+      res.setHeader('Allow', isCandidateSearchPath || isReportDraftPath ? 'GET, HEAD, POST, PATCH' : path === '/api/v1/ui/vacancy-assignment' && liveAssignmentSave !== null ? 'GET, HEAD, POST' : 'GET, HEAD');
     } else if (path === '/') {
       type = mime.html;
       body = landingPage;
@@ -326,13 +328,19 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
             'Referrer-Policy': 'no-referrer' }); res.end(); return;
         }
         status = 401; body = { error: 'trusted_profile_context_required' };
-      } else if (status === 200 && !context.scopes.includes('recruiting.responses.read')) {
+      } else if (status === 200 && !context.scopes.includes(req.method === 'POST' ? 'recruiting.assignment.review' : 'recruiting.responses.read') &&
+          !(req.method === 'GET' && context.scopes.includes('recruiting.assignment.review'))) {
         status = 403; body = { error: 'response_scope_required' };
       } else if (status === 200 && ([...url.searchParams.keys()].join(',') !==
           (pageRoute ? 'vacancy_id' : 'vacancyId') || !/^[A-Za-z0-9_-]{1,128}$/.test(vacancyId ?? ''))) {
         status = 400; body = { error: 'invalid_assignment_request' };
       } else if (status === 200) {
-        const result = await liveAssignmentRead(context, { vacancyId });
+        let result;
+        if (req.method === 'POST') {
+          try { result = await liveAssignmentSave(context, { ...await readJsonBody(req, 256 * 1024), vacancyId }); }
+          catch (error) { result = { status: error.message === 'body_too_large' ? 413 : 400,
+            body: { error: 'invalid_assignment_review' } }; }
+        } else result = await liveAssignmentRead(context, { vacancyId });
         status = result.status; body = result.body;
         if (status === 200 && pageRoute) { type = mime.html; body = renderAssignmentPage(body); }
       }

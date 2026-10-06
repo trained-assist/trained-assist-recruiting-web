@@ -21,7 +21,7 @@ import { createRecruitingServer } from './server.js';
 import { createControlPlaneConnectedAppClient, createRecruitingConnectedAppBff } from './connected-app-bff.js';
 import { SqliteConnectedAppBffStore } from './sqlite-connected-app-bff-store.js';
 import { createHhResponseRead } from './r01-live-responses.js';
-import { createPrivateVacancyAssignmentRead } from './r01-private-vacancy-assignment.js';
+import { createPrivateVacancyAssignmentRead, createPrivateVacancyAssignmentSave } from './r01-private-vacancy-assignment.js';
 
 // Constructing the server makes no provider request or public bind. The owner
 // explicitly supplies private config/credentials; the HTTP process owns its
@@ -89,6 +89,9 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
     const liveAssignmentRead = connectedAppBff !== null || connectedBffConfig !== null
       ? createPrivateVacancyAssignmentRead({ resolveProfileBinding: config.resolveProfileBinding,
         isVacancyOwned: config.isVacancyOwned }) : null;
+    const liveAssignmentSave = connectedAppBff !== null || connectedBffConfig !== null
+      ? createPrivateVacancyAssignmentSave({ resolveProfileBinding: config.resolveProfileBinding,
+        isVacancyOwned: config.isVacancyOwned }) : null;
     if (connectedBffConfig !== null) {
       if (typeof connectedBffConfig !== 'object' ||
           typeof connectedBffConfig.dbPath !== 'string' ||
@@ -119,6 +122,7 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
       realProactiveManualCandidate: manualCandidate,
       liveResponseRead,
       liveAssignmentRead,
+      liveAssignmentSave,
       resolveTrustedProfileContext: auth ?? (() => null), connectedAppBff,
       resolveLegacyOpenTab: auth?.resolveLegacyOpenTab ?? null,
       resolveRealVacancyOwnership: (context, vacancyId) => config.isVacancyOwned(context.profileId, vacancyId),
