@@ -4,6 +4,7 @@ const safeId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.te
 const sourceHash = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const reportRef = () => `report_${randomUUID().replaceAll('-', '')}`;
 const revisionOf = value => `report-r${value}`;
+const SOURCE_KINDS = new Set(['accepted_cold_search', 'accepted_hh_response']);
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
 })[char]);
@@ -11,6 +12,7 @@ const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({
 function publicReport(record) {
   return {
     domainApiVersion: 'v1', reportRef: record.reportRef, candidateId: record.candidateId,
+    sourceKind: record.sourceKind,
     vacancyId: record.vacancyId, sourceRevision: record.sourceRevision,
     reportRevision: revisionOf(record.revision), status: record.status,
     reviewState: record.reviewState, clientFields: structuredClone(record.clientFields),
@@ -43,13 +45,15 @@ export function createAcceptedReportDrafts({ sourceRead, store, clock = () => ne
 
   async function currentSource(context, record) {
     let result;
-    try { result = await sourceRead(context, { vacancyId: record.vacancyId, candidateId: record.candidateId }); }
+    try { result = await sourceRead(context, { vacancyId: record.vacancyId, candidateId: record.candidateId,
+      sourceKind: record.sourceKind }); }
     catch { return { kind: 'source_unavailable' }; }
     if (result?.status === 409) return { kind: 'stale_source' };
     if (result?.status === 404) return { kind: 'source_not_found' };
     if (result?.status !== 200 || result.body?.profileId !== context.profileId ||
         result.body?.vacancyId !== record.vacancyId || result.body?.candidateId !== record.candidateId ||
-        result.body?.sourceKind !== 'accepted_cold_search' || result.body?.publication !== 'disabled' ||
+        result.body?.sourceKind !== record.sourceKind || !SOURCE_KINDS.has(record.sourceKind) ||
+        result.body?.publication !== 'disabled' ||
         !sourceHash(result.body.sourceRevision) || !validClientFields(result.body.clientDraftFields))
       return { kind: 'source_unavailable' };
     if (result.body.sourceRevision !== record.sourceRevision) return { kind: 'stale_source' };
@@ -58,30 +62,33 @@ export function createAcceptedReportDrafts({ sourceRead, store, clock = () => ne
 
   return {
     async create(context, key, request) {
+      const sourceKind = request?.sourceKind ?? 'accepted_cold_search';
       if (!safeId(context?.profileId) || !safeId(request?.candidateId) || !safeId(request?.vacancyId) ||
+          !SOURCE_KINDS.has(sourceKind) ||
           !sourceHash(request?.expectedSourceRevision)) return { kind: 'invalid_request' };
       let result;
-      try { result = await sourceRead(context, { vacancyId: request.vacancyId, candidateId: request.candidateId }); }
+      try { result = await sourceRead(context, { vacancyId: request.vacancyId,
+        candidateId: request.candidateId, sourceKind }); }
       catch { return { kind: 'source_unavailable' }; }
       if (result?.status === 409) return { kind: 'stale_source' };
       if (result?.status === 404) return { kind: 'source_not_found' };
       const source = result?.body;
       if (result?.status !== 200 || source?.profileId !== context.profileId ||
           source?.candidateId !== request.candidateId || source?.vacancyId !== request.vacancyId ||
-          source?.sourceKind !== 'accepted_cold_search' || source?.publication !== 'disabled' ||
+          source?.sourceKind !== sourceKind || source?.publication !== 'disabled' ||
           !sourceHash(source?.sourceRevision) || !validClientFields(source?.clientDraftFields))
         return { kind: result?.status === 404 ? 'source_not_found' : 'source_unavailable' };
       if (source.sourceRevision !== request.expectedSourceRevision) return { kind: 'stale_source', currentSourceRevision: source.sourceRevision };
       const now = clock().toISOString();
       const record = {
-        reportRef: reportRef(), profileId: context.profileId,
+        reportRef: reportRef(), profileId: context.profileId, sourceKind,
         candidateId: request.candidateId, vacancyId: request.vacancyId,
         sourceRevision: source.sourceRevision, revision: 1, status: 'draft', reviewState: 'unreviewed',
         clientFields: structuredClone(source.clientDraftFields), createdAt: now, updatedAt: now,
         audit: [{ action: 'draft_created', revision: 1, actorProfileId: context.profileId, at: now, sourceRevision: source.sourceRevision }],
       };
       const created = await store.create({ profileId: context.profileId, idempotencyKey: key,
-        requestFingerprint: JSON.stringify([request.candidateId, request.vacancyId, request.expectedSourceRevision]), record });
+        requestFingerprint: JSON.stringify([sourceKind, request.candidateId, request.vacancyId, request.expectedSourceRevision]), record });
       if (created.kind === 'created' || created.kind === 'existing')
         return { kind: created.kind, report: publicReport(created.record) };
       return created;

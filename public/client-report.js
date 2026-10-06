@@ -7,6 +7,7 @@ const approveButton = document.querySelector('#approve');
 const params = new URLSearchParams(location.search);
 const candidateId = params.get('candidate_id');
 const vacancyId = params.get('vacancy_id');
+const sourceKind = params.get('source_kind') ?? 'accepted_cold_search';
 let report = null;
 let csrfToken = null;
 
@@ -27,7 +28,10 @@ function reportError(response, payload) {
 }
 
 async function load() {
-  if (!candidateId || !vacancyId || params.size !== 2) { showStatus('Некорректная ссылка на кандидата.'); return; }
+  if (!candidateId || !vacancyId || !['accepted_cold_search', 'accepted_hh_response'].includes(sourceKind) ||
+      ![2, 3].includes(params.size) || [...params.keys()].some(key => !['candidate_id', 'vacancy_id', 'source_kind'].includes(key))) {
+    showStatus('Некорректная ссылка на кандидата.'); return;
+  }
   try {
     const sessionResponse = await request('/auth/connected/session');
     const session = await sessionResponse.json();
@@ -38,6 +42,7 @@ async function load() {
     const sourceUrl = new URL('/api/v1/ui/accepted-report-client-source', location.origin);
     sourceUrl.searchParams.set('candidateId', candidateId);
     sourceUrl.searchParams.set('vacancyId', vacancyId);
+    sourceUrl.searchParams.set('sourceKind', sourceKind);
     const sourceResponse = await request(sourceUrl.pathname + sourceUrl.search);
     const source = await sourceResponse.json();
     if (!sourceResponse.ok) { showStatus(reportError(sourceResponse, source)); return; }
@@ -46,7 +51,7 @@ async function load() {
     const key = `r04:${source.sourceRevision}`;
     const createResponse = await request('/api/v1/ui/accepted-report-drafts', {
       method: 'POST', headers: { 'content-type': 'application/json', 'Idempotency-Key': key },
-      body: JSON.stringify({ candidateId, vacancyId, expectedSourceRevision: source.sourceRevision }),
+      body: JSON.stringify({ candidateId, vacancyId, sourceKind, expectedSourceRevision: source.sourceRevision }),
     });
     report = await createResponse.json();
     if (!createResponse.ok) { showStatus(reportError(createResponse, report)); return; }

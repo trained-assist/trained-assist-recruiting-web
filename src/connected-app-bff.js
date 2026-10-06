@@ -139,17 +139,20 @@ export function createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins, 
         const fromAssignment = from === 'assignment';
         const vacancyId = url.searchParams.get('vacancy_id');
         const candidateId = url.searchParams.get('candidate_id');
-        const allowedEntries = fromReport ? ['from', 'vacancy_id', 'candidate_id'] : ['from', 'vacancy_id'];
+        const sourceKind = url.searchParams.get('source_kind') ?? 'accepted_cold_search';
+        const allowedEntries = fromReport ? ['from', 'vacancy_id', 'candidate_id', 'source_kind'] : ['from', 'vacancy_id'];
         if (new Set(entries).size !== entries.length ||
             !(fromProactive || fromResponses || fromAssignment || fromReport) ||
             entries.some(key => !allowedEntries.includes(key)) ||
             vacancyId !== null && !safeId(vacancyId) ||
-            fromReport && (!safeId(vacancyId) || !safeId(candidateId)) ||
+            fromReport && (!safeId(vacancyId) || !safeId(candidateId) ||
+              !['accepted_cold_search', 'accepted_hh_response'].includes(sourceKind)) ||
+            !fromReport && url.searchParams.has('source_kind') ||
             !fromReport && candidateId !== null) {
           respond(res, 400, { error: 'invalid_auth_request' }); return true;
         }
         const returnPath = fromReport
-          ? `/hh/candidate-report?vacancy_id=${encodeURIComponent(vacancyId)}&candidate_id=${encodeURIComponent(candidateId)}`
+          ? `/hh/candidate-report?vacancy_id=${encodeURIComponent(vacancyId)}&candidate_id=${encodeURIComponent(candidateId)}${sourceKind !== 'accepted_cold_search' ? `&source_kind=${encodeURIComponent(sourceKind)}` : ''}`
           : `${fromAssignment ? '/hh/assignment' : fromResponses ? '/hh/responses' : '/hh/proactive'}${vacancyId ? `?vacancy_id=${encodeURIComponent(vacancyId)}` : ''}`;
         const requestedScopes = fromReport ? ['recruiting.reports.read', 'recruiting.reports.create', 'recruiting.reports.review']
           : fromAssignment ? ['recruiting.assignment.review'] : fromResponses ? ['recruiting.responses.read'] : ['recruiting.candidateSearch'];
@@ -173,7 +176,7 @@ export function createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins, 
         const code = url.searchParams.get('code'); const state = url.searchParams.get('state');
         const returnPath = transaction?.returnPath ?? '/hh/proactive';
         if (!transaction || clock() < transaction.createdAt || clock() - transaction.createdAt > 300_000 ||
-            !/^\/hh\/(?:(?:proactive|responses|assignment)(?:\?vacancy_id=[A-Za-z0-9_-]{1,128})?|candidate-report\?vacancy_id=[A-Za-z0-9_-]{1,128}&candidate_id=[A-Za-z0-9_-]{1,128})$/.test(returnPath) ||
+            !/^\/hh\/(?:(?:proactive|responses|assignment)(?:\?vacancy_id=[A-Za-z0-9_-]{1,128})?|candidate-report\?vacancy_id=[A-Za-z0-9_-]{1,128}&candidate_id=[A-Za-z0-9_-]{1,128}(?:&source_kind=accepted_hh_response)?)$/.test(returnPath) ||
             !Array.isArray(transaction?.requestedScopes) || transaction.requestedScopes.length < 1 ||
             transaction.requestedScopes.some(scope => !allowedScopes.has(scope)) ||
             entries.length !== 3 || new Set(entries).size !== 3 || !entries.every(key => ['code', 'state', 'iss'].includes(key)) ||

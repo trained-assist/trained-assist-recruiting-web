@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import Ajv2020 from 'ajv/dist/2020.js';
 import { createRecruitingConnectedAppBff, createMemoryConnectedAppBffStore } from '../src/connected-app-bff.js';
 import { createMemoryAcceptedReportDraftStore } from '../src/accepted-report-drafts.js';
+import { createHhResponseReportSourceRead } from '../src/r04-hh-response-report-source.js';
 import { SqliteAcceptedReportDraftStore } from '../src/sqlite-accepted-report-draft-store.js';
 import { createRecruitingServer } from '../src/server.js';
 
@@ -44,8 +45,13 @@ function claimsFor(token) {
     exp: now / 1000 + 300, scopes: requestedScopes };
 }
 
-async function connect(base, tokenChar = 'a') {
-  const start = await fetch(`${base}/auth/connected/start?from=report&vacancy_id=${vacancyId}&candidate_id=${candidateId}`, { redirect: 'manual' });
+async function connect(base, tokenChar = 'a', reportSourceKind = 'accepted_cold_search', reportCandidateId = candidateId) {
+  const startUrl = new URL('/auth/connected/start', base);
+  startUrl.searchParams.set('from', 'report');
+  startUrl.searchParams.set('vacancy_id', vacancyId);
+  startUrl.searchParams.set('candidate_id', reportCandidateId);
+  if (reportSourceKind !== 'accepted_cold_search') startUrl.searchParams.set('source_kind', reportSourceKind);
+  const start = await fetch(startUrl, { redirect: 'manual' });
   assert.equal(start.status, 303);
   assert.match(start.headers.get('location'), /\/authorize\?/);
   const pending = cookieValue(start, '__Host-recruiting-oauth-pending');
@@ -64,7 +70,8 @@ async function connect(base, tokenChar = 'a') {
   const sessionResponse = await fetch(`${base}/auth/connected/session`, { headers: { cookie } });
   assert.equal(sessionResponse.status, 200);
   const sessionBody = await sessionResponse.json();
-  return { cookie, csrfToken: sessionBody.csrfToken, session: sessionBody };
+  return { cookie, csrfToken: sessionBody.csrfToken, session: sessionBody,
+    returnPath: completed.headers.get('location') };
 }
 
 test('accepted report UI uses real BFF handlers, profile-owned source, private draft, preview and explicit human review', async t => {
@@ -113,6 +120,7 @@ test('accepted report UI uses real BFF handlers, profile-owned source, private d
 
   const sourceUrl = new URL('/api/v1/ui/accepted-report-client-source', base);
   sourceUrl.searchParams.set('vacancyId', vacancyId); sourceUrl.searchParams.set('candidateId', candidateId);
+  sourceUrl.searchParams.set('sourceKind', 'accepted_cold_search');
   const sourceResponse = await fetch(sourceUrl, { headers: { cookie: connected.cookie } });
   assert.equal(sourceResponse.status, 200);
   const source = await sourceResponse.json();
@@ -125,7 +133,7 @@ test('accepted report UI uses real BFF handlers, profile-owned source, private d
   const startDraft = await fetch(`${base}/api/v1/ui/accepted-report-drafts`, { method: 'POST',
     headers: { cookie: connected.cookie, origin: publicOrigin, 'x-csrf-token': connected.csrfToken,
       'content-type': 'application/json', 'Idempotency-Key': 'r04-create-private-001' },
-    body: JSON.stringify({ candidateId, vacancyId, expectedSourceRevision: sourceRevision }) });
+    body: JSON.stringify({ candidateId, vacancyId, sourceKind: 'accepted_cold_search', expectedSourceRevision: sourceRevision }) });
   assert.equal(startDraft.status, 201);
   const draft = await startDraft.json();
   assert.match(draft.reportRef, /^report_[a-f0-9]{32}$/);
@@ -230,4 +238,131 @@ test('SQLite report drafts survive restart, encrypt candidate fields at rest, an
 
   revision = 'c'.repeat(64);
   assert.equal((await secondDomain.preview(context, ref)).kind, 'stale_source');
+});
+
+test('HH response source reaches the shared report draft over real BFF/HTTP without opening messages', async t => {
+  const negotiationId = 'negotiation_response_001';
+  const resumeId = 'resume_response_001';
+  let resumeRevision = 'c'.repeat(64);
+  let detailCalls = 0, resumeCalls = 0, messageCalls = 0;
+  const responseSource = createHhResponseReportSourceRead({
+    isVacancyOwned: (profileId, id) => profileId === profileOne && id === vacancyId,
+    async readResponseDetail(context, { vacancyId: requestedVacancy, negotiationId: requestedNegotiation }) {
+      detailCalls++;
+      return context.profileId === profileOne && requestedVacancy === vacancyId && requestedNegotiation === negotiationId
+        ? { status: 200, body: { profileId: profileOne, vacancyId, negotiationId, resumeId,
+          state: 'response', updatedAt: '2026-10-06T08:00:00Z' } }
+        : { status: 404, body: { error: 'not_found' } };
+    },
+    async readResume(context, { vacancyId: requestedVacancy, resumeId: requestedResume }) {
+      resumeCalls++;
+      if (context.profileId !== profileOne || requestedVacancy !== vacancyId || requestedResume !== resumeId)
+        return { status: 404, body: { error: 'not_found' } };
+      return { status: 200, body: { profileId: profileOne, vacancyId, resumeId,
+        sourceRevision: resumeRevision, resume: { firstName: 'Response', lastName: 'Candidate',
+          title: 'Platform Engineer', experience: [{ position: 'Engineer', company: 'Example Works',
+            start: '2021', end: '2025' }], email: 'private@example.invalid', alternateUrl: 'https://hh.ru/private' } } };
+    },
+    async loadBasePlan(profileId, requestedVacancy) {
+      return profileId === profileOne && requestedVacancy === vacancyId
+        ? { profileId, vacancyId, criteriaRevision: 'criteria-response-v1', atsConfig: { vacancy_title: 'Staff Platform Engineer' } }
+        : null;
+    },
+    async loadAcceptedAssessment(profileId, requestedVacancy, requestedResume) {
+      return profileId === profileOne && requestedVacancy === vacancyId && requestedResume === resumeId
+        ? { profileId, vacancyId, resumeId, resumeRevision, criteriaRevision: 'criteria-response-v1',
+          assessmentRevision: 'assessment_response_v1', atsScore: 8.5, atsTag: 'PASS',
+          reviewStatus: 'starred', reviewRevision: 3, internalPrompt: 'private prompt' }
+        : null;
+    },
+  });
+  const bff = createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins: [issuer], publicOrigin,
+    redirectUri: `${publicOrigin}/auth/connected/callback`, store: createMemoryConnectedAppBffStore(),
+    clock: () => now, exchangeCode: async ({ code }) => ({ token: code, expiresAt: now / 1000 + 300 }),
+    introspectToken: async token => claimsFor(token) });
+  const server = createRecruitingServer({ connectedAppBff: bff,
+    acceptedReportSourceRead: async () => ({ status: 404, body: { error: 'not_found' } }),
+    acceptedHhResponseReportSourceRead: responseSource,
+    acceptedReportDraftStore: createMemoryAcceptedReportDraftStore() });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const returnQuery = `vacancy_id=${vacancyId}&candidate_id=${negotiationId}&source_kind=accepted_hh_response`;
+  const entry = await fetch(`${base}/hh/candidate-report?${returnQuery}`, { redirect: 'manual' });
+  assert.equal(entry.status, 303);
+  assert.match(entry.headers.get('location'), /from=report.*source_kind=accepted_hh_response/);
+  const connected = await connect(base, 'a', 'accepted_hh_response', negotiationId);
+  assert.equal(new URL(connected.returnPath).pathname + new URL(connected.returnPath).search,
+    `/hh/candidate-report?vacancy_id=${vacancyId}&candidate_id=${negotiationId}&source_kind=accepted_hh_response`);
+  const page = await fetch(`${base}/hh/candidate-report?${returnQuery}`, { headers: { cookie: connected.cookie } });
+  assert.equal(page.status, 200);
+
+  const sourceUrl = new URL('/api/v1/ui/accepted-report-client-source', base);
+  sourceUrl.searchParams.set('vacancyId', vacancyId);
+  sourceUrl.searchParams.set('candidateId', negotiationId);
+  sourceUrl.searchParams.set('sourceKind', 'accepted_hh_response');
+  const currentSource = await fetch(sourceUrl, { headers: { cookie: connected.cookie } });
+  assert.equal(currentSource.status, 200);
+  const source = await currentSource.json();
+  assert.equal(source.sourceKind, 'accepted_hh_response');
+  assert.equal(source.clientDraftFields.candidateName, 'Response Candidate');
+  assert.equal(JSON.stringify(source).includes('private@example.invalid'), false);
+  assert.equal(JSON.stringify(source).includes('internalPrompt'), false);
+
+  // Resume changed after source preview; creation must reject the stale receipt.
+  resumeRevision = 'd'.repeat(64);
+  const stale = await fetch(`${base}/api/v1/ui/accepted-report-drafts`, { method: 'POST',
+    headers: { cookie: connected.cookie, origin: publicOrigin, 'x-csrf-token': connected.csrfToken,
+      'content-type': 'application/json', 'Idempotency-Key': 'r04-hh-response-stale-001' },
+    body: JSON.stringify({ candidateId: negotiationId, vacancyId, sourceKind: 'accepted_hh_response',
+      expectedSourceRevision: source.sourceRevision }) });
+  assert.equal(stale.status, 409);
+  assert.equal((await stale.json()).error, 'stale_report_source');
+
+  const freshSourceResponse = await fetch(sourceUrl, { headers: { cookie: connected.cookie } });
+  const freshSource = await freshSourceResponse.json();
+  const created = await fetch(`${base}/api/v1/ui/accepted-report-drafts`, { method: 'POST',
+    headers: { cookie: connected.cookie, origin: publicOrigin, 'x-csrf-token': connected.csrfToken,
+      'content-type': 'application/json', 'Idempotency-Key': 'r04-hh-response-draft-001' },
+    body: JSON.stringify({ candidateId: negotiationId, vacancyId, sourceKind: 'accepted_hh_response',
+      expectedSourceRevision: freshSource.sourceRevision }) });
+  assert.equal(created.status, 201);
+  const draft = await created.json();
+  assert.equal(draft.sourceKind, 'accepted_hh_response');
+  const preview = await fetch(`${base}/api/v1/ui/accepted-report-drafts/${draft.reportRef}/preview`,
+    { headers: { cookie: connected.cookie } });
+  assert.equal(preview.status, 200);
+  const previewBody = await preview.json();
+  assert.match(previewBody.html, /Response Candidate/);
+  for (const privateValue of ['private@example.invalid', 'private prompt', 'https://hh.ru/private'])
+    assert.equal(previewBody.html.includes(privateValue), false);
+  assert.equal(messageCalls, 0, 'no message endpoint exists in the source adapter');
+  assert.ok(detailCalls >= 4 && resumeCalls >= 4);
+});
+
+test('HH response report source rejects a changed assessment revision during projection', async () => {
+  let assessmentRevision = 'assessment_response_v1';
+  let assessmentReads = 0;
+  const source = createHhResponseReportSourceRead({
+    isVacancyOwned: (profileId, id) => profileId === profileOne && id === vacancyId,
+    async readResponseDetail() { return { status: 200, body: { profileId: profileOne, vacancyId,
+      negotiationId: 'negotiation_response_race', resumeId: 'resume_response_race', state: 'response',
+      updatedAt: '2026-10-06T08:00:00Z' } }; },
+    async readResume() { return { status: 200, body: { profileId: profileOne, vacancyId,
+      resumeId: 'resume_response_race', sourceRevision: 'e'.repeat(64), resume: { firstName: 'Candidate',
+        lastName: 'One', title: 'Engineer', experience: [] } } }; },
+    async loadBasePlan() { return { profileId: profileOne, vacancyId, criteriaRevision: 'criteria-race-v1',
+      atsConfig: { vacancy_title: 'Engineer' } }; },
+    async loadAcceptedAssessment() {
+      assessmentReads++;
+      if (assessmentReads === 2) assessmentRevision = 'assessment_response_v2';
+      return { profileId: profileOne, vacancyId, resumeId: 'resume_response_race',
+        resumeRevision: 'e'.repeat(64), criteriaRevision: 'criteria-race-v1', assessmentRevision,
+        atsScore: 7, atsTag: 'REVIEW', reviewStatus: 'starred', reviewRevision: 1 };
+    },
+  });
+  const result = await source({ profileId: profileOne, scopes: ['recruiting.reports.read'] }, {
+    vacancyId, candidateId: 'negotiation_response_race', sourceKind: 'accepted_hh_response' });
+  assert.equal(result.status, 409);
+  assert.equal(result.body.error, 'candidate_source_stale');
 });
