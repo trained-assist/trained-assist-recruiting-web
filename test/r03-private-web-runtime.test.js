@@ -116,7 +116,7 @@ test('private BFF persists browser session across web restart, rejects replay, C
   assert.doesNotMatch(pickerHtml, /candidate|token-secret|other_profile/);
   assert.equal((await fetch(`${base}/hh/proactive?vacancy_id=foreign_vacancy`,
     { headers: { cookie: session } })).status, 404);
-  const chooser = await fetch(`${base}/auth/connected/start`, { redirect: 'manual' });
+  const chooser = await fetch(`${base}/auth/connected/start?from=proactive`, { redirect: 'manual' });
   const chooserPending = chooser.headers.getSetCookie().find(x => x.startsWith('__Host-recruiting-oauth-pending=')).split(';')[0];
   const chooserState = new URL(chooser.headers.get('location')).searchParams.get('state');
   const chooserCallback = await fetch(`${base}/auth/connected/callback?code=${'d'.repeat(64)}&state=${chooserState}&iss=${encodeURIComponent(issuer)}`,
@@ -151,7 +151,7 @@ test('private BFF persists browser session across web restart, rejects replay, C
     exp: now / 1000 + 300, scopes: ['recruiting.candidateSearch'] };
   assert.equal((await fetch(`${restartedBase}/hh/proactive?vacancy_id=${vacancyId}`,
     { headers: { cookie: session }, redirect: 'manual' })).status, 303);
-  const wrongStart = await fetch(`${restartedBase}/auth/connected/start`, { redirect: 'manual' });
+  const wrongStart = await fetch(`${restartedBase}/auth/connected/start?from=proactive`, { redirect: 'manual' });
   const wrongPending = wrongStart.headers.getSetCookie().find(x => x.startsWith('__Host-recruiting-oauth-pending=')).split(';')[0];
   const wrongState = new URL(wrongStart.headers.get('location')).searchParams.get('state');
   const wrongCallback = await fetch(`${restartedBase}/auth/connected/callback?code=${'e'.repeat(64)}&state=${wrongState}&iss=${encodeURIComponent(issuer)}`,

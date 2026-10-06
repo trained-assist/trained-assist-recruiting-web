@@ -79,9 +79,10 @@ export function createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins, 
       redirectUri !== `${publicOrigin}/auth/connected/callback` ||
       !store || !['putPending', 'takePending', 'putSession', 'getSession', 'deleteSession'].every(method => typeof store[method] === 'function') ||
       typeof exchangeCode !== 'function' || typeof introspectToken !== 'function' || typeof clock !== 'function' ||
-      !Array.isArray(scopes) || scopes.length < 1 || scopes.some(scope => !['recruiting.responses.read', 'recruiting.reports.read', 'recruiting.candidateSearch'].includes(scope)))
+      !Array.isArray(scopes) || scopes.length < 1 || scopes.some(scope => !['recruiting.responses.read', 'recruiting.reports.read', 'recruiting.candidateSearch', 'recruiting.assignment.review'].includes(scope)))
     throw new TypeError('connected_app_bff_ports_required');
 
+  const allowedScopes = new Set([...scopes, 'recruiting.candidateSearch', 'recruiting.responses.read', 'recruiting.assignment.review']);
   const inspect = async token => {
     let claims;
     try { claims = await introspectToken(token); }
@@ -96,7 +97,7 @@ export function createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins, 
         !Number.isSafeInteger(claims.nbf) || claims.nbf > now ||
         !Number.isSafeInteger(claims.exp) || claims.exp <= now || claims.exp - claims.nbf > 3600 ||
         !Array.isArray(claims.scopes) || claims.scopes.length < 1 ||
-        claims.scopes.some(scope => !scopes.includes(scope))) return null;
+        claims.scopes.some(scope => !allowedScopes.has(scope))) return null;
     return claims;
   };
   const active = async req => {
@@ -108,8 +109,11 @@ export function createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins, 
     if (unsafe && (req.headers.origin !== publicOrigin || !equal(req.headers['x-csrf-token'], record.csrf))) return null;
     const claims = await inspect(record.token);
     if (!claims || claims.sub !== record.sub || claims.profileId !== record.profileId ||
-        claims.sessionId !== record.sessionId) return null;
-    return { context: Object.freeze({ profileId: claims.profileId, scopes: Object.freeze([...new Set(claims.scopes)]) }),
+        claims.sessionId !== record.sessionId ||
+        !Array.isArray(record.requestedScopes) ||
+        claims.scopes.some(scope => !record.requestedScopes.includes(scope)) ||
+        record.requestedScopes.some(scope => !claims.scopes.includes(scope))) return null;
+    return { context: Object.freeze({ profileId: claims.profileId, sub: claims.sub, scopes: Object.freeze([...new Set(claims.scopes)]) }),
       csrf: record.csrf, handle };
   };
 
@@ -119,22 +123,33 @@ export function createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins, 
       if (!url.pathname.startsWith('/auth/connected/')) return false;
       if (url.pathname === '/auth/connected/start' && req.method === 'GET') {
         const entries = [...url.searchParams.keys()];
-        const fromProactive = url.searchParams.get('from') === 'proactive';
+        if (entries.length === 0) {
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',
+            'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer',
+            'content-security-policy': "default-src 'none'; base-uri 'none'; frame-ancestors 'none'" });
+          res.end('<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="referrer" content="no-referrer"><title>Рекрутинг</title><main><h1>Выберите раздел</h1><ul><li><a href="/auth/connected/start?from=proactive">Холодный поиск</a></li><li><a href="/auth/connected/start?from=responses">Отклики HH</a></li><li><a href="/auth/connected/start?from=assignment">Проверка материалов вакансии</a></li></ul></main></html>');
+          return true;
+        }
+        const from = url.searchParams.get('from');
+        const fromProactive = from === 'proactive';
+        const fromResponses = from === 'responses';
+        const fromAssignment = from === 'assignment';
         const vacancyId = url.searchParams.get('vacancy_id');
         if (new Set(entries).size !== entries.length ||
-            (entries.length !== 0 && (!fromProactive ||
+            (entries.length !== 0 && (!(fromProactive || fromResponses || fromAssignment) ||
               entries.some(key => !['from', 'vacancy_id'].includes(key)) ||
               vacancyId !== null && !safeId(vacancyId)))) {
           respond(res, 400, { error: 'invalid_auth_request' }); return true;
         }
-        const returnPath = `/hh/proactive${fromProactive && vacancyId ? `?vacancy_id=${encodeURIComponent(vacancyId)}` : ''}`;
+        const returnPath = `${fromAssignment ? '/hh/assignment' : fromResponses ? '/hh/responses' : '/hh/proactive'}${vacancyId ? `?vacancy_id=${encodeURIComponent(vacancyId)}` : ''}`;
+        const requestedScopes = fromAssignment ? ['recruiting.assignment.review'] : fromResponses ? ['recruiting.responses.read'] : ['recruiting.candidateSearch'];
         const pendingHandle = random(); const state = random(); const verifier = random();
-        await store.putPending(hash(pendingHandle), { state, verifier, returnPath, createdAt: clock() });
+        await store.putPending(hash(pendingHandle), { state, verifier, returnPath, requestedScopes, createdAt: clock() });
         const auth = new URL(`${issuer}/v1/connected-app-sessions/authorize`);
         auth.searchParams.set('response_type', 'code');
         auth.searchParams.set('client_id', audience);
         auth.searchParams.set('redirect_uri', redirectUri);
-        auth.searchParams.set('scope', scopes.join(' '));
+        auth.searchParams.set('scope', requestedScopes.join(' '));
         auth.searchParams.set('state', state);
         auth.searchParams.set('code_challenge', createHash('sha256').update(verifier).digest('base64url'));
         auth.searchParams.set('code_challenge_method', 'S256');
@@ -148,7 +163,9 @@ export function createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins, 
         const code = url.searchParams.get('code'); const state = url.searchParams.get('state');
         const returnPath = transaction?.returnPath ?? '/hh/proactive';
         if (!transaction || clock() < transaction.createdAt || clock() - transaction.createdAt > 300_000 ||
-            !/^\/hh\/proactive(?:\?vacancy_id=[A-Za-z0-9_-]{1,128})?$/.test(returnPath) ||
+            !/^\/hh\/(?:proactive|responses|assignment)(?:\?vacancy_id=[A-Za-z0-9_-]{1,128})?$/.test(returnPath) ||
+            !Array.isArray(transaction?.requestedScopes) || transaction.requestedScopes.length < 1 ||
+            transaction.requestedScopes.some(scope => !allowedScopes.has(scope)) ||
             entries.length !== 3 || new Set(entries).size !== 3 || !entries.every(key => ['code', 'state', 'iss'].includes(key)) ||
             !/^[a-f0-9]{64}$/.test(code ?? '') || !equal(state, transaction.state) || url.searchParams.get('iss') !== issuer) {
           respond(res, 401, { error: 'invalid_auth_callback' }, { 'set-cookie': clearCookie(pendingCookie) }); return true;
@@ -168,10 +185,16 @@ export function createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins, 
         if (!claims || claims.exp > exchanged.expiresAt) {
           respond(res, 502, { error: 'token_introspection_unavailable' }, { 'set-cookie': clearCookie(pendingCookie) }); return true;
         }
+        if (transaction.requestedScopes.some(scope => !claims.scopes.includes(scope)) ||
+            claims.scopes.some(scope => !transaction.requestedScopes.includes(scope))) {
+          respond(res, 403, { error: 'connected_app_scope_denied' },
+            { 'set-cookie': clearCookie(pendingCookie) }); return true;
+        }
         const handle = random();
         await store.putSession(hash(handle), { token: exchanged.token, csrf: random(), createdAt: clock(),
           expiresAt: claims.exp * 1000,
-          sub: claims.sub, profileId: claims.profileId, sessionId: claims.sessionId });
+          sub: claims.sub, profileId: claims.profileId, sessionId: claims.sessionId,
+          requestedScopes: transaction.requestedScopes });
         const prior = cookieValue(req, sessionCookie);
         if (prior) await store.deleteSession(hash(prior));
         respond(res, 303, null, { location: `${publicOrigin}${returnPath}`,

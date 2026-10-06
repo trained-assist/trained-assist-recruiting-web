@@ -45,7 +45,7 @@ The browser demo demonstrates selecting a fixture vacancy and reading synthetic 
 
 This is an **R-01 foundation**, not completion of the production scenario. Actual identity-to-profile mapping, tenant semantics, response meaning/fields, trusted scope grants, and freshness guarantees from a live canonical store remain open under issue #3.
 
-An additional [R-01 live HH response read slice](docs/R-01-LIVE-RESPONSE-READ.md) defines a server-injected, trusted-profile GET for one HH `response` page. It is not mounted by the demo or R-03 private host and is not yet a C14 capability. Its page-level revision and best-effort pagination state their limits explicitly.
+An additional [R-01 live HH response read slice](docs/R-01-LIVE-RESPONSE-READ.md) binds one HH `response` page to the opt-in private Connected App BFF runtime through its profile credential broker and owned vacancy map. The queryless Connected App entry offers a static feature chooser; its `/hh/responses` page and `/api/v1/ui/hh-responses` API request `recruiting.responses.read` only through an explicit step-up. They are absent from the demo, public route and C14 capability registry; page-level revision and best-effort pagination state their limits explicitly.
 
 The [R-04 accepted report source slice](docs/R-04-ACCEPTED-SOURCE.md) projects a currently assessed candidate from the accepted cold-search feed into separate client draft and internal fields. It requires an injected trusted report reader; publication stays disabled.
 

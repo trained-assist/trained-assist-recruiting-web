@@ -9,7 +9,8 @@ const safeResumeUrl = value => {
   } catch { return null; }
 };
 
-export function renderRealProactivePage({ profileId = '', vacancyId, feed, listView = 'active', historicalAvailable = false }) {
+export function renderRealProactivePage({ profileId = '', vacancyId, feed, listView = 'active', historicalAvailable = false,
+  responsesAvailable = false }) {
   if (!['active', 'starred', 'archived'].includes(listView)) throw new TypeError('invalid_list_view');
   const freshness = feed.freshness === 'latest_run_incomplete' ? 'Последний поиск не завершён; показаны ранее принятые кандидаты.' :
     feed.status === 'never_run' && feed.total > 0 ? 'Принятых результатов поиска пока нет; показаны кандидаты, добавленные вручную.' :
@@ -68,5 +69,5 @@ nav a{margin-right:1rem}button{cursor:pointer}#action-status{min-height:1.5rem}
 <input id="manual-candidate-input" type="text" maxlength="512" aria-label="ID или ссылка HH на резюме">
 <button id="manual-candidate-add" type="button">Добавить кандидата</button>
 <p id="manual-candidate-status" role="status" aria-live="polite"></p></section>
-<nav aria-label="Списки кандидатов">${tabs}</nav>${historicalAvailable ? `<p><a href="/hh/proactive/history?vacancy_id=${encodeURIComponent(vacancyId)}">Исторические результаты</a></p>` : ''}<p>Всего: ${feed.total}</p>${cards}</main></body></html>`;
+<nav aria-label="Списки кандидатов">${tabs}</nav>${responsesAvailable ? `<p><a href="/hh/responses?vacancy_id=${encodeURIComponent(vacancyId)}">Отклики HH</a></p>` : ''}${historicalAvailable ? `<p><a href="/hh/proactive/history?vacancy_id=${encodeURIComponent(vacancyId)}">Исторические результаты</a></p>` : ''}<p>Всего: ${feed.total}</p>${cards}</main></body></html>`;
 }
