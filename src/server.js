@@ -1025,6 +1025,7 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
         } else {
           const result = await acceptedReportPolicies.get(context, { candidateId, vacancyId, sourceKind });
           if (result.kind === 'found') body = result.policy;
+          else if (result.kind === 'policy_unavailable') { status = 503; body = { error: 'report_policy_unavailable' }; }
           else if (result.kind === 'source_not_found') { status = 404; body = { error: 'not_found' }; }
           else if (result.kind === 'stale_source') { status = 409; body = { error: 'stale_report_source' }; }
           else if (result.kind === 'invalid_request') { status = 400; body = { error: 'invalid_report_policy_request' }; }
@@ -1050,6 +1051,7 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
           } else if (status === 200) {
             const result = await acceptedReportPolicies.update(context, request, request.expectedPolicyRevision, request.policy);
             if (result.kind === 'updated' || result.kind === 'existing') body = result.policy;
+            else if (result.kind === 'policy_unavailable') { status = 503; body = { error: 'report_policy_unavailable' }; }
             else if (result.kind === 'stale_policy') { status = 409; body = { error: 'stale_report_policy', policyRevision: `policy-r${result.policyRevision}` }; }
             else if (result.kind === 'source_not_found') { status = 404; body = { error: 'not_found' }; }
             else if (result.kind === 'stale_source') { status = 409; body = { error: 'stale_report_source' }; }

@@ -62,8 +62,11 @@ export function createReportPolicyService({ sourceRead, store, clock = () => new
     async get(context, params) {
       const source = await currentSource(context, params);
       if (source.kind !== 'current') return source;
-      const policy = await store.getPolicy(context.profileId, params.candidateId, params.vacancyId) ??
-        empty(context.profileId, params.candidateId, params.vacancyId);
+      let policy;
+      try {
+        policy = await store.getPolicy(context.profileId, params.candidateId, params.vacancyId) ??
+          empty(context.profileId, params.candidateId, params.vacancyId);
+      } catch { return { kind: 'policy_unavailable' }; }
       return { kind: 'found', policy: publicPolicy(policy) };
     },
     async update(context, params, expectedRevision, value) {
@@ -75,9 +78,12 @@ export function createReportPolicyService({ sourceRead, store, clock = () => new
       const record = { ...policy, profileId: context.profileId, candidateId: params.candidateId,
         vacancyId: params.vacancyId, revision: expectedRevision + 1,
         updatedAt: clock().toISOString(), actorProfileId: context.profileId };
-      const result = await store.replacePolicy({ profileId: context.profileId,
-        candidateId: params.candidateId, vacancyId: params.vacancyId,
-        expectedRevision, record });
+      let result;
+      try {
+        result = await store.replacePolicy({ profileId: context.profileId,
+          candidateId: params.candidateId, vacancyId: params.vacancyId,
+          expectedRevision, record });
+      } catch { return { kind: 'policy_unavailable' }; }
       if (result.kind === 'stale_policy') return { kind: 'stale_policy',
         policyRevision: result.policy?.revision ?? 0 };
       return result.kind === 'updated' || result.kind === 'existing'

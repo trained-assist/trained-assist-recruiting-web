@@ -5,6 +5,7 @@ import { chmodSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, 
 import { once } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { SqliteColdSearchScheduleRepository } from '../src/sqlite-cold-search-schedule-repository.js';
 import { REAL_HH_RESULT_VERSION, SqliteRealHhCandidateState } from '../src/sqlite-real-hh-candidate-state.js';
 import { intervalPlan } from '../src/cold-search-schedules.js';
@@ -261,6 +262,21 @@ test('private runtime composes accepted HH response source, encrypted draft, BFF
     draft.reportRef + '/preview', { headers: { cookie: sessionCookie } });
   assert.equal(staleByPolicy.status, 409);
   assert.equal((await staleByPolicy.json()).error, 'stale_report_policy');
+  const damagedPolicyDb = new Database(reportDb);
+  damagedPolicyDb.exec('DROP TABLE accepted_report_policy');
+  damagedPolicyDb.close();
+  const policyUnavailable = await fetch(new URL(policyUrl.pathname + policyUrl.search, restartedBase), {
+    headers: { cookie: sessionCookie } });
+  assert.equal(policyUnavailable.status, 503);
+  assert.equal((await policyUnavailable.json()).error, 'report_policy_unavailable');
+  const policyWriteUnavailable = await fetch(restartedBase + '/api/v1/ui/accepted-report-policy', { method: 'PUT', headers: {
+    cookie: sessionCookie, origin, 'x-csrf-token': session.csrfToken, 'content-type': 'application/json' },
+    body: JSON.stringify({ candidateId: negotiationId, vacancyId, sourceKind: 'accepted_hh_response',
+      expectedPolicyRevision: 3, policy: { forbiddenPhrases: ['confidential'] } }) });
+  assert.equal(policyWriteUnavailable.status, 503);
+  assert.equal((await policyWriteUnavailable.json()).error, 'report_policy_unavailable');
+  assert.equal((await fetch(restartedBase + '/health/ready')).status, 200,
+    'policy store failure is contained to report policy operations');
   currentResume = { ...currentResume, title: 'Changed outside the accepted ATS input' };
   const stale = await fetch(restartedBase + '/api/v1/ui/accepted-report-drafts/' +
     draft.reportRef + '/preview', { headers: { cookie: sessionCookie } });
