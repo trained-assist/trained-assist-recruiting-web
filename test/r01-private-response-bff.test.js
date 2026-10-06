@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { chmodSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -24,6 +25,14 @@ function fixture(t) {
   const secrets = privateDir('secrets');
   const profiles = actors.map(actor => {
     const contextDirectory = privateDir(`${actor.profileId}-context`);
+    const assignment = actor.profileId === 'profile_A'
+      ? { vacancy_id: actor.vacancyId, test_task: 'Сохранённый пример <script> & ответ' }
+      : { vacancy_id: actor.vacancyId, test_task: 'Прежний материал',
+        communication_plan: { version: 1, stages: [{ id: 'approved_stage', title: 'Практическое задание',
+          instruction: 'Передать точный текст', completion_result: 'Ответ получен',
+          material: 'Проверенный пример для B', material_mode: 'verbatim' }] } };
+    writeFileSync(join(contextDirectory, `ats_config:${actor.vacancyId}.json`),
+      JSON.stringify({ value: assignment }), { mode: 0o600 });
     const proactiveDirectory = privateDir(`${actor.profileId}-proactive`);
     const tokenDirectory = privateDir(`${actor.profileId}-tokens`);
     writeFileSync(join(tokenDirectory, 'hh'), JSON.stringify({ access_token: actor.token,
@@ -117,6 +126,24 @@ test('private response entry requests one step-up scope, real HTTP reader and ow
   assert.doesNotMatch(html, /<Recruiter>/);
   assert.match(html, /Страницы могут измениться/);
   assert.match(html, /href="\/hh\/proactive\?vacancy_id=vacancy_A"/);
+  assert.match(html, /href="\/hh\/assignment\?vacancy_id=vacancy_A"/);
+  const assignment = await fetch(`${base}/api/v1/ui/vacancy-assignment?vacancyId=vacancy_A`,
+    { headers: { cookie: login.session } });
+  assert.equal(assignment.status, 200);
+  const assignmentData = await assignment.json();
+  assert.equal(assignmentData.reviewStatus, 'legacy_draft_requires_review');
+  assert.equal(assignmentData.materials[0].material, 'Сохранённый пример <script> & ответ');
+  assert.equal(assignmentData.materials[0].sha256,
+    createHash('sha256').update('Сохранённый пример <script> & ответ').digest('hex'));
+  assert.equal(assignment.headers.get('cache-control'), 'no-store');
+  const assignmentPage = await fetch(`${base}/hh/assignment?vacancy_id=vacancy_A`,
+    { headers: { cookie: login.session } });
+  assert.equal(assignmentPage.status, 200);
+  const assignmentHtml = await assignmentPage.text();
+  assert.match(assignmentHtml, /Сохранённый пример &lt;script&gt; &amp; ответ/);
+  assert.doesNotMatch(assignmentHtml, /<script>/);
+  assert.equal((await fetch(`${base}/api/v1/ui/vacancy-assignment?vacancyId=vacancy_B`,
+    { headers: { cookie: login.session } })).status, 404);
   assert.equal((await fetch(`${base}/hh/responses`, { headers: { cookie: login.session } })).status, 200);
   const back = await fetch(`${base}/hh/proactive?vacancy_id=vacancy_A`,
     { headers: { cookie: login.session }, redirect: 'manual' });
@@ -136,12 +163,21 @@ test('private response entry requests one step-up scope, real HTTP reader and ow
     { headers: { cookie: second.session } });
   assert.equal(secondRead.status, 200);
   assert.equal(f.calls.at(-1).options.headers.authorization, 'Bearer hh_token_B');
+  const savedAssignment = await fetch(`${base}/api/v1/ui/vacancy-assignment?vacancyId=vacancy_B`,
+    { headers: { cookie: second.session } });
+  assert.equal(savedAssignment.status, 200);
+  const savedAssignmentData = await savedAssignment.json();
+  assert.equal(savedAssignmentData.reviewStatus, 'saved_plan');
+  assert.equal(savedAssignmentData.legacyConflict, true);
+  assert.deepEqual(savedAssignmentData.materials.map(item => item.material), ['Проверенный пример для B']);
   assert.equal((await fetch(`${base}/api/v1/ui/hh-responses?vacancyId=vacancy_A`,
     { headers: { cookie: second.session } })).status, 404);
   f.setActor(actors[0]);
   assert.equal((await fetch(`${base}/hh/responses?vacancy_id=vacancy_A&token=bad`,
     { headers: { cookie: login.session } })).status, 400);
   assert.equal((await fetch(`${base}/api/v1/ui/hh-responses?vacancyId=vacancy_A`,
+    { method: 'POST', headers: { cookie: login.session } })).status, 405);
+  assert.equal((await fetch(`${base}/api/v1/ui/vacancy-assignment?vacancyId=vacancy_A`,
     { method: 'POST', headers: { cookie: login.session } })).status, 405);
 });
 
@@ -156,6 +192,8 @@ test('response BFF denies missing scope/profile switch and outages; refreshes on
   assert.equal(stepUp.status, 303);
   assert.equal(stepUp.headers.get('location'), '/auth/connected/start?from=responses&vacancy_id=vacancy_A');
   assert.equal((await fetch(`${base}/api/v1/ui/hh-responses?vacancyId=vacancy_A`,
+    { headers: { cookie: candidateOnly.session } })).status, 403);
+  assert.equal((await fetch(`${base}/api/v1/ui/vacancy-assignment?vacancyId=vacancy_A`,
     { headers: { cookie: candidateOnly.session } })).status, 403);
   const denied = await signIn(base, 'responses', 'vacancy_A');
   assert.equal(denied.accepted.status, 403);
@@ -180,6 +218,8 @@ test('response BFF denies missing scope/profile switch and outages; refreshes on
   f.setActor(actors[0]);
   f.setCpOutage(true);
   assert.equal((await fetch(`${base}/api/v1/ui/hh-responses?vacancyId=vacancy_A`,
+    { headers: { cookie: login.session } })).status, 503);
+  assert.equal((await fetch(`${base}/api/v1/ui/vacancy-assignment?vacancyId=vacancy_A`,
     { headers: { cookie: login.session } })).status, 503);
   assert.equal(f.calls.length, 2);
   f.setCpOutage(false);
