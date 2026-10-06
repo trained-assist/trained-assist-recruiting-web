@@ -7,7 +7,8 @@ const unit = readFileSync(new URL('../infra/systemd/trained-recruiting-r03-stage
 test('RU staging unit pins the integrated release, isolates writable state and carries all runtime credentials', () => {
   assert.match(unit, /User=trained-recruiting/);
   assert.match(unit, /Group=trained-recruiting/);
-  assert.match(unit, /WorkingDirectory=\/opt\/trained-assist-recruiting-web\/releases\/5bbd27f711823d74620931e142eb00218b212ef5/);
+  assert.match(unit, /WorkingDirectory=\/opt\/trained-assist-recruiting-web\/releases\/@RELEASE_SHA@/);
+  assert.equal(unit.match(/@RELEASE_SHA@/g)?.length, 2);
   assert.match(unit, /--config \/var\/lib\/trained-recruiting-r03-stage\/config\.json/);
   assert.match(unit, /--secrets \$\{CREDENTIALS_DIRECTORY\} --port 18083 --live-execution/);
   assert.match(unit, /ReadWritePaths=\/var\/lib\/trained-recruiting-r03-stage/);
