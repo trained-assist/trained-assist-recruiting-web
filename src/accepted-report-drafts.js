@@ -36,6 +36,18 @@ function validClientFields(value) {
     ['company', 'period', 'role'].every(key => typeof row[key] === 'string' && row[key].length > 0 && row[key].length <= 500));
 }
 
+function validClientEdits(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length === 0 ||
+      Object.keys(value).some(key => !['position', 'vacancyTitle', 'experience'].includes(key))) return false;
+  if ('position' in value && (typeof value.position !== 'string' || !value.position.trim() || value.position.length > 300)) return false;
+  if ('vacancyTitle' in value && (typeof value.vacancyTitle !== 'string' || !value.vacancyTitle.trim() || value.vacancyTitle.length > 300)) return false;
+  if ('experience' in value && (!Array.isArray(value.experience) || value.experience.length > 5 ||
+      !value.experience.every(row => row && typeof row === 'object' && !Array.isArray(row) &&
+        Object.keys(row).sort().join(',') === 'company,period,role' &&
+        ['company', 'period', 'role'].every(key => typeof row[key] === 'string' && row[key].trim() && row[key].length <= 500)))) return false;
+  return true;
+}
+
 // Drafts contain only the allowlisted client projection. The internal ATS
 // assessment returned alongside the source is never copied to the store/API.
 export function createAcceptedReportDrafts({ sourceRead, store, clock = () => new Date() } = {}) {
@@ -124,6 +136,27 @@ export function createAcceptedReportDrafts({ sourceRead, store, clock = () => ne
           actorProfileId: context.profileId, at: now, sourceRevision: record.sourceRevision }] };
       const result = await store.update(context.profileId, ref, record.revision, updated);
       return result.kind === 'updated' ? { kind: 'reviewed', report: publicReport(result.record) } : result;
+    },
+    async edit(context, ref, expectedReportRevision, clientEdits) {
+      if (!safeId(context?.profileId) || !/^report_[a-f0-9]{32}$/.test(ref ?? '') ||
+          !/^report-r[1-9][0-9]*$/.test(expectedReportRevision ?? '') || !validClientEdits(clientEdits))
+        return { kind: 'invalid_request' };
+      const record = await store.get(context.profileId, ref);
+      if (!record) return { kind: 'not_found' };
+      const current = await currentSource(context, record);
+      if (current.kind !== 'current') return { kind: current.kind, report: publicReport(record) };
+      if (record.status !== 'draft' || record.reviewState === 'approved') return { kind: 'not_editable', report: publicReport(record) };
+      if (expectedReportRevision !== revisionOf(record.revision)) return { kind: 'stale_report', report: publicReport(record) };
+      const clientFields = { ...record.clientFields, ...structuredClone(clientEdits) };
+      if (!validClientFields(clientFields)) return { kind: 'invalid_request' };
+      const now = clock().toISOString();
+      const updated = { ...record, clientFields, revision: record.revision + 1,
+        reviewState: 'unreviewed', updatedAt: now,
+        audit: [...record.audit, { action: 'client_fields_edited', revision: record.revision + 1,
+          actorProfileId: context.profileId, at: now, sourceRevision: record.sourceRevision,
+          fields: Object.keys(clientEdits).sort() }] };
+      const result = await store.update(context.profileId, ref, record.revision, updated);
+      return result.kind === 'updated' ? { kind: 'edited', report: publicReport(result.record) } : result;
     },
   };
 }

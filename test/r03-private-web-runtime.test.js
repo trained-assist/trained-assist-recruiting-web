@@ -79,7 +79,7 @@ test('private CLI keeps BFF opt-in and requires exact issuer, origin and durable
 });
 
 test('explicit report database mounts report routes and is owner-only; BFF alone leaves them absent', async t => {
-  const scopes = ['recruiting.candidateSearch', 'recruiting.reports.read', 'recruiting.reports.create', 'recruiting.reports.review'];
+  const scopes = ['recruiting.candidateSearch', 'recruiting.reports.read', 'recruiting.reports.create', 'recruiting.reports.edit', 'recruiting.reports.review'];
   const bff = { resolve: async () => ({ profileId, scopes }), handle: async () => false };
   const f = fixture(t, [vacancyId], { connectedAppBff: bff, reportDraftDbPath: 'fixture' });
   await once(f.server, 'listening');

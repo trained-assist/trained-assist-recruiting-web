@@ -19,7 +19,7 @@ const issuer = 'https://cp.example.test';
 const origin = 'https://recruiter-assistant.ru';
 const now = Date.parse('2026-10-06T09:00:00.000Z');
 const token = 'a'.repeat(64);
-const scopes = ['recruiting.reports.read', 'recruiting.reports.create', 'recruiting.reports.review'];
+const scopes = ['recruiting.reports.read', 'recruiting.reports.create', 'recruiting.reports.edit', 'recruiting.reports.review'];
 const atsConfig = { vacancy_id: vacancyId, vacancy_title: 'Synthetic Platform Engineer',
   vacancy_context: 'Synthetic vacancy context', filters: { min_experience_years: 0, area: null }, area: null,
   required: [], preferred: [], knockout: [] };

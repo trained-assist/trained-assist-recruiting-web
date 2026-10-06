@@ -28,9 +28,19 @@
       <h2 id="preview-title">Клиентский вид</h2>
       <iframe id="preview" title="Предпросмотр черновика" sandbox=""></iframe>
     </section>
+    <section aria-labelledby="edit-title">
+      <h2 id="edit-title">Текст черновика</h2>
+      <p>Можно уточнить должность, название вакансии и опыт. Имя берётся из принятого источника и здесь не редактируется.</p>
+      <label>Должность <input id="position" maxlength="300" required></label>
+      <label>Вакансия <input id="vacancy-title" maxlength="300" required></label>
+      <div id="experience-editor"></div>
+      <button id="add-experience" type="button">Добавить место работы</button>
+      <button id="save-edits" type="button" disabled>Сохранить изменения</button>
+    </section>
     <section>
-      <label><input id="approval" type="checkbox"> Я проверил отображаемые сведения и подтверждаю этот черновик для внутреннего использования.</label>
+      <label><input id="approval" type="checkbox"> Я проверил предпросмотр этой версии и выбираю решение для неё.</label>
       <button id="approve" type="button" disabled>Подтвердить проверку</button>
+      <button id="request-changes" type="button" disabled>Вернуть на исправление</button>
       <p id="status" role="status" aria-live="polite">Подключаю профиль и загружаю данные…</p>
     </section>
   </main>

@@ -79,11 +79,11 @@ export function createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins, 
       redirectUri !== `${publicOrigin}/auth/connected/callback` ||
       !store || !['putPending', 'takePending', 'putSession', 'getSession', 'deleteSession'].every(method => typeof store[method] === 'function') ||
       typeof exchangeCode !== 'function' || typeof introspectToken !== 'function' || typeof clock !== 'function' ||
-      !Array.isArray(scopes) || scopes.length < 1 || scopes.some(scope => !['recruiting.responses.read', 'recruiting.reports.read', 'recruiting.reports.create', 'recruiting.reports.review', 'recruiting.candidateSearch', 'recruiting.assignment.review'].includes(scope)))
+      !Array.isArray(scopes) || scopes.length < 1 || scopes.some(scope => !['recruiting.responses.read', 'recruiting.reports.read', 'recruiting.reports.create', 'recruiting.reports.edit', 'recruiting.reports.review', 'recruiting.candidateSearch', 'recruiting.assignment.review'].includes(scope)))
     throw new TypeError('connected_app_bff_ports_required');
 
   const allowedScopes = new Set([...scopes, 'recruiting.candidateSearch', 'recruiting.responses.read',
-    'recruiting.reports.read', 'recruiting.reports.create', 'recruiting.reports.review',
+    'recruiting.reports.read', 'recruiting.reports.create', 'recruiting.reports.edit', 'recruiting.reports.review',
     'recruiting.assignment.review']);
   const inspect = async token => {
     let claims;
@@ -154,7 +154,7 @@ export function createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins, 
         const returnPath = fromReport
           ? `/hh/candidate-report?vacancy_id=${encodeURIComponent(vacancyId)}&candidate_id=${encodeURIComponent(candidateId)}${sourceKind !== 'accepted_cold_search' ? `&source_kind=${encodeURIComponent(sourceKind)}` : ''}`
           : `${fromAssignment ? '/hh/assignment' : fromResponses ? '/hh/responses' : '/hh/proactive'}${vacancyId ? `?vacancy_id=${encodeURIComponent(vacancyId)}` : ''}`;
-        const requestedScopes = fromReport ? ['recruiting.reports.read', 'recruiting.reports.create', 'recruiting.reports.review']
+        const requestedScopes = fromReport ? ['recruiting.reports.read', 'recruiting.reports.create', 'recruiting.reports.edit', 'recruiting.reports.review']
           : fromAssignment ? ['recruiting.assignment.review'] : fromResponses ? ['recruiting.responses.read'] : ['recruiting.candidateSearch'];
         const pendingHandle = random(); const state = random(); const verifier = random();
         await store.putPending(hash(pendingHandle), { state, verifier, returnPath, requestedScopes, createdAt: clock() });

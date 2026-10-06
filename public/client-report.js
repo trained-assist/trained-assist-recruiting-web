@@ -2,8 +2,14 @@ const statusNode = document.querySelector('#status');
 const summaryNode = document.querySelector('#source-summary');
 const revisionNode = document.querySelector('#source-revision');
 const previewNode = document.querySelector('#preview');
+const positionNode = document.querySelector('#position');
+const vacancyTitleNode = document.querySelector('#vacancy-title');
+const experienceNode = document.querySelector('#experience-editor');
+const addExperienceButton = document.querySelector('#add-experience');
+const saveEditsButton = document.querySelector('#save-edits');
 const approvalNode = document.querySelector('#approval');
 const approveButton = document.querySelector('#approve');
+const requestChangesButton = document.querySelector('#request-changes');
 const params = new URLSearchParams(location.search);
 const candidateId = params.get('candidate_id');
 const vacancyId = params.get('vacancy_id');
@@ -23,8 +29,59 @@ function reportError(response, payload) {
     report_source_unavailable: 'Не удалось проверить источник кандидата.',
     not_found: 'Кандидат или черновик не найден для выбранного профиля.',
     report_scope_required: 'У профиля нет нужного доступа к отчётам.',
+    stale_report_revision: 'Черновик изменился в другой вкладке. Перезагрузите его перед правкой.',
+    report_not_editable: 'Этот черновик уже подтверждён и больше не редактируется.',
   };
   return known[payload?.error] ?? `Запрос не выполнен (${response.status}).`;
+}
+
+function experienceRow(value = { role: '', company: '', period: '' }) {
+  const fieldset = document.createElement('fieldset');
+  for (const [key, title] of [['role', 'Должность'], ['company', 'Компания'], ['period', 'Период']]) {
+    const label = document.createElement('label'); label.textContent = title;
+    const input = document.createElement('input'); input.maxLength = 500; input.required = true;
+    input.dataset.experienceField = key; input.value = value[key] ?? '';
+    label.append(input); fieldset.append(label);
+  }
+  const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = 'Убрать место работы';
+  remove.addEventListener('click', () => { fieldset.remove(); saveEditsButton.disabled = false; });
+  fieldset.append(remove); experienceNode.append(fieldset);
+}
+
+function renderEditor(fields) {
+  positionNode.value = fields.position;
+  vacancyTitleNode.value = fields.vacancyTitle;
+  experienceNode.replaceChildren();
+  for (const item of fields.experience) experienceRow(item);
+  saveEditsButton.disabled = true;
+}
+
+function setEditorEnabled(enabled) {
+  positionNode.disabled = !enabled; vacancyTitleNode.disabled = !enabled;
+  experienceNode.querySelectorAll('input,button').forEach(node => { node.disabled = !enabled; });
+  addExperienceButton.disabled = !enabled;
+  if (!enabled) saveEditsButton.disabled = true;
+}
+
+function syncReviewControls() {
+  const approved = report?.reviewState === 'approved';
+  approvalNode.disabled = approved;
+  approveButton.disabled = approved || !approvalNode.checked;
+  requestChangesButton.disabled = approved ? false : !approvalNode.checked;
+}
+
+function editedFields() {
+  return { position: positionNode.value.trim(), vacancyTitle: vacancyTitleNode.value.trim(),
+    experience: [...experienceNode.querySelectorAll('fieldset')].map(row => Object.fromEntries(
+      [...row.querySelectorAll('[data-experience-field]')].map(input => [input.dataset.experienceField, input.value.trim()]))) };
+}
+
+async function refreshPreview() {
+  const response = await request(`/api/v1/ui/accepted-report-drafts/${encodeURIComponent(report.reportRef)}/preview`);
+  const preview = await response.json();
+  if (!response.ok) { showStatus(reportError(response, preview)); return false; }
+  previewNode.srcdoc = preview.html;
+  return true;
 }
 
 async function load() {
@@ -55,15 +112,13 @@ async function load() {
     });
     report = await createResponse.json();
     if (!createResponse.ok) { showStatus(reportError(createResponse, report)); return; }
-    const previewResponse = await request(`/api/v1/ui/accepted-report-drafts/${encodeURIComponent(report.reportRef)}/preview`);
-    const preview = await previewResponse.json();
-    if (!previewResponse.ok) { showStatus(reportError(previewResponse, preview)); return; }
-    previewNode.srcdoc = preview.html;
+    if (!await refreshPreview()) return;
+    renderEditor(report.clientFields);
+    setEditorEnabled(report.reviewState !== 'approved');
     showStatus(report.reviewState === 'approved'
       ? 'Вы уже подтвердили проверку этого черновика.'
       : 'Проверьте предпросмотр. Подтверждение фиксирует только вашу проверку и не отправляет отчёт клиенту.');
-    approvalNode.disabled = report.reviewState === 'approved';
-    approveButton.disabled = report.reviewState === 'approved';
+    syncReviewControls();
   } catch {
     showStatus('Не удалось загрузить черновик. Попробуйте ещё раз после восстановления соединения.');
   }
@@ -80,12 +135,57 @@ approveButton.addEventListener('click', async () => {
     const result = await response.json();
     if (!response.ok) { showStatus(reportError(response, result)); approveButton.disabled = false; return; }
     report = result;
-    approvalNode.disabled = true;
+    syncReviewControls();
+    setEditorEnabled(false);
     showStatus('Проверка сохранена. Отчёт остался приватным черновиком и не отправлен.');
   } catch {
     showStatus('Не удалось сохранить отметку проверки. Черновик не отправлялся.');
     approveButton.disabled = false;
   }
+});
+
+requestChangesButton.addEventListener('click', async () => {
+  if (!report || (!approvalNode.checked && report.reviewState !== 'approved')) {
+    showStatus('Сначала подтвердите, что вы проверили предпросмотр.'); return;
+  }
+  requestChangesButton.disabled = true;
+  try {
+    const response = await request(`/api/v1/ui/accepted-report-drafts/${encodeURIComponent(report.reportRef)}/review`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ decision: 'changes_requested', expectedReportRevision: report.reportRevision }),
+    });
+    const result = await response.json();
+    if (!response.ok) { showStatus(reportError(response, result)); syncReviewControls(); return; }
+    report = result; approvalNode.checked = false; syncReviewControls(); setEditorEnabled(true);
+    showStatus('Черновик возвращён на исправление. После правок нужно просмотреть и подтвердить новую версию.');
+  } catch { showStatus('Не удалось вернуть черновик на исправление.'); syncReviewControls(); }
+});
+
+approvalNode.addEventListener('change', syncReviewControls);
+
+addExperienceButton.addEventListener('click', () => {
+  if (experienceNode.querySelectorAll('fieldset').length >= 5) { showStatus('Можно указать не более пяти мест работы.'); return; }
+  experienceRow(); saveEditsButton.disabled = false;
+});
+positionNode.addEventListener('input', () => { saveEditsButton.disabled = false; });
+vacancyTitleNode.addEventListener('input', () => { saveEditsButton.disabled = false; });
+experienceNode.addEventListener('input', () => { saveEditsButton.disabled = false; });
+
+saveEditsButton.addEventListener('click', async () => {
+  if (!report || report.reviewState === 'approved') return;
+  saveEditsButton.disabled = true;
+  try {
+    const response = await request(`/api/v1/ui/accepted-report-drafts/${encodeURIComponent(report.reportRef)}/edit`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ expectedReportRevision: report.reportRevision, clientFields: editedFields() }),
+    });
+    const result = await response.json();
+    if (!response.ok) { showStatus(reportError(response, result)); saveEditsButton.disabled = false; return; }
+    report = result; approvalNode.checked = false; syncReviewControls();
+    setEditorEnabled(true);
+    if (!await refreshPreview()) return;
+    showStatus('Изменения сохранены. Просмотрите обновлённый клиентский вид перед внутренним подтверждением.');
+  } catch { showStatus('Не удалось сохранить правки. Черновик остался приватным.'); saveEditsButton.disabled = false; }
 });
 
 load();

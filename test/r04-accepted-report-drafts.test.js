@@ -18,7 +18,7 @@ const vacancyId = 'vacancy_owned_one';
 const candidateId = 'candidate_accepted_one';
 const sourceRevision = 'a'.repeat(64);
 const now = Date.parse('2026-10-06T09:00:00Z');
-const requestedScopes = ['recruiting.reports.read', 'recruiting.reports.create', 'recruiting.reports.review'];
+const requestedScopes = ['recruiting.reports.read', 'recruiting.reports.create', 'recruiting.reports.edit', 'recruiting.reports.review'];
 const sourceBase = {
   domainApiVersion: 'v1', profileId: profileOne, vacancyId, candidateId, sourceRevision,
   sourceKind: 'accepted_cold_search', publication: 'disabled',
@@ -42,7 +42,8 @@ function claimsFor(token) {
   const profileId = token[0] === 'b' ? profileTwo : profileOne;
   return { active: true, iss: issuer, aud: 'recruiting-web', sub: `actor_${profileId}`,
     profileId, sessionId: `session_${profileId}`, nbf: now / 1000 - 30,
-    exp: now / 1000 + 300, scopes: requestedScopes };
+    exp: now / 1000 + 300, scopes: token[0] === 'c'
+      ? requestedScopes.filter(scope => scope !== 'recruiting.reports.edit') : requestedScopes };
 }
 
 async function connect(base, tokenChar = 'a', reportSourceKind = 'accepted_cold_search', reportCandidateId = candidateId) {
@@ -63,6 +64,7 @@ async function connect(base, tokenChar = 'a', reportSourceKind = 'accepted_cold_
   callback.searchParams.set('state', authorize.searchParams.get('state'));
   callback.searchParams.set('iss', issuer);
   const completed = await fetch(callback, { redirect: 'manual', headers: { cookie: `__Host-recruiting-oauth-pending=${pending}` } });
+  if (completed.status !== 303) return { status: completed.status };
   assert.equal(completed.status, 303);
   const session = cookieValue(completed, '__Host-recruiting-app-session');
   assert.ok(session);
@@ -143,6 +145,40 @@ test('accepted report UI uses real BFF handlers, profile-owned source, private d
   assert.equal(JSON.stringify(draft).includes('candidate@example.invalid'), false);
   assert.equal(JSON.stringify(draft).includes('SALARY_PRIVATE'), false);
   assert.equal(JSON.stringify(draft).includes('ATS_CONTEXT_PRIVATE'), false);
+  const editedFields = { position: '<img src=x onerror=synthetic>',
+    experience: [{ role: 'Senior Engineer', company: 'Example Works', period: '2021 — 2025' }] };
+  const editSchema = JSON.parse(await readFile(new URL('../contracts/v1-accepted-report-edit.schema.json', import.meta.url), 'utf8'));
+  const validateEdit = new Ajv2020().compile(editSchema);
+  const editRequestBody = { expectedReportRevision: draft.reportRevision, clientFields: editedFields };
+  assert.equal(validateEdit(editRequestBody), true, JSON.stringify(validateEdit.errors));
+  assert.equal(validateEdit({ ...editRequestBody, clientFields: { ...editedFields, candidateName: 'Changed identity' } }), false);
+  const noCsrfEdit = await fetch(`${base}/api/v1/ui/accepted-report-drafts/${draft.reportRef}/edit`, { method: 'PATCH',
+    headers: { cookie: connected.cookie, origin: publicOrigin, 'content-type': 'application/json' },
+    body: JSON.stringify(editRequestBody) });
+  assert.equal(noCsrfEdit.status, 401, 'browser mutations require the BFF CSRF token');
+  const noEditScope = await connect(base, 'c');
+  assert.equal(noEditScope.status, 403, 'the broker does not issue a report session without the separate edit grant');
+  const editResponse = await fetch(`${base}/api/v1/ui/accepted-report-drafts/${draft.reportRef}/edit`, { method: 'PATCH',
+    headers: { cookie: connected.cookie, origin: publicOrigin, 'x-csrf-token': connected.csrfToken,
+      'content-type': 'application/json' },
+    body: JSON.stringify({ expectedReportRevision: draft.reportRevision, clientFields: editedFields }) });
+  assert.equal(editResponse.status, 200);
+  const edited = await editResponse.json();
+  assert.equal(edited.reportRevision, 'report-r2');
+  assert.equal(edited.reviewState, 'unreviewed');
+  assert.equal(edited.clientFields.candidateName, 'Synthetic Candidate');
+  assert.equal(edited.clientFields.position, editedFields.position);
+  assert.equal(JSON.stringify(edited).includes('INTERNAL_PRIVATE_COMMENT'), false);
+  const staleEdit = await fetch(`${base}/api/v1/ui/accepted-report-drafts/${draft.reportRef}/edit`, { method: 'PATCH',
+    headers: { cookie: connected.cookie, origin: publicOrigin, 'x-csrf-token': connected.csrfToken,
+      'content-type': 'application/json' },
+    body: JSON.stringify({ expectedReportRevision: draft.reportRevision, clientFields: editedFields }) });
+  assert.equal(staleEdit.status, 409, 'concurrent or stale edits cannot overwrite a newer revision');
+  const editedPreviewResponse = await fetch(`${base}/api/v1/ui/accepted-report-drafts/${draft.reportRef}/preview`, { headers: { cookie: connected.cookie } });
+  const editedPreview = await editedPreviewResponse.json();
+  assert.equal(editedPreviewResponse.status, 200);
+  assert.match(editedPreview.html, /&lt;img src=x onerror=synthetic&gt;/);
+  assert.equal(editedPreview.html.includes('<img src=x'), false);
   const schema = JSON.parse(await readFile(new URL('../contracts/v1-accepted-report-draft.schema.json', import.meta.url), 'utf8'));
   const validate = new Ajv2020().compile(schema);
   assert.equal(validate(draft), true, JSON.stringify(validate.errors));
@@ -178,12 +214,29 @@ test('accepted report UI uses real BFF handlers, profile-owned source, private d
   revision = sourceRevision;
   const review = await fetch(`${base}/api/v1/ui/accepted-report-drafts/${draft.reportRef}/review`, { method: 'POST',
     headers: { cookie: connected.cookie, origin: publicOrigin, 'x-csrf-token': connected.csrfToken, 'content-type': 'application/json' },
-    body: JSON.stringify({ decision: 'approved', expectedReportRevision: draft.reportRevision }) });
+    body: JSON.stringify({ decision: 'approved', expectedReportRevision: edited.reportRevision }) });
   assert.equal(review.status, 200);
   const approved = await review.json();
   assert.equal(approved.reviewState, 'approved');
   assert.equal(approved.sourceRevision, sourceRevision);
   assert.equal(sendCalls + publishCalls + hhCalls + modelCalls, 0);
+  const lockedEdit = await fetch(`${base}/api/v1/ui/accepted-report-drafts/${draft.reportRef}/edit`, { method: 'PATCH',
+    headers: { cookie: connected.cookie, origin: publicOrigin, 'x-csrf-token': connected.csrfToken,
+      'content-type': 'application/json' },
+    body: JSON.stringify({ expectedReportRevision: approved.reportRevision, clientFields: { position: 'Another edit' } }) });
+  assert.equal(lockedEdit.status, 409, 'approved reports must be sent through changes-requested review before another edit');
+  const reopen = await fetch(`${base}/api/v1/ui/accepted-report-drafts/${draft.reportRef}/review`, { method: 'POST',
+    headers: { cookie: connected.cookie, origin: publicOrigin, 'x-csrf-token': connected.csrfToken, 'content-type': 'application/json' },
+    body: JSON.stringify({ decision: 'changes_requested', expectedReportRevision: approved.reportRevision }) });
+  assert.equal(reopen.status, 200);
+  const returned = await reopen.json();
+  assert.equal(returned.reviewState, 'changes_requested');
+  const revisedAfterReturn = await fetch(`${base}/api/v1/ui/accepted-report-drafts/${draft.reportRef}/edit`, { method: 'PATCH',
+    headers: { cookie: connected.cookie, origin: publicOrigin, 'x-csrf-token': connected.csrfToken,
+      'content-type': 'application/json' },
+    body: JSON.stringify({ expectedReportRevision: returned.reportRevision, clientFields: { position: 'Revised Synthetic Role' } }) });
+  assert.equal(revisedAfterReturn.status, 200);
+  assert.equal((await revisedAfterReturn.json()).reviewState, 'unreviewed');
 
   const forbiddenPublish = await fetch(`${base}/api/v1/ui/accepted-report-drafts/${draft.reportRef}/publish`, { method: 'POST',
     headers: { cookie: connected.cookie, origin: publicOrigin, 'x-csrf-token': connected.csrfToken,
@@ -231,10 +284,20 @@ test('SQLite report drafts survive restart, encrypt candidate fields at rest, an
   assert.equal(internal.audit.length, 1);
   assert.equal(internal.audit[0].actorProfileId, profileOne);
   assert.equal(secondStore.get(profileTwo, ref), null);
-  const approved = await secondDomain.review(context, ref, 'report-r1', 'approved');
+  const edited = await secondDomain.edit(context, ref, 'report-r1', { position: 'Reviewed Synthetic Role' });
+  assert.equal(edited.kind, 'edited');
+  assert.equal(edited.report.reportRevision, 'report-r2');
+  assert.equal(edited.report.clientFields.position, 'Reviewed Synthetic Role');
+  const afterEdit = secondStore.get(profileOne, ref);
+  assert.equal(afterEdit.audit.length, 2);
+  assert.equal(afterEdit.audit[1].action, 'client_fields_edited');
+  assert.deepEqual(afterEdit.audit[1].fields, ['position']);
+  assert.equal((await readFile(filename)).includes(Buffer.from('Reviewed Synthetic Role')), false);
+  const approved = await secondDomain.review(context, ref, 'report-r2', 'approved');
   assert.equal(approved.kind, 'reviewed');
   assert.equal(approved.report.reviewState, 'approved');
-  assert.equal((await secondDomain.review(context, ref, 'report-r1', 'approved')).kind, 'stale_report');
+  assert.equal((await secondDomain.review(context, ref, 'report-r2', 'approved')).kind, 'stale_report');
+  assert.equal((await secondDomain.edit(context, ref, 'report-r3', { position: 'Forbidden' })).kind, 'not_editable');
 
   revision = 'c'.repeat(64);
   assert.equal((await secondDomain.preview(context, ref)).kind, 'stale_source');

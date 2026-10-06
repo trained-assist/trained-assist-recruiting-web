@@ -317,10 +317,11 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
     const isReportDraftPath = path === reportDraftRoot || new RegExp(`^${reportDraftRoot}/report_demo_[a-f0-9]{12}(?:/preview|/review|/publish|/revoke)?$`).test(path);
     const acceptedReportDraftRoot = '/api/v1/ui/accepted-report-drafts';
     const isAcceptedReportDraftPath = acceptedReportDrafts !== null &&
-      (path === acceptedReportDraftRoot || new RegExp(`^${acceptedReportDraftRoot}/report_[a-f0-9]{32}(?:/preview|/review)?$`).test(path));
+      (path === acceptedReportDraftRoot || new RegExp(`^${acceptedReportDraftRoot}/report_[a-f0-9]{32}(?:/preview|/review|/edit)?$`).test(path));
     const acceptedReportRouteMethodAllowed = isAcceptedReportDraftPath &&
       (['GET', 'HEAD'].includes(req.method) && path !== acceptedReportDraftRoot ||
-        req.method === 'POST' && (path === acceptedReportDraftRoot || /\/review$/.test(path)));
+        req.method === 'POST' && (path === acceptedReportDraftRoot || /\/review$/.test(path)) ||
+        req.method === 'PATCH' && /\/edit$/.test(path));
     const isAcceptedReportPagePath = acceptedReportDrafts !== null &&
       (path === '/hh/candidate-report' || path === '/hh/candidate-report/app.js' ||
         path === '/api/v1/ui/accepted-report-source' || path === '/api/v1/ui/accepted-report-client-source');
@@ -338,10 +339,10 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
       status = 404;
       body = { error: 'not_found' };
     } else if (isAcceptedReportDraftPath && !acceptedReportRouteMethodAllowed ||
-        req.method !== 'GET' && req.method !== 'HEAD' && !(req.method === 'POST' && (isCandidateSearchPath || isReportDraftPath || isAcceptedReportDraftPath || path === '/api/v1/ui/vacancy-assignment' && liveAssignmentSave !== null || path === '/api/hh/proactive/vacancy-state' || path === '/api/hh/proactive/search' || realProactiveFeed !== null && path.startsWith('/api/hh/proactive/'))) && !(req.method === 'PATCH' && isReportDraftPath)) {
+        req.method !== 'GET' && req.method !== 'HEAD' && !(req.method === 'POST' && (isCandidateSearchPath || isReportDraftPath || isAcceptedReportDraftPath || path === '/api/v1/ui/vacancy-assignment' && liveAssignmentSave !== null || path === '/api/hh/proactive/vacancy-state' || path === '/api/hh/proactive/search' || realProactiveFeed !== null && path.startsWith('/api/hh/proactive/'))) && !(req.method === 'PATCH' && (isReportDraftPath || isAcceptedReportDraftPath))) {
       status = 405;
       body = { error: 'method_not_allowed' };
-      res.setHeader('Allow', isAcceptedReportDraftPath ? 'GET, HEAD, POST' : isCandidateSearchPath || isReportDraftPath ? 'GET, HEAD, POST, PATCH' : path === '/api/v1/ui/vacancy-assignment' && liveAssignmentSave !== null ? 'GET, HEAD, POST' : 'GET, HEAD');
+      res.setHeader('Allow', isAcceptedReportDraftPath ? 'GET, HEAD, POST, PATCH' : isCandidateSearchPath || isReportDraftPath ? 'GET, HEAD, POST, PATCH' : path === '/api/v1/ui/vacancy-assignment' && liveAssignmentSave !== null ? 'GET, HEAD, POST' : 'GET, HEAD');
     } else if (path === '/') {
       type = mime.html;
       body = landingPage;
@@ -369,7 +370,7 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
           res.writeHead(303, { Location: start.pathname + start.search, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' });
           res.end(); return;
         }
-        const required = ['recruiting.reports.read', 'recruiting.reports.create', 'recruiting.reports.review'];
+        const required = ['recruiting.reports.read', 'recruiting.reports.create', 'recruiting.reports.edit', 'recruiting.reports.review'];
         if (status === 200 && required.some(scope => !context.scopes.includes(scope))) {
           status = 403; body = { error: 'report_scope_required' };
         } else if (status === 200) { type = mime.html; body = clientReportPage; }
@@ -947,10 +948,10 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
         status = 401; body = { error: 'trusted_profile_context_required' };
       } else if (status === 200) {
         const rootRequest = path === acceptedReportDraftRoot && req.method === 'POST';
-        const match = path.match(/^\/api\/v1\/ui\/accepted-report-drafts\/(report_[a-f0-9]{32})(?:\/(preview|review))?$/);
+        const match = path.match(/^\/api\/v1\/ui\/accepted-report-drafts\/(report_[a-f0-9]{32})(?:\/(preview|review|edit))?$/);
         const ref = match?.[1]; const action = match?.[2] ?? '';
         const requiredScope = rootRequest ? 'recruiting.reports.create' : action === 'review'
-          ? 'recruiting.reports.review' : 'recruiting.reports.read';
+          ? 'recruiting.reports.review' : action === 'edit' ? 'recruiting.reports.edit' : 'recruiting.reports.read';
         if (!context.scopes.includes(requiredScope)) { status = 403; body = { error: 'report_scope_required' }; }
         else if (url.search !== '') { status = 400; body = { error: 'unexpected_query_parameters' }; }
         else if (rootRequest) {
@@ -1001,6 +1002,24 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
             else if (result.kind === 'stale_source') { status = 409; body = { error: 'stale_report_source' }; }
             else if (result.kind === 'source_not_found') { status = 404; body = { error: 'not_found' }; }
             else if (result.kind === 'not_found') { status = 404; body = { error: 'not_found' }; }
+            else { status = 503; body = { error: 'report_source_unavailable' }; }
+          }
+        } else if (ref && action === 'edit' && req.method === 'PATCH') {
+          let request;
+          try { request = await readJsonBody(req); } catch (error) {
+            status = error.message === 'body_too_large' ? 413 : 400; body = { error: 'invalid_json' };
+          }
+          if (status === 200 && (!isPlainObject(request) || Object.keys(request).sort().join(',') !== 'clientFields,expectedReportRevision' ||
+              !/^report-r[1-9][0-9]*$/.test(request.expectedReportRevision ?? '') || !isPlainObject(request.clientFields))) {
+            status = 400; body = { error: 'invalid_report_edit' };
+          } else if (status === 200) {
+            const result = await acceptedReportDrafts.edit(context, ref, request.expectedReportRevision, request.clientFields);
+            if (result.kind === 'edited') body = result.report;
+            else if (result.kind === 'stale_report') { status = 409; body = { error: 'stale_report_revision', report: result.report }; }
+            else if (result.kind === 'not_editable') { status = 409; body = { error: 'report_not_editable' }; }
+            else if (result.kind === 'stale_source') { status = 409; body = { error: 'stale_report_source' }; }
+            else if (result.kind === 'source_not_found' || result.kind === 'not_found') { status = 404; body = { error: 'not_found' }; }
+            else if (result.kind === 'invalid_request') { status = 400; body = { error: 'invalid_report_edit' }; }
             else { status = 503; body = { error: 'report_source_unavailable' }; }
           }
         } else { status = 404; body = { error: 'not_found' }; }

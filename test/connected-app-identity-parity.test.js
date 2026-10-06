@@ -20,7 +20,7 @@ test('pinned control-plane identity contract matches the Recruiting consumer', a
   const producerAgentPin = JSON.parse(agentSourceRaw);
   const sha = bytes => createHash('sha256').update(bytes).digest('hex');
   assert.equal(pin.repository, 'trained-assist/trained-assist-control-plane');
-  assert.equal(pin.revision, '85988bbfe30410cd8dde5d8df57b21dd421aedaa');
+  assert.equal(pin.revision, '2a42da8469f7593554d0bb8ed2df57155c5effa1');
   assert.equal(sha(contractRaw), pin.contractSha256);
   assert.equal(sha(schemaRaw), pin.responseSchemaSha256);
   assert.equal(agentPin.repository, 'trained-assist/trained-assist-agent');
@@ -40,7 +40,7 @@ test('pinned control-plane identity contract matches the Recruiting consumer', a
   assert.deepEqual(schema.oneOf[1].required, contract.introspection.activeResponseFields);
   const scopes = contract.audiences['recruiting-web'];
   assert.deepEqual(scopes, ['recruiting.responses.read', 'recruiting.responses.conversation.open',
-    'recruiting.reports.read', 'recruiting.reports.create', 'recruiting.reports.review',
+    'recruiting.reports.read', 'recruiting.reports.create', 'recruiting.reports.edit', 'recruiting.reports.review',
     'recruiting.assignment.review', 'recruiting.candidateSearch']);
   assert.equal(scopes.includes('recruiting.reports.publish'), false);
   assert.equal(scopes.includes('recruiting.reports.revoke'), false);

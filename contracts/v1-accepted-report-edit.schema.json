@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-accepted-report-edit.schema.json",
+  "title": "Edit allowlisted client fields on an owned private candidate report draft",
+  "type": "object",
+  "required": ["expectedReportRevision", "clientFields"],
+  "properties": {
+    "expectedReportRevision": { "type": "string", "pattern": "^report-r[1-9][0-9]*$" },
+    "clientFields": {
+      "type": "object", "minProperties": 1,
+      "properties": {
+        "position": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "vacancyTitle": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "experience": { "type": "array", "maxItems": 5, "items": {
+          "type": "object", "required": ["role", "company", "period"],
+          "properties": {
+            "role": { "type": "string", "minLength": 1, "maxLength": 500 },
+            "company": { "type": "string", "minLength": 1, "maxLength": 500 },
+            "period": { "type": "string", "minLength": 1, "maxLength": 500 }
+          }, "additionalProperties": false
+        } }
+      }, "additionalProperties": false
+    }
+  }, "additionalProperties": false
+}
