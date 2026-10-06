@@ -152,7 +152,7 @@ function validReportAction(value) {
   return isPlainObject(value) && Object.keys(value).sort().join(',') === 'expectedReportRevision' && isReportRevision(value.expectedReportRevision);
 }
 
-export function createRecruitingServer({ resolveTrustedProfileContext = () => null, resolveLegacyOpenTab = null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, candidateSearchJobStore = null, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), scheduleLeaseMs = 5 * 60_000, maxCandidateSearchJobs = 100, publicationAdapter, realProactiveFeed = null, realProactiveActions = null, realProactivePrompt = null, realProactiveSeenImport = null, realProactiveAiScore = null, realProactiveManualCandidate = null, liveResponseRead = null, acceptedReportSourceRead = null, resolveRealVacancyOwnership = null, resolveRealDefaultVacancy = () => null, privateProactiveOnly = false, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
+export function createRecruitingServer({ resolveTrustedProfileContext = () => null, connectedAppBff = null, resolveLegacyOpenTab = null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, candidateSearchJobStore = null, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), scheduleLeaseMs = 5 * 60_000, maxCandidateSearchJobs = 100, publicationAdapter, realProactiveFeed = null, realProactiveActions = null, realProactivePrompt = null, realProactiveSeenImport = null, realProactiveAiScore = null, realProactiveManualCandidate = null, liveResponseRead = null, acceptedReportSourceRead = null, resolveRealVacancyOwnership = null, resolveRealDefaultVacancy = () => null, privateProactiveOnly = false, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
   if (realProactiveFeed !== null && (typeof realProactiveFeed.read !== 'function' || typeof resolveRealVacancyOwnership !== 'function'))
     throw new TypeError('real proactive feed and trusted vacancy ownership ports required');
   if (realProactiveActions !== null && realProactiveFeed === null) throw new TypeError('real actions require real feed mode');
@@ -166,6 +166,9 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
     throw new TypeError('report source read port required');
   if (resolveLegacyOpenTab !== null && (!privateProactiveOnly || typeof resolveLegacyOpenTab !== 'function'))
     throw new TypeError('legacy open-tab resolver requires private proactive mode');
+  if (connectedAppBff !== null && (privateProactiveOnly || typeof connectedAppBff.handle !== 'function' ||
+      typeof connectedAppBff.resolve !== 'function')) throw new TypeError('connected app BFF ports required');
+  const trustedReadResolver = connectedAppBff?.resolve ?? resolveTrustedProfileContext;
   const realProactiveRead = realProactiveFeed === null ? null : createRealProactiveRead({
     feed: realProactiveFeed, resolveVacancyOwnership: resolveRealVacancyOwnership });
   const candidateSearchJobs = candidateSearchJobStore ?? createCandidateSearchJobs({ provider: candidateSearchProvider, maxJobs: maxCandidateSearchJobs });
@@ -215,6 +218,14 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const path = url.pathname;
+    if (connectedAppBff && path.startsWith('/auth/connected/')) {
+      try { if (await connectedAppBff.handle(req, res, url)) return; }
+      catch {
+        res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ error: 'connected_app_auth_unavailable' }));
+        return;
+      }
+    }
     const isCandidateSearchPath = path === '/api/v1/ui/candidate-searches' || /^\/api\/v1\/ui\/candidate-searches\/[^/]+(?:\/results|\/resume)?$/.test(path);
     const isProactivePath = path === '/hh/proactive' || path === '/hh/proactive/app.js' || /^\/api\/hh\/proactive\/(?:candidates|schedule|occurrences|vacancy-state|search)$/.test(path) ||
       realProactiveFeed !== null && path.startsWith('/api/hh/proactive/');
@@ -244,7 +255,7 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
       body = { serviceId: manifest.serviceId, domainApiVersion: manifest.domainApiVersion, capabilities };
     } else if (path === '/api/v1/ui/accepted-report-source' && acceptedReportSourceRead !== null) {
       let context;
-      try { context = await resolveTrustedProfileContext(req, url, res); }
+      try { context = await trustedReadResolver(req, url, res); }
       catch { status = 503; body = { error: 'trusted_profile_unavailable' }; }
       if (status === 200 && (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes))) {
         status = 401; body = { error: 'trusted_profile_context_required' };
@@ -267,7 +278,7 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
       }
     } else if (path === '/api/v1/ui/hh-responses' && liveResponseRead !== null) {
       let context;
-      try { context = await resolveTrustedProfileContext(req, url, res); }
+      try { context = await trustedReadResolver(req, url, res); }
       catch { status = 503; body = { error: 'trusted_profile_unavailable' }; }
       if (status === 200 && (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes))) {
         status = 401; body = { error: 'trusted_profile_context_required' };
