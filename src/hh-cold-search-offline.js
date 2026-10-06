@@ -60,7 +60,7 @@ export function createOfflineHhColdSearch({ loadSearchPlan, transport, candidate
         let page;
         try { page = await transport.search({ trustedContext, vacancyId, query, area: plan.area }); }
         catch { throw new HhColdSearchRunError('provider_search_failed'); }
-        if (page.profileId !== profileId || page.vacancyId !== vacancyId || !Array.isArray(page.areas) || !Array.isArray(page.items) || page.items.length > 50 ||
+        if (page.profileId !== profileId || page.vacancyId !== vacancyId || !Array.isArray(page.areas) || !Array.isArray(page.items) || page.items.length > 2000 ||
             (areas !== null && JSON.stringify(areas) !== JSON.stringify(page.areas))) throw new HhColdSearchRunError('provider_scope_or_area_mismatch');
         areas ??= page.areas;
         let mapped;
