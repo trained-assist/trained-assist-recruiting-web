@@ -35,14 +35,17 @@
         "atsScore": { "type": ["number", "null"], "minimum": 0, "maximum": 10 },
         "atsTag": { "enum": ["PASS", "REVIEW", "WEAK", null] },
         "knockout": { "type": "object" },
-        "source": { "enum": ["manual", "scheduled"] },
-        "jobId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+        "source": { "enum": ["manual", "scheduled", "manual_add"] },
+        "jobId": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9_-]{1,128}$" },
         "lastFoundAt": { "type": "string", "pattern": "^20[0-9]{2}-[0-9]{2}-[0-9]{2}T" },
         "review": { "type": "object", "required": ["status", "revision"],
           "properties": { "status": { "enum": ["active", "starred", "archived"] }, "revision": { "type": "integer", "minimum": 0 } }, "additionalProperties": false },
         "comment": { "type": ["string", "null"], "maxLength": 1000 },
         "excludeFromSearch": { "type": "boolean" }
       },
+      "allOf": [{ "if": { "properties": { "source": { "const": "manual_add" } }, "required": ["source"] },
+        "then": { "properties": { "jobId": { "const": null } } },
+        "else": { "properties": { "jobId": { "type": "string" } } } }],
       "additionalProperties": false
     }
   }

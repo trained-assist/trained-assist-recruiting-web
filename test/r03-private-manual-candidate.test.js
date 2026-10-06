@@ -1,13 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRecruitingServer } from '../src/server.js';
 import { createR03AccumulatedRealFeed } from '../src/r03-accumulated-real-feed.js';
 import { createR03PrivateManualCandidate } from '../src/r03-private-manual-candidate.js';
 import { SqliteRealHhCandidateState } from '../src/sqlite-real-hh-candidate-state.js';
+import Ajv2020 from 'ajv/dist/2020.js';
 
 const profileId = 'invented_profile';
 const vacancyId = 'invented_vacancy';
@@ -89,6 +90,9 @@ test('HTTP manual add binds trusted profile and does not expose raw HH data', as
     { headers: { 'X-Test-Principal': profileId } })).json();
   assert.equal(feed.total, 1);
   assert.equal(feed.candidates[0].id, resumeId);
+  const schema = JSON.parse(readFileSync(new URL('../contracts/v1-real-proactive-results.schema.json', import.meta.url), 'utf8'));
+  const validate = new Ajv2020({ strict: true }).compile(schema);
+  assert.equal(validate(feed), true, JSON.stringify(validate.errors));
 });
 
 test('one credential refresh is bounded; mismatched HH ID and failed SQLite transaction publish nothing', async t => {
