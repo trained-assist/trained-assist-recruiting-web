@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tarfile
@@ -149,6 +150,24 @@ def write_private(path, content):
     os.replace(temporary, path)
 
 
+def make_release_readable(release):
+    root = release.resolve(strict=True)
+    for directory, subdirectories, files in os.walk(root, followlinks=False):
+        Path(directory).chmod(0o755)
+        for name in subdirectories + files:
+            path = Path(directory) / name
+            mode = path.lstat().st_mode
+            if stat.S_ISLNK(mode):
+                if not path.resolve(strict=True).is_relative_to(root):
+                    fail("release_dependency_symlink_escapes_root")
+            elif stat.S_ISDIR(mode):
+                path.chmod(0o755)
+            elif stat.S_ISREG(mode):
+                path.chmod(0o755 if mode & 0o111 else 0o644)
+            else:
+                fail("release_dependency_special_file")
+
+
 def install(args):
     manifest = checked_manifest(args.archive, args.manifest, args.approved_sha256)
     nginx_before = host_gate(args)
@@ -172,6 +191,7 @@ def install(args):
             fail("unexpected_unit_template")
         run("npm", "ci", "--omit=dev", "--no-audit", "--no-fund", "--prefix", str(candidate))
         run("npm", "rebuild", "better-sqlite3", "--prefix", str(candidate))
+        make_release_readable(candidate)
         candidate.rename(release)
     rendered = template.replace("@RELEASE_SHA@", source_sha).encode()
     # Verify the exact file before replacing the installed unit.
@@ -214,6 +234,8 @@ def rollback(args):
             sha256(UNIT) != receipt["newUnitSha256"] or \
             sha256(backup_path) != receipt["previousUnitSha256"]:
         fail("rollback_receipt_mismatch")
+    if host_gate(args) != receipt["nginxSha256"]:
+        fail("nginx_changed_since_staging")
     write_private(UNIT, backup_path.read_bytes())
     run("systemctl", "daemon-reload")
     if host_gate(args) != receipt["nginxSha256"]:
