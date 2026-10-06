@@ -142,9 +142,7 @@ export async function runPrivateOneAtsCanary({ mode, hostConfigFile, sourceRecei
       preflight.vacancyId !== input.receipt.vacancyId ||
       preflight.jobId !== input.receipt.jobId ||
       preflight.criteriaRevision !== plan.criteriaRevision ||
-      !Number.isFinite(Date.parse(preflight.at)) ||
-      clock().getTime() < Date.parse(preflight.at) ||
-      clock().getTime() - Date.parse(preflight.at) > 15 * 60_000) fail();
+      !Number.isFinite(Date.parse(preflight.at))) fail();
   const receiptFile = join(outputDirectory, 'receipt.json');
   if (mode === 'replay') {
     privateDir(outputDirectory); privateFile(receiptFile);
@@ -157,6 +155,8 @@ export async function runPrivateOneAtsCanary({ mode, hostConfigFile, sourceRecei
       written: prior.written, unknown: prior.unknown, disposableOnly: true };
   }
   if (existsSync(outputDirectory)) fail(); // An incomplete run is uncertain; never auto retry.
+  if (clock().getTime() < Date.parse(preflight.at) ||
+      clock().getTime() - Date.parse(preflight.at) > 15 * 60_000) fail();
   const currentPolicy = await ladderPolicy(secretsDirectory, fetchImpl);
   if (currentPolicy.build !== preflight.build || currentPolicy.rungCount !== preflight.rungCount) fail();
   mkdirSync(outputDirectory, { mode: 0o700 });
