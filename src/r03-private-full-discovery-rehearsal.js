@@ -24,6 +24,7 @@ const fail = () => { throw new Error('private_full_discovery_rehearsal_unavailab
 // in that copy. No ATS/LLM call, timer or public route is made here.
 export async function runPrivateFullDiscoveryRehearsal({ hostConfigFile, stageReceiptFile,
   preflightReceiptFile, secretsDirectory, outputDirectory, profileId, vacancyId,
+  naturalScheduleId = null, expectedNaturalAt = null,
   execute = false, fetchImpl = globalThis.fetch, clock = () => new Date() } = {}) {
   if (!execute || ![hostConfigFile, stageReceiptFile, preflightReceiptFile, secretsDirectory,
     outputDirectory].every(absolute) || !safeId(profileId) || !safeId(vacancyId) ||
@@ -43,6 +44,8 @@ export async function runPrivateFullDiscoveryRehearsal({ hostConfigFile, stageRe
       preflight.requests !== preflight.queryCount ||
       JSON.stringify(preflight.budget) !== JSON.stringify(FULL_DISCOVERY_BUDGET) ||
       outputDirectory === dirname(stageReceiptFile) || outputDirectory === dirname(host.dbPath)) fail();
+  const natural = naturalScheduleId !== null || expectedNaturalAt !== null;
+  if (natural && (!safeId(naturalScheduleId) || !Number.isFinite(Date.parse(expectedNaturalAt)))) fail();
   const receiptFile = join(outputDirectory, 'receipt.json');
   if (existsSync(outputDirectory)) {
     privateDirectory(outputDirectory);
@@ -50,7 +53,8 @@ export async function runPrivateFullDiscoveryRehearsal({ hostConfigFile, stageRe
     const prior = readPrivateJson(receiptFile, 1024 * 1024);
     if (prior?.version !== 'r03-private-full-discovery-rehearsal-v1' ||
         prior.migrationId !== stage.migrationId || prior.profileId !== profileId ||
-        prior.vacancyId !== vacancyId || prior.disposition !== 'disposable_full') fail();
+        prior.vacancyId !== vacancyId || prior.disposition !== (natural ? 'disposable_natural' : 'disposable_full') ||
+        (natural && (prior.scheduleId !== naturalScheduleId || prior.scheduledAt !== expectedNaturalAt))) fail();
     const db = new Database(join(outputDirectory, 'candidate.sqlite'), { readonly: true, fileMustExist: true });
     try {
       const row = db.prepare('SELECT payload FROM cold_search_occurrences WHERE occurrence_id=?').get(prior.occurrenceId);
@@ -74,6 +78,16 @@ export async function runPrivateFullDiscoveryRehearsal({ hostConfigFile, stageRe
       .filter(row => JSON.parse(row.payload).migrationQuarantine?.reason === 'legacy_outcome_unknown').length;
     if (counts.n !== 11 || counts.enabled !== 0 || unknown !== 8 ||
         staged.prepare('SELECT COUNT(*) AS n FROM cold_search_occurrences').get().n !== 0) fail();
+    if (natural) {
+      const row = staged.prepare('SELECT payload FROM cold_search_schedules WHERE schedule_id=?').get(naturalScheduleId);
+      const schedule = row && JSON.parse(row.payload);
+      if (schedule?.profileId !== profileId || schedule?.vacancyId !== vacancyId ||
+          schedule.plan?.intervalHours !== 24 || schedule.nextRunAt !== expectedNaturalAt ||
+          schedule.migrationQuarantine?.reason !== 'cutover_review_required' ||
+          schedule.migrationQuarantine?.migrationId !== stage.migrationId ||
+          !schedule.blockedByUnknownOccurrenceId || schedule.enabled ||
+          schedule.timezone !== 'Europe/Moscow') fail();
+    }
     mkdirSync(outputDirectory, { mode: 0o700 });
     await staged.backup(join(outputDirectory, 'candidate.sqlite'));
   } finally { staged.close(); }
@@ -118,22 +132,32 @@ export async function runPrivateFullDiscoveryRehearsal({ hostConfigFile, stageRe
         return fetchImpl(url, init);
       }, userAgent: loadPrivateHostSecret(secretsDirectory, 'hh_user_agent'),
       preflightFor: async () => preflight, clock });
-    const schedulePlan = intervalPlan(24, vacancyId);
     const key = hash([stage.migrationId, profileId, vacancyId, now]).slice(0, 24);
-    const scheduleId = `full_rehearsal_schedule_${key}`;
-    schedules.upsertSchedule({ scheduleId, legacyJobId: `full_rehearsal_job_${key}`,
-      profileId, vacancyId, enabled: true, plan: schedulePlan, timezone: 'Europe/Moscow',
-      jobArguments: { vacancyId }, nextRunAt: nextOccurrenceAfter(schedulePlan,
-        new Date(Date.parse(now) - 48 * 60 * 60_000).toISOString()),
-      leaseOwner: null, leaseUntil: null, blockedByUnknownOccurrenceId: null });
+    const scheduleId = natural ? naturalScheduleId : `full_rehearsal_schedule_${key}`;
+    if (natural) {
+      const due = Date.parse(expectedNaturalAt);
+      if (Date.parse(now) < due || Date.parse(now) - due > 5 * 60_000) fail();
+      const selected = schedules.getSchedule(scheduleId);
+      schedules.persistSchedule({ ...selected, enabled: true,
+        blockedByUnknownOccurrenceId: null, migrationQuarantine: null });
+    } else {
+      const schedulePlan = intervalPlan(24, vacancyId);
+      schedules.upsertSchedule({ scheduleId, legacyJobId: `full_rehearsal_job_${key}`,
+        profileId, vacancyId, enabled: true, plan: schedulePlan, timezone: 'Europe/Moscow',
+        jobArguments: { vacancyId }, nextRunAt: nextOccurrenceAfter(schedulePlan,
+          new Date(Date.parse(now) - 48 * 60 * 60_000).toISOString()),
+        leaseOwner: null, leaseUntil: null, blockedByUnknownOccurrenceId: null });
+    }
     const tick = await runPrivateHhMinuteTick({ worker: full.worker, scheduleRepository: schedules,
       workerId: `full_rehearsal_worker_${key}`, clock });
     const occurrence = schedules.listOccurrences(profileId).filter(row => row.scheduleId === scheduleId);
     if (occurrence.length !== 1 || tick.result?.claimed !== 1) fail();
+    if (natural && (occurrence[0].scheduledAt !== expectedNaturalAt ||
+        occurrence[0].coalescedMissedCount !== 0)) fail();
     const synthetic = schedules.getSchedule(scheduleId);
     schedules.persistSchedule({ ...synthetic, enabled: false,
       blockedByUnknownOccurrenceId: `disposable_full_${key}`,
-      migrationQuarantine: { reason: 'disposable_full', migrationId: stage.migrationId } });
+      migrationQuarantine: { reason: natural ? 'disposable_natural' : 'disposable_full', migrationId: stage.migrationId } });
     let assessmentStatus = 'not_applicable';
     let assessmentPendingCount = 0;
     let candidateCount = 0;
@@ -156,10 +180,11 @@ export async function runPrivateFullDiscoveryRehearsal({ hostConfigFile, stageRe
     ]);
     if (sourceAfter.sha256 !== sourceBefore.sha256 || stageAfter.sha256 !== stageBefore.sha256) fail();
     const receipt = { version: 'r03-private-full-discovery-rehearsal-v1',
-      disposition: 'disposable_full', migrationId: stage.migrationId,
+      disposition: natural ? 'disposable_natural' : 'disposable_full', migrationId: stage.migrationId,
       sourceArchiveSha256: stage.sourceArchiveSha256, cronSha256: stage.cronSha256,
       preflightSha256: (await digestPrivateFile(preflightReceiptFile, 1024 * 1024)).sha256,
-      profileId, vacancyId, occurrenceId: occurrence[0].occurrenceId,
+      profileId, vacancyId, scheduleId, scheduledAt: occurrence[0].scheduledAt,
+      occurrenceId: occurrence[0].occurrenceId,
       occurrenceStatus: occurrence[0].status, errorCode: occurrence[0].errorCode,
       jobId: occurrence[0].jobId, providerRequests, assessmentRequests: 0,
       queryCount: plan.queryCache.queries.length, candidateCount, newCount,

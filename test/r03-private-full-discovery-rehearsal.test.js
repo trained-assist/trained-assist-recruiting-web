@@ -11,6 +11,7 @@ import { loadPrivateHostConfig } from '../src/r03-private-host-config.js';
 import { createPrivateBaseSearchPlan, legacyQueryConfigHash } from '../src/r03-private-base-plan.js';
 import { createFullDiscoveryCostPreflight } from '../src/r03-full-discovery-budget.js';
 import { runPrivateFullDiscoveryRehearsal } from '../src/r03-private-full-discovery-rehearsal.js';
+import { intervalPlan } from '../src/cold-search-schedules.js';
 
 const profileId = 'invented_profile'; const vacancyId = 'invented_vacancy';
 const ats = { vacancy_id: vacancyId, vacancy_title: 'Вымышленный инженер',
@@ -125,4 +126,48 @@ test('later HH 429 is typed unknown with no full snapshot', async t => {
   const copy = new Database(join(f.outputDirectory, 'candidate.sqlite'), { readonly: true });
   assert.equal(copy.prepare('SELECT COUNT(*) AS n FROM real_hh_snapshot').get().n, 0);
   copy.close();
+});
+
+test('one reviewed imported daily slot runs at its natural due time and replays without HH', async t => {
+  const f = await fixture(t);
+  const stage = new SqliteColdSearchScheduleRepository(join(f.root, 'stage', 'candidate.sqlite'));
+  const selected = stage.getSchedule('invented_schedule_8');
+  stage.persistSchedule({ ...selected, plan: intervalPlan(24, vacancyId),
+    timezone: 'Europe/Moscow', nextRunAt: '2026-10-06T09:00:00.000Z',
+    migrationQuarantine: { reason: 'cutover_review_required', migrationId: 'invented_migration' } });
+  stage.close();
+  let calls = 0;
+  const input = { ...f, naturalScheduleId: 'invented_schedule_8',
+    expectedNaturalAt: '2026-10-06T09:00:00.000Z', fetchImpl: async url => {
+      calls++;
+      const code = new URL(url).searchParams.get('text').includes('конструктор') ? 'b' : 'a';
+      const page = new URL(url).searchParams.get('page');
+      return { status: 200, ok: true, json: async () => ({ pages: 2, found: 2,
+        items: [resume(`invented${code}${page}`)] }) };
+    } };
+  const result = await runPrivateFullDiscoveryRehearsal(input);
+  assert.equal(result.status, 'succeeded');
+  assert.equal(calls, 4);
+  const copy = new Database(join(f.outputDirectory, 'candidate.sqlite'), { readonly: true });
+  const occurrence = copy.prepare('SELECT payload FROM cold_search_occurrences').all().map(row => JSON.parse(row.payload));
+  assert.equal(occurrence.length, 1);
+  assert.equal(occurrence[0].scheduleId, 'invented_schedule_8');
+  assert.equal(occurrence[0].legacyJobId, 'invented_job_8');
+  assert.equal(occurrence[0].scheduledAt, input.expectedNaturalAt);
+  assert.equal(occurrence[0].coalescedMissedCount, 0);
+  assert.equal(copy.prepare('SELECT COUNT(*) AS n FROM cold_search_schedules WHERE enabled=0').get().n, 11);
+  copy.close();
+  const receipt = JSON.parse(readFileSync(join(f.outputDirectory, 'receipt.json')));
+  assert.equal(receipt.disposition, 'disposable_natural');
+  const replay = await runPrivateFullDiscoveryRehearsal({ ...input,
+    fetchImpl: async () => { throw new Error('replay dispatched HH'); } });
+  assert.equal(replay.status, 'replayed');
+  assert.equal(replay.providerRequests, 0);
+});
+
+test('unknown imported history cannot be selected for a natural cycle', async t => {
+  const f = await fixture(t);
+  await assert.rejects(runPrivateFullDiscoveryRehearsal({ ...f,
+    naturalScheduleId: 'invented_schedule_0', expectedNaturalAt: '2099-01-01T00:00:00.000Z',
+    fetchImpl: async () => { throw new Error('HH must not be called'); } }));
 });
