@@ -1,8 +1,16 @@
 {
   "repository": "trained-assist/trained-assist-control-plane",
-  "revision": "a455214645f2a5a05207e8a6ea1ea6ad0215476f",
+  "revision": "85988bbfe30410cd8dde5d8df57b21dd421aedaa",
   "contractPath": "contracts/connected-app-identity-v1.contract.json",
-  "contractSha256": "8438b910052abd113e6c3eccdcf38a2249feb602a06e6e575a55c96bc998d276",
+  "contractSha256": "38d3179e523d285f78cdd403aa69bdfc3dd5270e271d23e428969aa2865a005c",
   "responseSchemaPath": "contracts/connected-app-identity-v1.response.schema.json",
-  "responseSchemaSha256": "3c9e9b8d0b73e7530ae3c16ace612225c587c23e079bb8e721262f406a65a0b8"
+  "responseSchemaSha256": "3c9e9b8d0b73e7530ae3c16ace612225c587c23e079bb8e721262f406a65a0b8",
+  "agentProfileContext": {
+    "repository": "trained-assist/trained-assist-agent",
+    "revision": "4a60c2e4c45eca9de1b84bba55e38bb83e1478c8",
+    "contractPath": "contracts/agent-profile-context-v1/contract.json",
+    "contractSha256": "d1e9e0644fe65faec8eed668ba4ccf897245fa76e80a6d77d3434341418a248d",
+    "schemaPath": "contracts/agent-profile-context-v1/profile-context.schema.json",
+    "schemaSha256": "06f23e683ed2cb8c862a26a70aa973160cc2c545d93542c42265ce1ceef51591"
+  }
 }
