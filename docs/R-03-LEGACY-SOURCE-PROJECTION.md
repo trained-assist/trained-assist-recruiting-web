@@ -1,6 +1,7 @@
 # R-03 legacy source projection, offline stage 2
 
 `projectLegacyR03Sources` converts the old HH JSON shapes into the private metadata envelope accepted by `R03LegacyRehearsal`: `all-candidates.json`, per-vacancy `seen-ids.json`, dated `search-results-*.json`, `queries-*.json`, `candidate-comments-*.json`, and `ats_config:<vacancy>.json` context wrappers. It also accepts already reviewed, metadata-only paused schedule definitions. Tests use invented names, IDs, comments and queries.
+The ATS wrapper accepts the historical double-serialized JSON `value` and checks any embedded vacancy ID against the filename scope.
 
 `readLegacyR03ProfileFiles` is a read-only adapter for an **already frozen private backup**. It reads the recognized files from explicit proactive/context directories, rejects symlinks and ambiguous unscoped or malformed source filenames, and returns keyed HMAC byte receipts alongside the projected profile. The HMAC key and input paths belong to the private operator environment; no CLI prints the envelope. Snapshot IDs and content remain in the private process only.
 

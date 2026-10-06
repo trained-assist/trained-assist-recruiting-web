@@ -84,4 +84,10 @@ test('missing IDs and unscoped ATS or query source fail before a projection is r
   const crossVacancyQuery = source();
   crossVacancyQuery.queryCaches[0].value.vacancy_id = 'vacancy02';
   assert.throws(() => projectLegacyR03Sources(crossVacancyQuery), /invalid_legacy_query_source/);
+  const stringAts = source();
+  stringAts.atsConfigs[0].value.value = JSON.stringify({ vacancy_id: 'vacancy01',
+    vacancy_title: 'SECRET_SYNTHETIC_ATS' });
+  assert.equal(projectLegacyR03Sources(stringAts).atsConfigs[0].vacancyId, 'vacancy01');
+  stringAts.atsConfigs[0].value.value = JSON.stringify({ vacancy_id: 'vacancy02' });
+  assert.throws(() => projectLegacyR03Sources(stringAts), /invalid_legacy_ats_source/);
 });

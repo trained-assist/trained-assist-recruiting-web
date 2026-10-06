@@ -72,7 +72,13 @@ export function projectLegacyR03Sources({ sourceProfileRef, allCandidates, seenI
   });
 
   const projectedAts = atsConfigs.map(({ vacancyId, value }) => {
-    if (!safeId(vacancyId) || !own(value) || !own(value.value)) fail('invalid_legacy_ats_source');
+    if (!safeId(vacancyId) || !own(value)) fail('invalid_legacy_ats_source');
+    let config = value.value;
+    if (typeof config === 'string') {
+      try { config = JSON.parse(config); } catch { fail('invalid_legacy_ats_source'); }
+    }
+    if (!own(config) || config.vacancy_id !== undefined && String(config.vacancy_id) !== vacancyId)
+      fail('invalid_legacy_ats_source');
     return { vacancyId };
   });
 
