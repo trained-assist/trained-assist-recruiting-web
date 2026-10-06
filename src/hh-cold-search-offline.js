@@ -18,6 +18,7 @@ function validatedPlan(value, profileId, vacancyId, expectedCriteriaRevision, ex
       value.queryCache.queries.some(query => typeof query !== 'string' || !query.trim() || query !== query.trim() || query.length > 500) ||
       new Set(value.queryCache.queries).size !== value.queryCache.queries.length ||
       !value.atsConfig || typeof value.atsConfig !== 'object' || !has(value, 'area') ||
+      value.feedbackRevision !== undefined && !/^[a-f0-9]{24}$/.test(value.feedbackRevision) ||
       value.excludedResumeIds !== undefined && (!Array.isArray(value.excludedResumeIds) || value.excludedResumeIds.length > 20000 ||
         value.excludedResumeIds.some(id => !safeId(id)) || new Set(value.excludedResumeIds).size !== value.excludedResumeIds.length))
     throw new HhColdSearchRunError('search_plan_unavailable');
@@ -77,7 +78,8 @@ export function createOfflineHhColdSearch({ loadSearchPlan, transport, candidate
       try {
         snapshot = candidateState.recordCompletedSearch({ version: REAL_HH_RESULT_VERSION, profileId, vacancyId, jobId,
           searchedAt, criteriaRevision: plan.criteriaRevision, sourceRevision, source,
-          totalCollected: collectedIds.size, candidates: [...candidates.values()] });
+          totalCollected: collectedIds.size, candidates: [...candidates.values()],
+          ...(plan.feedbackRevision ? { expectedFeedbackRevision: plan.feedbackRevision } : {}) });
       } catch { throw new HhColdSearchRunError('candidate_commit_failed'); }
       return { status: 'completed', snapshot, replayed: false };
     }

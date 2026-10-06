@@ -10,7 +10,7 @@ const hash = value => createHash('sha256').update(JSON.stringify(value)).digest(
 const fields = new Set(['id', 'vacancyId', 'hhUrl', 'title', 'firstName', 'lastName', 'age', 'area', 'totalExperienceMonths', 'totalExperienceYears', 'salary', 'recentCompanies', 'experience', 'preScore', 'preScoreSignals', 'preTag', 'totalPossible', 'atsScore', 'atsTag', 'knockout']);
 const experienceFields = new Set(['position', 'company', 'start', 'end']);
 const salaryFields = new Set(['amount', 'from', 'to', 'currency', 'gross']);
-const searchFields = new Set(['version', 'profileId', 'vacancyId', 'jobId', 'searchedAt', 'criteriaRevision', 'sourceRevision', 'source', 'totalCollected', 'candidates']);
+const searchFields = new Set(['version', 'profileId', 'vacancyId', 'jobId', 'searchedAt', 'criteriaRevision', 'sourceRevision', 'source', 'totalCollected', 'candidates', 'expectedFeedbackRevision']);
 const ownKeysOnly = (value, allowed) => value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).every(key => allowed.has(key));
 
 function validateCandidate(candidate, vacancyId) {
@@ -37,7 +37,9 @@ function validateCandidate(candidate, vacancyId) {
 }
 
 function validatedSearch(input) {
-  if (!ownKeysOnly(input, searchFields) || Object.keys(input).length !== searchFields.size || input.version !== REAL_HH_RESULT_VERSION || ![input.profileId, input.vacancyId, input.jobId].every(safeId) ||
+  if (!ownKeysOnly(input, searchFields) || Object.keys(input).length !== searchFields.size - (input.expectedFeedbackRevision === undefined ? 1 : 0) ||
+      input.expectedFeedbackRevision !== undefined && !/^[a-f0-9]{24}$/.test(input.expectedFeedbackRevision) ||
+      input.version !== REAL_HH_RESULT_VERSION || ![input.profileId, input.vacancyId, input.jobId].every(safeId) ||
       !isoTime(input.searchedAt) || typeof input.criteriaRevision !== 'string' || !input.criteriaRevision ||
       typeof input.sourceRevision !== 'string' || !input.sourceRevision || !['manual', 'scheduled'].includes(input.source) ||
       !Number.isSafeInteger(input.totalCollected) || input.totalCollected < 0 || !Array.isArray(input.candidates) ||
@@ -157,6 +159,9 @@ export class SqliteRealHhCandidateState {
     const digest = hash({ ...input, candidates: input.candidates });
     const revision = hash([input.jobId, input.criteriaRevision, input.sourceRevision, input.candidates.map(item => item.id)]).slice(0, 24);
     return this.db.transaction(() => {
+      if (input.expectedFeedbackRevision !== undefined &&
+          this.searchFeedback(input.profileId, input.vacancyId).revision !== input.expectedFeedbackRevision)
+        throw new Error('search_feedback_stale');
       const crossScope = this.getJobAnywhere.get(input.jobId);
       if (crossScope && (crossScope.profile_id !== input.profileId || crossScope.vacancy_id !== input.vacancyId)) throw new Error('real_hh_job_scope_conflict');
       const prior = this.getSnapshot.get(input.profileId, input.vacancyId, input.jobId);

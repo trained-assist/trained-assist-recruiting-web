@@ -13,6 +13,7 @@
     "criteriaRevision": { "type": "string", "minLength": 1 },
     "sourceRevision": { "type": "string", "minLength": 1 },
     "source": { "enum": ["manual", "scheduled"] },
+    "expectedFeedbackRevision": { "type": "string", "pattern": "^[a-f0-9]{24}$" },
     "totalCollected": { "type": "integer", "minimum": 0 },
     "candidates": { "type": "array", "maxItems": 20000, "items": { "$ref": "#/$defs/candidate" } }
   },

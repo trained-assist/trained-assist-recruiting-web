@@ -101,3 +101,25 @@ test('changing feedback during HH collection fails before snapshot; pinned manua
     generateQueries: async () => { throw new Error('manual query must stay pinned'); } });
   assert.deepEqual((await pinned(profileId, vacancyA)).queryCache.queries, ['вымышленный инженер']);
 });
+
+test('SQLite commit fences a comment added after the final plan read', async t => {
+  const { open } = fixture(t);
+  const state = open();
+  seed(state);
+  const loadSearchPlan = createReviewAwareSearchPlan({ loadBasePlan: async (_, vacancyId) => basePlan(vacancyId),
+    candidateState: state, generateQueries: async () => { throw new Error('no comment before dispatch'); } });
+  const plan = await loadSearchPlan(profileId, vacancyA);
+  const statePort = { latestSnapshot: (...args) => state.latestSnapshot(...args),
+    resultPage: (...args) => state.resultPage(...args),
+    recordCompletedSearch: input => {
+      state.updateCandidateOverlay({ profileId, vacancyId: vacancyA, candidateId: mapped(1).id,
+        expectedRevision: 0, status: 'active', comment: 'Вымышленный новый запрет', excludeFromSearch: true });
+      return state.recordCompletedSearch(input);
+    } };
+  const search = createOfflineHhColdSearch({ loadSearchPlan, candidateState: statePort,
+    transport: { search: async () => ({ profileId, vacancyId: vacancyA, areas: [], items: [raw(3)] }) } });
+  await assert.rejects(search.run({ trustedContext: { profileId, scopes: ['recruiting.candidateSearch'] },
+    vacancyId: vacancyA, jobId: 'job_synthetic_commit_race', source: 'scheduled',
+    expectedCriteriaRevision: plan.criteriaRevision, expectedQueryRevision: plan.queryCache.revision }), /candidate_commit_failed/);
+  assert.equal(state.resultPage({ profileId, vacancyId: vacancyA, jobId: 'job_synthetic_commit_race' }), null);
+});
