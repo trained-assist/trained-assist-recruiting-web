@@ -1,0 +1,9 @@
+# R-01 saved vacancy material: read and recovery boundary
+
+Issue: [#90](https://github.com/trained-assist/trained-assist-recruiting-web/issues/90). This slice is stacked on the response reader in PR #87.
+
+The old vacancy configuration can contain `test_task` without a saved `communication_plan`. The private Connected BFF now reads only an owned vacancy's existing `ats_config:<vacancyId>.json` through the host binding. `GET /hh/assignment?vacancy_id=...` shows a recruiter-only, escaped, read-only page; `GET /api/v1/ui/vacancy-assignment?vacancyId=...` returns the exact material and its SHA-256. Both require the current CP session and `recruiting.responses.read`; CP failure denies the request. No material is sent, activated, written, or logged by this reader. Public CI uses invented text.
+
+`legacy_draft_requires_review` means the exact old field is preserved but **not** an active communication plan. `saved_plan` means the source has a version 1 plan and the reader lists its verbatim stages. If a legacy field differs from saved material, `legacyConflict` directs a human to compare them. Stage title never selects a send action. An absent or unreadable private file does not cause an HH request or an Agent Run.
+
+The Wildberries manager assignment was recovered from an owner-only local HTML capture into an owner-only JSON receipt with source and material digests. That capture has no saved plan. Vacancy `138004863` is not in the current RU R03 staging bindings, so this PR does **not** make that material visible on RU. Before a live read, the owner must verify the intended profile/vacancy membership and the captured assignment against the authoritative source, then import the reviewed source into a private bound config. A saved plan and candidate communication are later acceptance steps under #90. No candidate send follows from reading or importing.
