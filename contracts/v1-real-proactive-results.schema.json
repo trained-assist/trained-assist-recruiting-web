@@ -2,12 +2,15 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/trained-assist/trained-assist-recruiting-web/contracts/v1-real-proactive-results.schema.json",
   "type": "object",
-  "required": ["ok", "vacancyId", "status", "freshness", "total", "candidates", "resultRevision"],
+  "required": ["ok", "vacancyId", "status", "freshness", "assessmentStatus", "assessmentPendingCount", "assessmentBlockedCount", "total", "candidates", "resultRevision"],
   "properties": {
     "ok": { "const": true },
     "vacancyId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
     "status": { "enum": ["completed", "never_run"] },
     "freshness": { "enum": ["latest_completed", "latest_run_incomplete", "never_run"] },
+    "assessmentStatus": { "enum": ["not_applicable", "assessment_pending", "assessment_attention", "assessed"] },
+    "assessmentPendingCount": { "type": "integer", "minimum": 0 },
+    "assessmentBlockedCount": { "type": "integer", "minimum": 0 },
     "total": { "type": "integer", "minimum": 0 },
     "resultRevision": { "type": "string", "pattern": "^[a-f0-9]{24}$" },
     "candidates": { "type": "array", "maxItems": 50000, "items": { "$ref": "#/$defs/candidate" } }
