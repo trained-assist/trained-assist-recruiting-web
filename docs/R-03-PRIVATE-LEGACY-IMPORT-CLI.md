@@ -28,13 +28,13 @@ The inventory entrypoint uses only Node built-ins and can run from an
 owner-only staged source release without installing npm dependencies. The
 SQLite import entrypoint still requires `better-sqlite3` to load successfully.
 
-The candidate RU host has Node 20.20.2, Python 3.10.12 and Node headers, but
-the 2026-10-06 `npm ci --omit=dev` attempt could not build `better-sqlite3`:
-`node-gyp` reported `not found: make`; `gcc` and `g++` were also absent.
-Provision the native build toolchain or a verified compatible native binary,
-then run a host-side `import('better-sqlite3')` smoke check before any SQLite
-preflight, import, web release or worker activation. Until that passes, the
-host is only suitable for the dependency-free archive inventory.
+The candidate RU host has Node 20.20.2, Python 3.10.12 and Node headers. The
+first 2026-10-06 `npm ci --omit=dev` attempt failed because `make`, `gcc` and
+`g++` were absent. After an `apt-get -s` plan showed 31 additions and no
+removals or upgrades, those build tools were installed. `npm ci --omit=dev` in
+private staging and a host-side `require('better-sqlite3')` smoke check passed.
+This proves only that the native addon loads in staging; it does not establish
+that the web release, workers, mapping or live migration are ready.
 
 ```sh
 node src/r03-private-legacy-inventory.js \
@@ -70,3 +70,11 @@ and target receipt. This importer stages candidate content only; ATS context,
 query caches and credentials need their own verified target binding before a
 live search. Historical snapshots remain quarantined; seen ledger promotion
 and historical feed reconciliation are separate explicit steps.
+
+For the 2026-10-06 migration, the initial archive was copied at about
+05:29 UTC and the old VM stopped at 05:46:27 UTC. Those times leave an
+unverified write window. The stopped disk is the frozen source: obtain a
+verified final export from that disk or a ready snapshot before any final
+import. Neither the initial inventory nor an initial-archive rehearsal can
+prove that the final disk has no delta. Do not call the initial migration ID
+final or promote its staged seen rows as final evidence.
