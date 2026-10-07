@@ -8,6 +8,7 @@ import { SqliteColdSearchScheduleRepository } from '../src/sqlite-cold-search-sc
 import { SqliteRealHhCandidateState } from '../src/sqlite-real-hh-candidate-state.js';
 import { createOfflineHhColdSearch } from '../src/hh-cold-search-offline.js';
 import { createDurableHhOccurrenceWorker } from '../src/r03-durable-hh-worker.js';
+import { runAcceptedMorningScoringTick } from '../src/r03-morning-scoring.js';
 
 const profileId = 'profile_synthetic_001';
 const vacancyId = 'vacancy_synthetic_001';
@@ -110,6 +111,39 @@ test('a newer unknown run marks the previous morning result as stale', async t =
   assert.equal(morning.items.length, 1);
 });
 
+test('scheduled result is scored after five minutes and read in the morning after restart; newer unknown stays stale', async t => {
+  const f = fixture(t);
+  f.setNow(f.firstDue);
+  assert.equal((await f.worker.tick('worker_a')).completed, 1);
+  const initial = f.worker.morningResults(context, vacancyId);
+  assert.equal(initial.items[0].atsScore, null);
+  let evaluations = 0;
+  const scored = await runAcceptedMorningScoringTick({ worker: f.worker, state: f.candidateState,
+    trustedContext: context, vacancyId, currentCriteriaRevision: async () => plan.criteriaRevision,
+    evaluate: async () => { evaluations++; return { atsScore: 8, atsTag: 'PASS', knockout: { status: 'passed', criteria: [] } }; },
+    now: () => new Date(Date.parse(f.firstDue) + 5 * 60_000) });
+  assert.equal(scored.status, 'processed');
+  assert.equal(scored.written, 1);
+  assert.equal(evaluations, 1);
+  const reopened = f.openRepository();
+  const reopenedState = f.openState();
+  const afterRestart = createDurableHhOccurrenceWorker({ scheduleRepository: reopened,
+    loadSearchPlan: async () => plan, search: f.search, candidateState: reopenedState,
+    clock: () => new Date(f.firstDue) });
+  assert.equal(afterRestart.morningResults(context, vacancyId).items[0].atsScore, 8);
+  assert.equal(afterRestart.morningResults(context, vacancyId).freshness, 'latest_completed');
+  const nextDue = reopened.getSchedule('schedule_synthetic_001').nextRunAt;
+  const failed = createDurableHhOccurrenceWorker({ scheduleRepository: reopened, loadSearchPlan: async () => plan,
+    search: { run: async () => { throw new Error('invented failure'); } }, candidateState: reopenedState,
+    clock: () => new Date(nextDue) });
+  assert.equal((await failed.tick('worker_b')).unknown, 1);
+  const stale = failed.morningResults(context, vacancyId);
+  assert.equal(stale.freshness, 'latest_run_incomplete');
+  assert.equal(stale.items[0].atsScore, 8);
+  assert.equal(stale.snapshot.jobId, initial.snapshot.jobId);
+  assert.throws(() => failed.morningResults({ profileId: 'profile_other', scopes: [] }, vacancyId), /candidate_scope_denied/);
+});
+
 test('snapshot committed after expired lease is held for reconciliation, not called success or replayed', async t => {
   const f = fixture(t);
   let now = f.firstDue;
@@ -123,6 +157,10 @@ test('snapshot committed after expired lease is held for reconciliation, not cal
   assert.deepEqual(await worker.tick('worker_a'), { claimed: 1, completed: 0, rejected: 0, unknown: 1 });
   assert.equal(f.candidateState.latestSnapshot(profileId, vacancyId).candidateCount, 1);
   assert.equal(worker.morningResults(context, vacancyId).status, 'never_run', 'a committed snapshot is not enough to certify the occurrence');
+  const held = await runAcceptedMorningScoringTick({ worker, state: f.candidateState, trustedContext: context,
+    vacancyId, currentCriteriaRevision: async () => plan.criteriaRevision,
+    evaluate: async () => { throw new Error('must not evaluate unknown result'); } });
+  assert.equal(held.status, 'held');
   assert.deepEqual(await worker.tick('worker_b'), { claimed: 0, completed: 0, rejected: 0, unknown: 0 });
   assert.equal(f.repository.listOccurrences(profileId)[0].status, 'outcome_unknown');
   assert.equal(f.calls, 1);
