@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-cold-search-schedule-result.schema.json",
+  "title": "Synthetic cold-search schedule command result",
+  "oneOf": [
+    { "type": "object", "required": ["kind", "schedules"], "properties": { "kind": { "const": "status" }, "schedules": { "type": "array", "items": { "$ref": "v1-cold-search-schedule.schema.json" } } }, "additionalProperties": false },
+    { "type": "object", "required": ["kind", "schedule"], "properties": { "kind": { "const": "updated" }, "schedule": { "$ref": "v1-cold-search-schedule.schema.json" } }, "additionalProperties": false },
+    { "type": "object", "required": ["kind", "schedule", "occurrenceId"], "properties": { "kind": { "const": "outcome_unknown" }, "schedule": { "$ref": "v1-cold-search-schedule.schema.json" }, "occurrenceId": { "type": "string" } }, "additionalProperties": false },
+    { "type": "object", "required": ["kind"], "properties": { "kind": { "enum": ["denied", "invalid_command", "invalid_vacancy", "vacancy_required", "not_found", "search_context_unavailable"] } }, "additionalProperties": false }
+  ]
+}

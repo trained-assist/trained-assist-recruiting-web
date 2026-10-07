@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-vacancies-query.schema.json",
+  "title": "Recruiting API v1 vacancies query",
+  "type": "object",
+  "properties": {},
+  "additionalProperties": false
+}

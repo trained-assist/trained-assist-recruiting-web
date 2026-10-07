@@ -1,0 +1,44 @@
+{
+  "synthetic": true,
+  "profileId": "profile_demo_001",
+  "allCandidates": {
+    "candidate_demo_001": {
+      "title": "Synthetic backend engineer",
+      "region": "Synthetic region alpha",
+      "evidence_summary": "Synthetic API evidence",
+      "source": "search",
+      "found_at": "2026-10-01T06:00:00.000Z",
+      "vacancy_ids": ["vac_demo_001", "vac_demo_002"],
+      "vacancy_data": {
+        "vac_demo_001": { "status": "starred", "score": 8 },
+        "vac_demo_002": { "status": "archived", "score": 3 }
+      }
+    },
+    "candidate_demo_002": {
+      "title": "Synthetic manually added specialist",
+      "region": "Synthetic region beta",
+      "evidence_summary": "Synthetic manual source evidence",
+      "source": "manual",
+      "found_at": "2026-10-02T07:00:00.000Z",
+      "vacancy_ids": [],
+      "vacancy_data": {}
+    }
+  },
+  "seenIds": {
+    "vac_demo_001": { "candidate_demo_001": "2026-10-01", "candidate_demo_002": "2026-10-02" },
+    "vac_demo_002": { "candidate_demo_001": "2026-10-02" }
+  },
+  "snapshots": [
+    { "vacancy_id": "vac_demo_001", "searched_at": "2026-10-02T08:00:00.000Z", "candidate_ids": ["candidate_demo_001", "candidate_demo_002"], "job_id": "job_demo_001", "total_collected": 3, "total_after_knockout": 2 },
+    { "vacancy_id": "vac_demo_002", "searched_at": "2026-10-02T09:00:00.000Z", "candidate_ids": ["candidate_demo_001"], "job_id": "job_demo_002", "total_collected": 1, "total_after_knockout": 1 }
+  ],
+  "comments": {
+    "vac_demo_001": {
+      "candidate_demo_001": { "text": "Synthetic exclude location alpha", "excludeFromSearch": true, "updatedAt": "2026-10-02T10:00:00.000Z" }
+    }
+  },
+  "queries": {
+    "vac_demo_001": { "queries": ["Synthetic backend specialist"], "manual": true, "generated_at": "2026-10-02T10:30:00.000Z" },
+    "vac_demo_002": { "queries": ["Synthetic engineer search"], "manual": false, "generated_at": "2026-10-02T10:30:00.000Z" }
+  }
+}

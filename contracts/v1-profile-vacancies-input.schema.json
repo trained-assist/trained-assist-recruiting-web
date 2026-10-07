@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-profile-vacancies-input.schema.json",
+  "title": "Local UI fixture-only profile vacancies path input",
+  "type": "object",
+  "required": ["profileId"],
+  "properties": {
+    "profileId": { "type": "string", "pattern": "^profile_demo_[0-9]{3}$" }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-report-client-edit.schema.json",
+  "title": "Client-safe report draft edit",
+  "type": "object",
+  "required": ["expectedReportRevision", "clientFields"],
+  "properties": {
+    "expectedReportRevision": { "type": "string", "pattern": "^report-demo-r[0-9]+$" },
+    "clientFields": {
+      "type": "object",
+      "minProperties": 1,
+      "properties": {
+        "summary": { "type": "string", "maxLength": 3000 },
+        "experience": { "type": "array", "maxItems": 10, "items": { "type": "object", "required": ["company", "role", "period", "details"], "properties": { "company": { "type": "string", "maxLength": 200 }, "role": { "type": "string", "maxLength": 200 }, "period": { "type": "string", "maxLength": 100 }, "details": { "type": "array", "maxItems": 10, "items": { "type": "string", "maxLength": 500 } } }, "additionalProperties": false } },
+        "fit": { "type": "array", "maxItems": 20, "items": { "type": "object", "required": ["requirement", "status", "comment"], "properties": { "requirement": { "type": "string", "maxLength": 300 }, "status": { "type": "string", "enum": ["yes", "partial", "no"] }, "comment": { "type": "string", "maxLength": 1000 } }, "additionalProperties": false } },
+        "conclusion": { "type": "string", "maxLength": 1500 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

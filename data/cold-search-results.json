@@ -1,0 +1,22 @@
+{
+  "providerRevision": "cold-search-provider-demo-r1",
+  "pages": [
+    {
+      "cursor": null,
+      "items": [
+        { "candidateRef": "candidate_search_demo_001", "vacancyId": "vac_demo_001", "title": "Synthetic Node.js engineer", "region": "Synthetic region 1", "evidenceSummary": "Synthetic fixture: HTTP API experience" },
+        { "candidateRef": "candidate_search_demo_002", "vacancyId": "vac_demo_001", "title": "Synthetic backend engineer", "region": "Synthetic region 1", "evidenceSummary": "Synthetic fixture: automated testing experience" }
+      ],
+      "nextCursor": "fixture-page-2",
+      "complete": false
+    },
+    {
+      "cursor": "fixture-page-2",
+      "items": [
+        { "candidateRef": "candidate_search_demo_003", "vacancyId": "vac_demo_001", "title": "Synthetic service engineer", "region": "Synthetic region 2", "evidenceSummary": "Synthetic fixture: service diagnostics experience" }
+      ],
+      "nextCursor": null,
+      "complete": true
+    }
+  ]
+}

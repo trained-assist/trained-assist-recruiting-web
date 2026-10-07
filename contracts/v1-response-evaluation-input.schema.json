@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-response-evaluation-input.schema.json",
+  "title": "Local synthetic response evaluation request",
+  "type": "object",
+  "required": ["responseId", "vacancyId", "expectedResponseRevision", "expectedResumeRevision", "expectedCriteriaRevision"],
+  "properties": {
+    "responseId": { "type": "string", "pattern": "^response_demo_[0-9]{3}$" },
+    "vacancyId": { "type": "string", "pattern": "^vac_demo_[0-9]{3}$" },
+    "expectedResponseRevision": { "type": "string", "pattern": "^response-demo-[0-9]{3}-r[0-9]+$" },
+    "expectedResumeRevision": { "type": "string", "pattern": "^resume-demo-[0-9]{3}-r[0-9]+$" },
+    "expectedCriteriaRevision": { "type": "string", "pattern": "^criteria-vac-demo-[0-9]{3}-r[0-9]+$" }
+  },
+  "additionalProperties": false
+}
