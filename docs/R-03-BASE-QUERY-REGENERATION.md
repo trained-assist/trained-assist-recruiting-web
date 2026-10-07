@@ -1,0 +1,7 @@
+# R-03 missing or stale base query cache
+
+The morning search must not stop merely because a restored profile has no `queries-<vacancy>.json` or its generated-cache hash no longer matches the ATS criteria and legacy recruiter comments. `createPrivateBaseSearchPlan` now optionally accepts an injected query generator and a target-side cache. It still accepts a valid source cache unchanged and keeps manually pinned queries. Malformed source files, wrong profile/vacancy, unsafe paths and invalid query output fail closed.
+
+When a generated source cache is missing or stale, the plan reads the current private ATS config and legacy comments, computes the old configuration hash, then loads or generates queries for that exact profile, vacancy and hash. `SqlitePrivateBaseQueryCache` stores the first validated set in the target candidate-state SQLite database. Repeated loads and restarts reuse it; a changed ATS config or comments produce a new revision. The frozen source directory is never rewritten.
+
+The offline composition test now starts without a legacy query file and uses the [service-ladder HTTP adapter](R-03-SERVICE-LADDER-CHAT.md) with an invented response to reach the scheduled 100-candidate morning feed. This is not a live LLM call. Production still needs a real ladder credential, private source restore, host timer and HH canary. Query generation failures reject the occurrence before HH dispatch; they do not silently reuse a stale query.

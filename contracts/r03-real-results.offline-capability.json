@@ -1,0 +1,12 @@
+{
+  "toolId": "recruiting.candidateSearch.getResults",
+  "name": "candidateSearch.getResults",
+  "description": "Read accepted HH candidates for the caller's trusted profile and an owned vacancy.",
+  "mutates": false,
+  "operationRef": "createRealProactiveRead",
+  "inputSchemaRef": "v1-real-proactive-results-query.schema.json",
+  "outputSchemaRef": "v1-real-proactive-results.schema.json",
+  "effect": "read",
+  "requiredScopes": ["recruiting.candidateSearch"],
+  "testOnly": true
+}

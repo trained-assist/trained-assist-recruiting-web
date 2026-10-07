@@ -7,11 +7,14 @@ export const hhJobIdForOccurrence = occurrenceId => `hh_occurrence_${createHash(
 // search runner owns the candidate/seen/snapshot transaction. There is no
 // distributed transaction across those effects, so an uncertain finish stays
 // quarantined for explicit reconciliation.
-export function createDurableHhOccurrenceWorker({ scheduleRepository, loadSearchPlan, search, candidateState, clock = () => new Date(), leaseMs = 5 * 60_000 } = {}) {
+export function createDurableHhOccurrenceWorker({ scheduleRepository, loadSearchPlan, search, candidateState,
+  clock = () => new Date(), leaseMs = 5 * 60_000, heartbeatMs = Math.min(60_000, Math.floor(leaseMs / 3)) } = {}) {
   if (typeof scheduleRepository?.claimDueOccurrences !== 'function' || typeof scheduleRepository?.finishOccurrence !== 'function' ||
+      typeof scheduleRepository?.renewOccurrenceLease !== 'function' ||
       typeof loadSearchPlan !== 'function' || typeof search?.run !== 'function' ||
-      typeof candidateState?.resultPage !== 'function' || typeof clock !== 'function' ||
-      !Number.isSafeInteger(leaseMs) || leaseMs < 1) throw new TypeError('durable HH worker ports required');
+      typeof candidateState?.assessedResultPage !== 'function' || typeof clock !== 'function' ||
+      !Number.isSafeInteger(leaseMs) || leaseMs < 3 || !Number.isSafeInteger(heartbeatMs) ||
+      heartbeatMs < 1 || heartbeatMs >= leaseMs) throw new TypeError('durable HH worker ports required');
 
   async function tick(workerId) {
     if (!safeId(workerId)) throw new TypeError('valid worker ID required');
@@ -33,9 +36,19 @@ export function createDurableHhOccurrenceWorker({ scheduleRepository, loadSearch
         else totals.unknown++;
         continue;
       }
+      let heartbeatLost = false;
+      const heartbeat = setInterval(() => {
+        try {
+          const at = clock().toISOString();
+          if (!scheduleRepository.renewOccurrenceLease(occurrence.occurrenceId, workerId, at,
+              new Date(Date.parse(at) + leaseMs).toISOString())) heartbeatLost = true;
+        } catch { heartbeatLost = true; }
+      }, heartbeatMs);
+      heartbeat.unref?.();
       try {
         const result = await search.run({ trustedContext: context, vacancyId: schedule.vacancyId, jobId, source: 'scheduled',
           expectedCriteriaRevision: plan.criteriaRevision, expectedQueryRevision: plan.queryCache.revision });
+        if (heartbeatLost) throw new Error('occurrence_lease_lost');
         const snapshot = result?.snapshot;
         if (result?.status !== 'completed' || snapshot?.profileId !== schedule.profileId ||
             snapshot?.vacancyId !== schedule.vacancyId || snapshot?.jobId !== jobId ||
@@ -48,12 +61,12 @@ export function createDurableHhOccurrenceWorker({ scheduleRepository, loadSearch
         // A plan can change between preflight and the runner's first read. That
         // specific failure precedes provider dispatch; all other errors may
         // have followed a provider call or committed snapshot.
-        const preDispatch = error?.code === 'search_plan_unavailable' || error?.code === 'search_scope_denied';
+        const preDispatch = !heartbeatLost && (error?.code === 'search_plan_unavailable' || error?.code === 'search_scope_denied');
         const status = preDispatch ? 'rejected' : 'outcome_unknown';
         if (finish({ status, criteriaRevision: plan.criteriaRevision, errorCode: preDispatch ? 'search_plan_unavailable' : 'search_outcome_unknown', jobId })) {
           totals[preDispatch ? 'rejected' : 'unknown']++;
         } else totals.unknown++;
-      }
+      } finally { clearInterval(heartbeat); }
     }
     return totals;
   }
@@ -66,7 +79,7 @@ export function createDurableHhOccurrenceWorker({ scheduleRepository, loadSearch
     const rows = ownedRows.filter(row => row.status === 'succeeded' && safeId(row.jobId))
       .sort((a, b) => b.scheduledAt.localeCompare(a.scheduledAt));
     for (const row of rows) {
-      const page = candidateState.resultPage({ profileId: trustedContext.profileId, vacancyId, jobId: row.jobId, cursor, limit });
+      const page = candidateState.assessedResultPage({ profileId: trustedContext.profileId, vacancyId, jobId: row.jobId, cursor, limit });
       if (page?.snapshot?.source === 'scheduled' && page.snapshot.jobId === row.jobId)
         return { status: 'completed', freshness: latestRunAt > row.scheduledAt ? 'latest_run_incomplete' : 'latest_completed',
           occurrenceId: row.occurrenceId, scheduledAt: row.scheduledAt, ...page };
