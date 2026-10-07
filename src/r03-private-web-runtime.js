@@ -57,6 +57,7 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
       realProactiveActions: actions, realProactivePrompt: prompt,
       realProactiveSeenImport: seenImport,
       resolveTrustedProfileContext: auth,
+      resolveLegacyOpenTab: auth.resolveLegacyOpenTab,
       resolveRealVacancyOwnership: (context, vacancyId) => config.isVacancyOwned(context.profileId, vacancyId),
       resolveRealDefaultVacancy: context => {
         const ids = config.vacancyIdsForProfile(context.profileId);

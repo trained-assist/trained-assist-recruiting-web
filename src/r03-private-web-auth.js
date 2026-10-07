@@ -26,7 +26,7 @@ export function createPrivateWebAuth({ legacySecret, resolveLegacyProfile, isWeb
     const payload = `${profileId}.${expiry}`;
     return `${payload}.${hmac(`r03-web-session:${payload}`)}`;
   };
-  return async (req, url, res) => {
+  const auth = async (req, url, res) => {
     if (req.method === 'POST' && req.headers.origin !== publicOrigin) return null;
     const signedPage = req.method === 'GET' && url.pathname === '/hh/proactive';
     if (signedPage && (url.searchParams.has('username') || url.searchParams.has('token'))) {
@@ -51,4 +51,16 @@ export function createPrivateWebAuth({ legacySecret, resolveLegacyProfile, isWeb
         !equal(match[3], hmac(`r03-web-session:${match[1]}.${match[2]}`))) return null;
     return context(match[1]);
   };
+  // Old already-open pages send the page HMAC in JSON and have no session
+  // cookie. Recognize them solely to ask for a reload; never authorize their
+  // stale commands or infer a vacancy from legacy mutable context.
+  auth.resolveLegacyOpenTab = (req, body) => {
+    if (req.method !== 'POST' || req.headers.origin !== publicOrigin ||
+        !body || typeof body !== 'object' || Array.isArray(body) ||
+        !safeId(body.username) || !/^[a-f0-9]{16}$/.test(body.token) ||
+        !equal(body.token, hmac(body.username).slice(0, 16))) return null;
+    const profileId = resolveLegacyProfile(body.username);
+    return safeId(profileId) && isWebProfileMapped(profileId) ? context(profileId) : null;
+  };
+  return auth;
 }
