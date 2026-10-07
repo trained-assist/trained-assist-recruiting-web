@@ -12,7 +12,7 @@ const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
 })[char]);
 
-function projectClientView(source, vacancy) {
+export function projectClientView(source, vacancy) {
   // Allowlist projection: internal source fields are never copied to the client DTO.
   return {
     candidateName: source.candidate.name,
@@ -34,7 +34,7 @@ function projectClientView(source, vacancy) {
   };
 }
 
-function renderClientReport(view, sourceRevision) {
+export function renderClientReport(view, sourceRevision, watermark = 'СИНТЕТИЧЕСКИЙ ЧЕРНОВИК · НЕ ДЛЯ ОТПРАВКИ') {
   const candidateName = escapeHtml(view.candidateName);
   const position = escapeHtml(view.position);
   const vacancyTitle = escapeHtml(view.vacancyTitle);
@@ -54,7 +54,7 @@ function renderClientReport(view, sourceRevision) {
 <meta name="report-source-revision" content="${escapeHtml(sourceRevision)}">
 <title>${candidateName} — ${vacancyTitle}</title>
 <style>body{font:16px/1.5 system-ui,sans-serif;color:#17212b;max-width:48rem;margin:2rem auto;padding:0 1rem}h1,h2{color:#174b64}table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid #ccd5db;padding:.5rem;text-align:left;vertical-align:top}</style></head>
-<body><main><aside><strong>СИНТЕТИЧЕСКИЙ ЧЕРНОВИК · НЕ ДЛЯ ОТПРАВКИ</strong></aside><h1>${candidateName}</h1><p>${position} · ${vacancyTitle}</p>
+<body><main><aside><strong>${escapeHtml(watermark)}</strong></aside><h1>${candidateName}</h1><p>${position} · ${vacancyTitle}</p>
 <section><h2>О кандидате</h2><p>${escapeHtml(view.summary)}</p></section>
 <section><h2>Опыт</h2>${experience}</section>
 <section><h2>Соответствие вакансии</h2><table><thead><tr><th>Оценка</th><th>Требование</th><th>Комментарий</th></tr></thead><tbody>${fit}</tbody></table></section>
@@ -86,3 +86,7 @@ export function createClientReportPreview(candidateId, vacancyId) {
     }
   };
 }
+
+export function findReportSource(candidateId) { return reportByCandidateId.get(candidateId) ?? null; }
+export function findReportVacancy(vacancyId) { return vacancyById.get(vacancyId) ?? null; }
+export function renderClientReportHtml(clientView, sourceRevision, watermark) { return renderClientReport(clientView, sourceRevision, watermark); }

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-cold-search-occurrences.schema.json",
+  "title": "Synthetic cold-search occurrences response",
+  "type": "object",
+  "required": ["kind", "occurrences"],
+  "properties": {
+    "kind": { "const": "occurrences" },
+    "occurrences": { "type": "array", "items": { "$ref": "v1-cold-search-occurrence.schema.json" } }
+  },
+  "additionalProperties": false
+}

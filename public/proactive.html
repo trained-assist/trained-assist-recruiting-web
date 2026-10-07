@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fresh candidates</title>
+</head>
+<body>
+  <main>
+    <h1>Fresh candidates</h1>
+    <p>Local synthetic recruiting preview</p>
+    <p id="status" role="status">Loading search results</p>
+    <section aria-labelledby="schedule-heading">
+      <h2 id="schedule-heading">Search schedule</h2>
+      <p id="schedule-status">Loading schedule</p>
+      <label for="interval-hours">Every hours</label>
+      <input id="interval-hours" type="number" min="0.5" max="8760" value="24">
+      <button id="enable-schedule" type="button">Enable</button>
+      <button id="disable-schedule" type="button">Disable</button>
+      <button id="run-search" type="button">Search now</button>
+    </section>
+    <section aria-labelledby="candidates-heading">
+      <h2 id="candidates-heading">Candidates</h2>
+      <ul id="candidates"></ul>
+    </section>
+  </main>
+  <script src="/hh/proactive/app.js" defer></script>
+</body>
+</html>

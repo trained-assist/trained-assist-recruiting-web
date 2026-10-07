@@ -1,0 +1,21 @@
+[
+  {
+    "responseId": "response_demo_001",
+    "profileId": "profile_demo_001",
+    "vacancyId": "vac_demo_001",
+    "responseRevision": "response-demo-001-r1",
+    "resumeRevision": "resume-demo-001-r1",
+    "criteriaRevision": "criteria-vac-demo-001-r1",
+    "resume": {
+      "facts": [
+        { "criterionId": "node-api", "excerpt": "Synthetic sample: built a Node.js HTTP API." },
+        { "criterionId": "automated-tests", "excerpt": "Synthetic sample: added a deterministic unit test suite." }
+      ]
+    },
+    "criteria": [
+      { "id": "node-api", "label": "Node.js API experience", "required": true },
+      { "id": "automated-tests", "label": "Automated test experience", "required": true },
+      { "id": "database-operations", "label": "Database operations", "required": false }
+    ]
+  }
+]
