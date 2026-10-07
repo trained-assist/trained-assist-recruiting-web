@@ -169,8 +169,21 @@ try {
     }
   }
   }
-} catch {
-  process.stdout.write(JSON.stringify({ event: 'r03.natural_cycle_' + mode, status: 'failed' }) + '\n');
+} catch (error) {
+  const candidate = error?.safeDiagnostic;
+  const diagnostic = candidate && typeof candidate === 'object'
+    ? { phase: typeof candidate.phase === 'string' && /^[a-z_]{1,40}$/.test(candidate.phase)
+        ? candidate.phase : 'unknown',
+      reason: typeof candidate.reason === 'string' && /^[a-z_]{1,60}$/.test(candidate.reason)
+        ? candidate.reason : 'operation_failed',
+      httpStatus: Number.isInteger(candidate.httpStatus) && candidate.httpStatus >= 400 &&
+        candidate.httpStatus <= 599 ? candidate.httpStatus : null,
+      providerRequestCount: Number.isSafeInteger(candidate.providerRequestCount) &&
+        candidate.providerRequestCount >= 0 && candidate.providerRequestCount <= 7
+        ? candidate.providerRequestCount : 0 }
+    : { phase: 'unknown', reason: 'operation_failed', httpStatus: null, providerRequestCount: 0 };
+  process.stdout.write(JSON.stringify({ event: 'r03.natural_cycle_' + mode, status: 'failed',
+    diagnostic }) + '\n');
   exitCode = 78;
 }
 process.exitCode = exitCode;
