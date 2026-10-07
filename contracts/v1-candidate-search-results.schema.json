@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-candidate-search-results.schema.json",
+  "title": "Synthetic local candidate search result page",
+  "type": "object",
+  "required": ["domainApiVersion", "jobId", "sourceRevision", "resultRevision", "freshness", "items", "nextCursor"],
+  "properties": {
+    "domainApiVersion": { "const": "v1" },
+    "jobId": { "type": "string", "pattern": "^search_demo_[a-f0-9]{12}$" },
+    "sourceRevision": { "type": "string", "pattern": "^(cold-search-provider-demo-r[0-9]+|pending)$" },
+    "resultRevision": { "type": "string", "pattern": "^[a-f0-9]{16}$" },
+    "freshness": { "const": "current" },
+    "items": { "type": "array", "maxItems": 50, "items": { "type": "object", "required": ["candidateRef", "vacancyId", "title", "region", "evidenceSummary"], "properties": { "candidateRef": { "type": "string", "pattern": "^candidate_search_demo_[0-9]{3}$" }, "vacancyId": { "type": "string", "pattern": "^vac_demo_[0-9]{3}$" }, "title": { "type": "string", "minLength": 1, "maxLength": 100 }, "region": { "type": "string", "minLength": 1, "maxLength": 100 }, "evidenceSummary": { "type": "string", "minLength": 1, "maxLength": 500 } }, "additionalProperties": false } },
+    "nextCursor": { "type": ["string", "null"] }
+  },
+  "additionalProperties": false
+}

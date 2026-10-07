@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-cold-search-schedule.schema.json",
+  "title": "Synthetic profile-owned cold-search schedule",
+  "type": "object",
+  "required": ["scheduleId", "legacyJobId", "profileId", "vacancyId", "enabled", "jobArguments", "timezone", "interval_hours", "requested_interval_hours", "plan", "criteriaRevision", "criteria", "nextRunAt", "leaseOwner", "leaseUntil", "blockedByUnknownOccurrenceId", "createdAt", "updatedAt"],
+  "properties": {
+    "scheduleId": { "type": "string", "pattern": "^schedule_demo_[a-f0-9]{12}$" },
+    "legacyJobId": { "type": "string", "pattern": "^cold-search:[a-f0-9]{10}:vac_demo_[0-9]{3}$" },
+    "profileId": { "type": "string", "pattern": "^profile_demo_[0-9]{3}$" },
+    "vacancyId": { "type": "string", "pattern": "^vac_demo_[0-9]{3}$" },
+    "enabled": { "type": "boolean" },
+    "jobArguments": { "type": "object", "required": ["vacancyId"], "properties": { "vacancyId": { "type": "string", "pattern": "^vac_demo_[0-9]{3}$" } }, "additionalProperties": false },
+    "timezone": { "const": "Europe/Moscow" },
+    "interval_hours": { "type": "number", "exclusiveMinimum": 0 },
+    "requested_interval_hours": { "type": "number", "exclusiveMinimum": 0, "maximum": 8760 },
+    "plan": {
+      "oneOf": [
+        { "type": "object", "required": ["mode", "requestedIntervalHours", "intervalHours", "minute"], "properties": { "mode": { "const": "half_hour" }, "requestedIntervalHours": { "type": "number", "exclusiveMinimum": 0 }, "intervalHours": { "const": 0.5 }, "minute": { "type": "integer", "minimum": 0, "maximum": 29 } }, "additionalProperties": false },
+        { "type": "object", "required": ["mode", "requestedIntervalHours", "intervalHours", "minute", "hourPhase"], "properties": { "mode": { "const": "hour_step" }, "requestedIntervalHours": { "type": "number", "exclusiveMinimum": 0 }, "intervalHours": { "enum": [1, 2, 3, 4, 6, 8, 12] }, "minute": { "type": "integer", "minimum": 0, "maximum": 59 }, "hourPhase": { "type": "integer", "minimum": 0, "maximum": 11 } }, "additionalProperties": false },
+        { "type": "object", "required": ["mode", "requestedIntervalHours", "intervalHours", "days", "minute", "hour"], "properties": { "mode": { "const": "day_step" }, "requestedIntervalHours": { "type": "number", "minimum": 24 }, "intervalHours": { "type": "integer", "minimum": 24, "multipleOf": 24 }, "days": { "type": "integer", "minimum": 1 }, "minute": { "type": "integer", "minimum": 0, "maximum": 59 }, "hour": { "type": "integer", "minimum": 7, "maximum": 18 } }, "additionalProperties": false }
+      ]
+    },
+    "criteriaRevision": { "type": "string", "pattern": "^criteria-search-demo-r[0-9]+$" },
+    "criteria": { "type": "object", "required": ["keywords", "regions"], "properties": { "keywords": { "type": "array", "items": { "type": "string" } }, "regions": { "type": "array", "items": { "type": "string", "pattern": "^region_demo_[0-9]{3}$" } } }, "additionalProperties": false },
+    "nextRunAt": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$" },
+    "leaseOwner": { "type": ["string", "null"] },
+    "leaseUntil": { "type": ["string", "null"] },
+    "blockedByUnknownOccurrenceId": { "type": ["string", "null"] },
+    "createdAt": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$" },
+    "updatedAt": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$" }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-cold-search-schedule-command.schema.json",
+  "title": "Synthetic profile-scoped cold-search schedule command",
+  "type": "object",
+  "required": ["action"],
+  "properties": {
+    "action": { "type": "string", "enum": ["enable", "disable", "status"] },
+    "vacancyId": { "type": "string", "pattern": "^vac_demo_[0-9]{3}$" },
+    "interval_hours": { "type": "number", "exclusiveMinimum": 0, "maximum": 8760 }
+  },
+  "additionalProperties": false
+}
