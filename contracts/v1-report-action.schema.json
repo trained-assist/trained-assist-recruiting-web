@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-report-action.schema.json",
+  "title": "Revision-bound report lifecycle action",
+  "type": "object",
+  "required": ["expectedReportRevision"],
+  "properties": { "expectedReportRevision": { "type": "string", "pattern": "^report-demo-r[0-9]+$" } },
+  "additionalProperties": false
+}

@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-cold-search-occurrences-query.schema.json",
+  "title": "Synthetic cold-search occurrence query",
+  "type": "object",
+  "properties": { "vacancyId": { "type": "string", "pattern": "^vac_demo_[0-9]{3}$" } },
+  "additionalProperties": false
+}
