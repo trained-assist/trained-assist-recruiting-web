@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createCipheriv } from 'node:crypto';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { chmodSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
@@ -12,6 +13,12 @@ const origin = 'https://recruiter-assistant.ru';
 const now = new Date('2026-10-06T08:00:00.000Z');
 const actors = [{ profileId: 'profile_A', vacancyId: 'vacancy_A', token: 'hh_token_A' },
   { profileId: 'profile_B', vacancyId: 'vacancy_B', token: 'hh_token_B' }];
+const encryptionKey = 'a'.repeat(64);
+const sealed = value => {
+  const iv = Buffer.alloc(16, 3); const cipher = createCipheriv('aes-256-gcm', Buffer.from(encryptionKey, 'hex'), iv);
+  const ciphertext = Buffer.concat([cipher.update(JSON.stringify(value), 'utf8'), cipher.final()]);
+  return Buffer.concat([Buffer.from([2]), iv, cipher.getAuthTag(), ciphertext]).toString('base64');
+};
 const cookie = (response, name) => response.headers.getSetCookie().find(value => value.startsWith(`${name}=`))?.split(';')[0];
 const hhPage = (vacancyId, page = 0) => ({ items: [{ id: `n_${vacancyId}_${page}`, state: { id: 'response' },
   vacancy: { id: vacancyId }, resume: { id: `r_${vacancyId}_${page}`, first_name: '<Recruiter>',
@@ -35,12 +42,12 @@ function fixture(t) {
       JSON.stringify({ value: assignment }), { mode: 0o600 });
     const proactiveDirectory = privateDir(`${actor.profileId}-proactive`);
     const tokenDirectory = privateDir(`${actor.profileId}-tokens`);
-    writeFileSync(join(tokenDirectory, 'hh'), JSON.stringify({ access_token: actor.token,
+    writeFileSync(join(tokenDirectory, 'hh'), sealed({ access_token: actor.token,
       refresh_token: `refresh_${actor.profileId}` }), { mode: 0o600 });
     return { profileId: actor.profileId, legacyUsername: `legacy_${actor.profileId}`,
       vacancyIds: [actor.vacancyId], contextDirectory, proactiveDirectory, tokenDirectory };
   });
-  for (const [name, value] of Object.entries({ hh_encryption_key: 'a'.repeat(64), hh_client_id: 'test-client',
+  for (const [name, value] of Object.entries({ hh_encryption_key: encryptionKey, hh_client_id: 'test-client',
     hh_client_secret: 'test-client-secret', hh_user_agent: 'Test Recruiting (contact@example.invalid)',
     ladder_token: 'test-ladder', cp_service_key: 'test-cp-service-key-32-characters-minimum',
     bff_encryption_key: 'b'.repeat(64) })) writeFileSync(join(secrets, name), value, { mode: 0o600 });
