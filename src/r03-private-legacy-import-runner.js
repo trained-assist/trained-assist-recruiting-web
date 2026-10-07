@@ -34,21 +34,27 @@ function loadConfig(path) {
     const info = lstatSync(record.targetDbPath);
     if (!info.isFile() || info.uid !== process.getuid() || info.mode & 0o077) fail();
   } catch (error) { if (error?.code !== 'ENOENT') fail(); }
-  const bySource = new Map(), byTarget = new Map();
+  const bySource = new Map(), byTarget = new Map(), byQuarantine = new Map();
   for (const row of record.profiles) {
     if (!object(row) || Object.keys(row).sort().join(',') !==
-        'expectedCounts,profileId,sourceProfileRef,vacancyIds' ||
+        'expectedCounts,profileId,quarantinedSourceVacancyIds,sourceProfileRef,vacancyIds' ||
         !sourceRef(row.sourceProfileRef) || !safeId(row.profileId) ||
         bySource.has(row.sourceProfileRef) || byTarget.has(row.profileId) ||
         !Array.isArray(row.vacancyIds) || row.vacancyIds.length < 1 || row.vacancyIds.length > 1000 ||
         row.vacancyIds.some(id => !safeId(id)) || new Set(row.vacancyIds).size !== row.vacancyIds.length ||
+        !Array.isArray(row.quarantinedSourceVacancyIds) || row.quarantinedSourceVacancyIds.length > 1000 ||
+        row.quarantinedSourceVacancyIds.some(id => !safeId(id) || row.vacancyIds.includes(id)) ||
+        new Set(row.quarantinedSourceVacancyIds).size !== row.quarantinedSourceVacancyIds.length ||
         !object(row.expectedCounts)) fail();
     bySource.set(row.sourceProfileRef, row);
     byTarget.set(row.profileId, new Set(row.vacancyIds));
+    byQuarantine.set(row.profileId, new Set(row.quarantinedSourceVacancyIds));
   }
-  return { ...record, bySource, byTarget,
+  return { ...record, bySource, byTarget, byQuarantine,
     bindProfile: source => bySource.get(source)?.profileId ?? null,
-    isVacancyOwned: (profileId, vacancyId) => byTarget.get(profileId)?.has(vacancyId) === true };
+    isVacancyOwned: (profileId, vacancyId) => byTarget.get(profileId)?.has(vacancyId) === true,
+    isQuarantinedSourceVacancy: (profileId, vacancyId) =>
+      byQuarantine.get(profileId)?.has(vacancyId) === true };
 }
 
 export async function runPrivateLegacyImport({ mode, configFile, execute = false } = {}) {
@@ -74,15 +80,25 @@ export async function runPrivateLegacyImport({ mode, configFile, execute = false
     const inputs = discovered.map(source => buildInput(temporary, config.bySource.get(source), config.migrationId));
     const preflightPath = join(temporary, 'preflight.sqlite');
     const dry = new R03LegacyContentImporter({ filename: preflightPath,
-      bindProfile: config.bindProfile, isVacancyOwned: config.isVacancyOwned });
+      bindProfile: config.bindProfile, isVacancyOwned: config.isVacancyOwned,
+      isQuarantinedSourceVacancy: config.isQuarantinedSourceVacancy });
     let plans;
     try { plans = inputs.map(input => dry.plan(input)); } finally { dry.close(); }
+    for (const plan of plans) {
+      const expected = [...config.byQuarantine.get(plan.profileId)].sort();
+      if (JSON.stringify(plan.quarantine.unownedVacancyIds) !== JSON.stringify(expected)) fail();
+    }
     const totals = Object.fromEntries(Object.keys(plans[0].counts).map(key =>
       [key, plans.reduce((sum, plan) => sum + plan.counts[key], 0)]));
+    const quarantine = { unownedVacancyScopes: plans.reduce((sum, plan) =>
+      sum + plan.quarantine.unownedVacancyIds.length, 0),
+    unownedSeenRows: plans.reduce((sum, plan) => sum + plan.quarantine.unownedSeenRows, 0),
+    unownedSnapshots: plans.reduce((sum, plan) => sum + plan.quarantine.unownedSnapshots, 0) };
     if (mode === 'check') return { mode, status: 'ready', backupKind: manifest.kind,
-      profileCount: plans.length, counts: totals };
+      profileCount: plans.length, counts: totals, quarantine };
     const importer = new R03LegacyContentImporter({ filename: config.targetDbPath,
-      bindProfile: config.bindProfile, isVacancyOwned: config.isVacancyOwned });
+      bindProfile: config.bindProfile, isVacancyOwned: config.isVacancyOwned,
+      isQuarantinedSourceVacancy: config.isQuarantinedSourceVacancy });
     let receipts;
     try { receipts = importer.db.transaction(() => inputs.map(input => importer.import(input))).immediate(); }
     finally { importer.close(); }
@@ -97,7 +113,8 @@ export async function runPrivateLegacyImport({ mode, configFile, execute = false
       if (error?.code !== 'EEXIST' || privateBytes(receiptPath, 1024 * 1024).toString('utf8') !== serialized) fail();
     }
     return { mode, status: 'completed', backupKind: manifest.kind,
-      profileCount: receipts.length, counts: totals, importedProfiles: receipts.filter(row => row.kind === 'imported').length };
+      profileCount: receipts.length, counts: totals, quarantine,
+      importedProfiles: receipts.filter(row => row.kind === 'imported').length };
   } finally {
     if (temporary) rmSync(temporary, { recursive: true, force: true });
     process.umask(oldUmask);

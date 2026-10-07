@@ -14,8 +14,36 @@ directories, migration ID, and an explicit source profile to target profile
 mapping. Each mapped profile lists owned vacancy IDs and expected per-profile
 counts from a separately reviewed private inventory. Every profile with
 candidate, seen, snapshot or comment source files must be mapped exactly once.
-Unknown source profiles, unowned target vacancies, count drift and changed
-archive bytes fail before any target SQLite write.
+Unknown source profiles, any unreviewed unowned vacancy, count drift and
+changed archive bytes fail before any target SQLite write.
+
+For the frozen old-agent copy, `r03-private-legacy-binding.js` builds this
+owner-only config from three verified sources: the final archive inventory,
+the old agent's consistent cron SQLite backup, and each profile's
+`active_vacancies` context inside the archive. Cron `profile_id` is the old
+agent's canonical username/profile ID. The command requires all 11 disabled HH
+jobs and 8 unknown outcomes, checks each cron vacancy against the same
+profile's context, and rejects any candidate assignment to an unowned
+vacancy. The operator supplies an exact expected count of historical-only
+vacancies to quarantine. This is an explicit exclusion, never an ownership
+grant. The private config records their IDs under
+`quarantinedSourceVacancyIds`; an unused or unlisted exclusion fails preflight.
+
+```sh
+node src/r03-private-legacy-binding.js \
+  --archive /private/final.tar --manifest /private/final-manifest.json \
+  --inventory /private/final-inventory.json \
+  --cron-db /private/cron.sqlite --cron-manifest /private/cron-manifest.json \
+  --target-db /private/target.sqlite --scratch /private/scratch \
+  --receipts /private/receipts --output /private/import-config.json \
+  --expected-exclusions 1
+```
+
+Reviewed historical-only seen rows and snapshots retain their exact raw
+payload under the source profile with `unowned_vacancy=1`; the private import
+receipt counts them separately. They never enter `real_hh_seen`, accepted
+snapshots or freshness. Candidate assignments and comments still require
+target vacancy ownership.
 
 Before an agent-owned target identity mapping is available, run the separate
 private inventory command. It writes an owner-only file with source profile
