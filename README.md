@@ -1,5 +1,7 @@
 # trained-assist-recruiting-web
 
+**GCP VM exit (2026-10-05):** Do not add new workloads to `alesa-personal-assistent/us-central1-a/alesa-vm`. Keep the existing service and route available until the independent Recruiting/HH replacement passes migration and scheduled-cycle acceptance on a verified non-GCP host. Cloud Run is not the selected target for HH cold search. Other Google services remain permitted. See the [exit plan](https://github.com/trained-assist/trained-agent-architecture/issues/145) and [HH cutover gate](https://github.com/trained-assist/trained-assist-hh-skill/issues/187).
+
 Independent recruiting application and versioned platform contracts.
 
 ## Initial service and R-01 foundation
