@@ -110,6 +110,7 @@ export class SqliteColdSearchScheduleRepository {
   }
 
   getSchedule(id) { return decode(this.scheduleById.get(id)); }
+  listAllSchedules() { return this.db.prepare('SELECT payload FROM cold_search_schedules ORDER BY schedule_id').all().map(decode); }
   listSchedules(profileId) { return this.db.prepare('SELECT payload FROM cold_search_schedules WHERE profile_id = ? ORDER BY schedule_id').all(profileId).map(decode); }
   getOccurrence(id) { return decode(this.occurrenceById.get(id)); }
   listOccurrences(profileId) { return this.db.prepare('SELECT payload FROM cold_search_occurrences WHERE profile_id = ? ORDER BY scheduled_at, occurrence_id').all(profileId).map(decode); }
