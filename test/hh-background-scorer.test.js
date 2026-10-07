@@ -92,11 +92,46 @@ test('two writers converge, reject cross-scope and invalid assessments, and hide
   assert.throws(() => b.recordAssessment({ ...input, assessment: { ...assessment, knockout: { status: 'failed', criteria: ['вымышленный стоп-фактор'] } } }), /invalid_real_hh_assessment/);
   a.recordCompletedSearch(search('job_synthetic_2', [candidate(1), candidate(2)]));
   const summary = await runHhBackgroundScoringTick({ state: b, profileId, vacancyId,
-    currentCriteriaRevision: async () => criteriaRevision, evaluate: async () => { throw new Error('synthetic private resume in error'); } });
+    currentCriteriaRevision: async () => criteriaRevision, evaluate: async () => { throw new Error('synthetic private resume in error'); },
+    now: () => new Date('2026-10-06T06:05:00.000Z') });
   assert.equal(summary.failed, 1);
   assert.equal(JSON.stringify(summary).includes('resume'), false);
   const invalid = await runHhBackgroundScoringTick({ state: b, profileId, vacancyId,
-    currentCriteriaRevision: async () => criteriaRevision, evaluate: async () => ({ ...assessment, atsScore: 11 }) });
+    currentCriteriaRevision: async () => criteriaRevision, evaluate: async () => ({ ...assessment, atsScore: 11 }),
+    now: () => new Date('2026-10-06T06:21:00.000Z') });
   assert.equal(invalid.failed, 1);
-  assert.equal(b.unassessedLatest({ profileId, vacancyId }).length, 1);
+  assert.equal(b.unassessedLatest({ profileId, vacancyId, at: '2026-10-06T06:22:00.000Z' }).length, 0);
+});
+
+test('failed assessment backs off durably and does not starve later candidates', async t => {
+  const { open } = fixture(t);
+  const state = open();
+  state.recordCompletedSearch(search('job_synthetic_1', [candidate(1), candidate(2)]));
+  let calls = [];
+  const run = (at) => runHhBackgroundScoringTick({ state, profileId, vacancyId, limit: 1,
+    currentCriteriaRevision: async () => criteriaRevision,
+    evaluate: async ({ candidate: item }) => {
+      calls.push(item.id);
+      if (item.id === candidate(1).id && calls.filter(id => id === item.id).length < 3)
+        throw new Error('invented private prompt');
+      return assessment;
+    }, now: () => new Date(at) });
+  assert.equal((await run('2026-10-06T06:05:00.000Z')).failed, 1);
+  assert.equal((await run('2026-10-06T06:10:00.000Z')).written, 1);
+  assert.deepEqual(calls, [candidate(1).id, candidate(2).id]);
+  state.close();
+  const reopened = open();
+  assert.equal(reopened.unassessedLatest({ profileId, vacancyId, at: '2026-10-06T06:19:59.000Z' }).length, 0);
+  assert.equal(reopened.unassessedLatest({ profileId, vacancyId, at: '2026-10-06T06:20:00.000Z' }).length, 1);
+  assert.equal((await runHhBackgroundScoringTick({ state: reopened, profileId, vacancyId,
+    currentCriteriaRevision: async () => criteriaRevision,
+    evaluate: async () => { throw new Error('invented private resume'); },
+    now: () => new Date('2026-10-06T06:20:00.000Z') })).failed, 1);
+  assert.equal(reopened.unassessedLatest({ profileId, vacancyId, at: '2026-10-06T06:49:59.000Z' }).length, 0);
+  assert.equal(reopened.unassessedLatest({ profileId, vacancyId, at: '2026-10-06T06:50:00.000Z' }).length, 1);
+  const recovered = await runHhBackgroundScoringTick({ state: reopened, profileId, vacancyId,
+    currentCriteriaRevision: async () => criteriaRevision, evaluate: async () => assessment,
+    now: () => new Date('2026-10-06T06:50:00.000Z') });
+  assert.equal(recovered.written, 1);
+  assert.equal(reopened.unassessedLatest({ profileId, vacancyId }).length, 0);
 });

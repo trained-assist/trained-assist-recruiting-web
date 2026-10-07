@@ -10,7 +10,7 @@ const hash = value => createHash('sha256').update(JSON.stringify(value)).digest(
 const fields = new Set(['id', 'vacancyId', 'hhUrl', 'title', 'firstName', 'lastName', 'age', 'area', 'totalExperienceMonths', 'totalExperienceYears', 'salary', 'recentCompanies', 'experience', 'preScore', 'preScoreSignals', 'preTag', 'totalPossible', 'atsScore', 'atsTag', 'knockout']);
 const experienceFields = new Set(['position', 'company', 'start', 'end']);
 const salaryFields = new Set(['amount', 'from', 'to', 'currency', 'gross']);
-const searchFields = new Set(['version', 'profileId', 'vacancyId', 'jobId', 'searchedAt', 'criteriaRevision', 'sourceRevision', 'source', 'totalCollected', 'candidates']);
+const searchFields = new Set(['version', 'profileId', 'vacancyId', 'jobId', 'searchedAt', 'criteriaRevision', 'sourceRevision', 'source', 'totalCollected', 'candidates', 'expectedFeedbackRevision']);
 const ownKeysOnly = (value, allowed) => value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).every(key => allowed.has(key));
 
 function validateCandidate(candidate, vacancyId) {
@@ -37,7 +37,9 @@ function validateCandidate(candidate, vacancyId) {
 }
 
 function validatedSearch(input) {
-  if (!ownKeysOnly(input, searchFields) || Object.keys(input).length !== searchFields.size || input.version !== REAL_HH_RESULT_VERSION || ![input.profileId, input.vacancyId, input.jobId].every(safeId) ||
+  if (!ownKeysOnly(input, searchFields) || Object.keys(input).length !== searchFields.size - (input.expectedFeedbackRevision === undefined ? 1 : 0) ||
+      input.expectedFeedbackRevision !== undefined && !/^[a-f0-9]{24}$/.test(input.expectedFeedbackRevision) ||
+      input.version !== REAL_HH_RESULT_VERSION || ![input.profileId, input.vacancyId, input.jobId].every(safeId) ||
       !isoTime(input.searchedAt) || typeof input.criteriaRevision !== 'string' || !input.criteriaRevision ||
       typeof input.sourceRevision !== 'string' || !input.sourceRevision || !['manual', 'scheduled'].includes(input.source) ||
       !Number.isSafeInteger(input.totalCollected) || input.totalCollected < 0 || !Array.isArray(input.candidates) ||
@@ -93,11 +95,19 @@ export class SqliteRealHhCandidateState {
       resume_id TEXT NOT NULL, input_revision TEXT NOT NULL, assessment TEXT NOT NULL,
       assessed_at TEXT NOT NULL,
       PRIMARY KEY (profile_id, vacancy_id, job_id, resume_id));
+    CREATE TABLE IF NOT EXISTS real_hh_assessment_failure (
+      profile_id TEXT NOT NULL, vacancy_id TEXT NOT NULL, resume_id TEXT NOT NULL,
+      input_revision TEXT NOT NULL, failures INTEGER NOT NULL, retry_at TEXT NOT NULL,
+      PRIMARY KEY (profile_id, vacancy_id, resume_id, input_revision));
     CREATE TABLE IF NOT EXISTS real_hh_candidate_overlay (
       profile_id TEXT NOT NULL, vacancy_id TEXT NOT NULL, resume_id TEXT NOT NULL,
       revision INTEGER NOT NULL, status TEXT NOT NULL, comment TEXT,
       exclude_from_search INTEGER NOT NULL,
       PRIMARY KEY (profile_id, vacancy_id, resume_id));
+    CREATE TABLE IF NOT EXISTS real_hh_feedback_query_cache (
+      profile_id TEXT NOT NULL, vacancy_id TEXT NOT NULL, base_revision TEXT NOT NULL,
+      feedback_revision TEXT NOT NULL, queries TEXT NOT NULL,
+      PRIMARY KEY (profile_id, vacancy_id, base_revision, feedback_revision));
     CREATE INDEX IF NOT EXISTS real_hh_snapshot_latest ON real_hh_snapshot(profile_id, vacancy_id, searched_at DESC, job_id DESC);`);
     this.getSnapshot = this.db.prepare('SELECT * FROM real_hh_snapshot WHERE profile_id=? AND vacancy_id=? AND job_id=?');
     this.getJobAnywhere = this.db.prepare('SELECT profile_id, vacancy_id FROM real_hh_snapshot WHERE job_id=? LIMIT 1');
@@ -123,11 +133,25 @@ export class SqliteRealHhCandidateState {
     this.reusableAssessment = this.db.prepare(`SELECT assessment, assessed_at FROM real_hh_assessment
       WHERE profile_id=? AND vacancy_id=? AND resume_id=? AND input_revision=?
       ORDER BY assessed_at DESC, job_id DESC LIMIT 1`);
+    this.assessmentFailure = this.db.prepare(`SELECT failures,retry_at FROM real_hh_assessment_failure
+      WHERE profile_id=? AND vacancy_id=? AND resume_id=? AND input_revision=?`);
+    this.upsertAssessmentFailure = this.db.prepare(`INSERT INTO real_hh_assessment_failure
+      (profile_id,vacancy_id,resume_id,input_revision,failures,retry_at) VALUES(?,?,?,?,?,?)
+      ON CONFLICT(profile_id,vacancy_id,resume_id,input_revision) DO UPDATE SET
+      failures=excluded.failures,retry_at=excluded.retry_at`);
+    this.clearAssessmentFailure = this.db.prepare(`DELETE FROM real_hh_assessment_failure
+      WHERE profile_id=? AND vacancy_id=? AND resume_id=? AND input_revision=?`);
     this.overlayById = this.db.prepare(`SELECT revision,status,comment,exclude_from_search FROM real_hh_candidate_overlay
       WHERE profile_id=? AND vacancy_id=? AND resume_id=?`);
     this.upsertOverlay = this.db.prepare(`INSERT INTO real_hh_candidate_overlay(profile_id,vacancy_id,resume_id,revision,status,comment,exclude_from_search)
       VALUES(?,?,?,?,?,?,?) ON CONFLICT(profile_id,vacancy_id,resume_id) DO UPDATE SET
       revision=excluded.revision,status=excluded.status,comment=excluded.comment,exclude_from_search=excluded.exclude_from_search`);
+    this.feedbackRows = this.db.prepare(`SELECT resume_id,revision,status,comment,exclude_from_search
+      FROM real_hh_candidate_overlay WHERE profile_id=? AND vacancy_id=? ORDER BY resume_id`);
+    this.feedbackQueries = this.db.prepare(`SELECT queries FROM real_hh_feedback_query_cache
+      WHERE profile_id=? AND vacancy_id=? AND base_revision=? AND feedback_revision=?`);
+    this.insertFeedbackQueries = this.db.prepare(`INSERT OR IGNORE INTO real_hh_feedback_query_cache
+      (profile_id,vacancy_id,base_revision,feedback_revision,queries) VALUES(?,?,?,?,?)`);
   }
 
   close() { this.db.close(); }
@@ -147,6 +171,9 @@ export class SqliteRealHhCandidateState {
     const digest = hash({ ...input, candidates: input.candidates });
     const revision = hash([input.jobId, input.criteriaRevision, input.sourceRevision, input.candidates.map(item => item.id)]).slice(0, 24);
     return this.db.transaction(() => {
+      if (input.expectedFeedbackRevision !== undefined &&
+          this.searchFeedback(input.profileId, input.vacancyId).revision !== input.expectedFeedbackRevision)
+        throw new Error('search_feedback_stale');
       const crossScope = this.getJobAnywhere.get(input.jobId);
       if (crossScope && (crossScope.profile_id !== input.profileId || crossScope.vacancy_id !== input.vacancyId)) throw new Error('real_hh_job_scope_conflict');
       const prior = this.getSnapshot.get(input.profileId, input.vacancyId, input.jobId);
@@ -195,12 +222,26 @@ export class SqliteRealHhCandidateState {
     this.assertScope(profileId, vacancyId);
     return this.seenCount.get(profileId, vacancyId).count;
   }
+  importSeen({ profileId, vacancyId, ids, importedAt }) {
+    this.assertScope(profileId, vacancyId);
+    if (!Array.isArray(ids) || ids.length < 1 || ids.length > 500 ||
+        ids.some(id => typeof id !== 'string' || !/^[A-Za-z0-9]{1,128}$/.test(id)) ||
+        !isoTime(importedAt)) throw new TypeError('invalid_seen_import');
+    const unique = [...new Set(ids)];
+    return this.db.transaction(() => {
+      let imported = 0;
+      for (const id of unique)
+        imported += this.insertSeen.run(profileId, vacancyId, id, importedAt).changes;
+      this.onStep('import_seen');
+      return { imported, total: this.seenCount.get(profileId, vacancyId).count };
+    }).immediate();
+  }
   assessmentInputRevision(snapshot, candidate) {
     return hash([snapshot.criteriaRevision, snapshot.sourceRevision, candidate]).slice(0, 32);
   }
-  unassessedLatest({ profileId, vacancyId, limit = 10 }) {
+  unassessedLatest({ profileId, vacancyId, limit = 10, at = new Date().toISOString() }) {
     this.assertScope(profileId, vacancyId);
-    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new TypeError('invalid_assessment_limit');
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100 || !isoTime(at)) throw new TypeError('invalid_assessment_limit');
     const snapshot = this.latestSnapshot(profileId, vacancyId);
     if (!snapshot) return [];
     const pending = [];
@@ -208,10 +249,31 @@ export class SqliteRealHhCandidateState {
       const candidate = JSON.parse(row.projection);
       const inputRevision = this.assessmentInputRevision(snapshot, candidate);
       if (row.input_revision === inputRevision) continue;
+      const failure = this.assessmentFailure.get(profileId, vacancyId, candidate.id, inputRevision);
+      if (failure && failure.retry_at > at) continue;
       pending.push({ snapshot, candidate, inputRevision });
       if (pending.length === limit) break;
     }
     return pending;
+  }
+  recordAssessmentFailure({ profileId, vacancyId, jobId, candidateId, inputRevision, failedAt }) {
+    this.assertScope(profileId, vacancyId);
+    if (![jobId, candidateId].every(safeId) || !/^[a-f0-9]{32}$/.test(inputRevision) || !isoTime(failedAt))
+      throw new TypeError('invalid_assessment_failure');
+    return this.db.transaction(() => {
+      const snapshot = this.latestSnapshot(profileId, vacancyId);
+      if (!snapshot || snapshot.jobId !== jobId) return { kind: 'stale' };
+      const member = this.memberById.get(profileId, vacancyId, jobId, candidateId);
+      if (!member || this.assessmentInputRevision(snapshot, JSON.parse(member.projection)) !== inputRevision ||
+          this.assessmentById.get(profileId, vacancyId, jobId, candidateId)?.input_revision === inputRevision)
+        return { kind: 'stale' };
+      const prior = this.assessmentFailure.get(profileId, vacancyId, candidateId, inputRevision);
+      const failures = Math.min((prior?.failures ?? 0) + 1, 20);
+      const delayMs = Math.min(15 * 60_000 * 2 ** (failures - 1), 24 * 60 * 60_000);
+      const retryAt = new Date(Date.parse(failedAt) + delayMs).toISOString();
+      this.upsertAssessmentFailure.run(profileId, vacancyId, candidateId, inputRevision, failures, retryAt);
+      return { kind: 'deferred', failures, retryAt };
+    }).immediate();
   }
   recordAssessment({ profileId, vacancyId, jobId, candidateId, inputRevision, assessment, assessedAt }) {
     this.assertScope(profileId, vacancyId);
@@ -233,6 +295,7 @@ export class SqliteRealHhCandidateState {
       const prior = this.assessmentById.get(profileId, vacancyId, jobId, candidateId);
       if (prior) return prior.input_revision === inputRevision ? { kind: 'already_scored' } : { kind: 'stale' };
       this.insertAssessment.run(profileId, vacancyId, jobId, candidateId, inputRevision, JSON.stringify(assessment), assessedAt);
+      this.clearAssessmentFailure.run(profileId, vacancyId, candidateId, inputRevision);
       return { kind: 'written' };
     }).immediate();
   }
@@ -289,6 +352,33 @@ export class SqliteRealHhCandidateState {
       const revision = expectedRevision + 1;
       this.upsertOverlay.run(profileId, vacancyId, candidateId, revision, status, comment, excludeFromSearch ? 1 : 0);
       return { kind: 'updated', revision };
+    }).immediate();
+  }
+  searchFeedback(profileId, vacancyId) {
+    this.assertScope(profileId, vacancyId);
+    const rows = this.feedbackRows.all(profileId, vacancyId);
+    return { revision: hash(rows.map(row => [row.resume_id, row.comment, row.exclude_from_search])).slice(0, 24),
+      comments: rows.filter(row => typeof row.comment === 'string' && row.comment.trim())
+        .map(row => row.comment.trim()),
+      excludedResumeIds: rows.filter(row => row.exclude_from_search === 1).map(row => row.resume_id) };
+  }
+  cachedFeedbackQueries(profileId, vacancyId, baseRevision, feedbackRevision) {
+    this.assertScope(profileId, vacancyId);
+    if (typeof baseRevision !== 'string' || !baseRevision || !/^[a-f0-9]{24}$/.test(feedbackRevision))
+      throw new TypeError('invalid_feedback_query_key');
+    const row = this.feedbackQueries.get(profileId, vacancyId, baseRevision, feedbackRevision);
+    return row ? JSON.parse(row.queries) : null;
+  }
+  storeFeedbackQueries(profileId, vacancyId, baseRevision, feedbackRevision, queries) {
+    this.assertScope(profileId, vacancyId);
+    if (typeof baseRevision !== 'string' || !baseRevision || !/^[a-f0-9]{24}$/.test(feedbackRevision) ||
+        !Array.isArray(queries) || queries.length < 1 || queries.length > 15 ||
+        queries.some(query => typeof query !== 'string' || !query.trim() || query !== query.trim() || query.length > 500) ||
+        new Set(queries).size !== queries.length) throw new TypeError('invalid_feedback_queries');
+    return this.db.transaction(() => {
+      if (this.searchFeedback(profileId, vacancyId).revision !== feedbackRevision) throw new Error('feedback_revision_stale');
+      this.insertFeedbackQueries.run(profileId, vacancyId, baseRevision, feedbackRevision, JSON.stringify(queries));
+      return JSON.parse(this.feedbackQueries.get(profileId, vacancyId, baseRevision, feedbackRevision).queries);
     }).immediate();
   }
 }

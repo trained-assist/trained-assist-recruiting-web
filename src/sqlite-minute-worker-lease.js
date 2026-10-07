@@ -18,6 +18,18 @@ export class SqliteMinuteWorkerLease {
     }).immediate();
   }
 
+  renew({ owner, now, expiresAt }) {
+    if (!owner || expiresAt <= now) throw new TypeError('valid worker lease is required');
+    return this.db.transaction(() => {
+      const current = this.db.prepare('SELECT owner, expires_at FROM r03_minute_worker_lease WHERE singleton = 1').get();
+      if (!current || current.owner !== owner || current.expires_at <= now ||
+          current.expires_at >= expiresAt) return false;
+      this.db.prepare('UPDATE r03_minute_worker_lease SET expires_at = ? WHERE singleton = 1 AND owner = ?')
+        .run(expiresAt, owner);
+      return true;
+    }).immediate();
+  }
+
   release(owner) {
     return this.db.prepare('DELETE FROM r03_minute_worker_lease WHERE singleton = 1 AND owner = ?').run(owner).changes === 1;
   }

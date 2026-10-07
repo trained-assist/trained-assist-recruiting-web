@@ -1,0 +1,11 @@
+# R-03 private HH systemd timers
+
+`infra/systemd/` contains separate, **uninstalled** one-shot services and timers for the minute cold-search tick and the five-minute ATS scoring tick. The service user is `trained-recruiting`; the expected release is `/opt/trained-assist-recruiting-web/current`, private config is `/etc/trained-assist/recruiting-web/config.json`, and SQLite/profile data live under `/var/lib/trained-assist/recruiting-web`. Prepare those paths, ownership, restored data and exact profile mapping before installing the units.
+
+Each service loads four root-supplied secret files with systemd `LoadCredential=` and passes `${CREDENTIALS_DIRECTORY}` to the private CLI. This follows [systemd's credentials contract](https://github.com/systemd/systemd/blob/main/docs/CREDENTIALS.md); the source files are not environment variables or part of the release. The service uses `UMask=0077`, private state directory, restricted writable path and a 55-minute start timeout. A timeout can leave an occurrence uncertain; the occurrence lease then expires into quarantine and must be reconciled, never replayed blindly.
+
+The minute timer fires every minute; the score timer every five minutes. Both set `Persistent=false`, so systemd will not trigger a separate catch-up run after downtime. The application coalesces missed schedule slots under its own occurrence ledger. See [systemd's timer semantics](https://github.com/systemd/systemd/blob/main/man/systemd.timer.xml).
+
+On 2026-10-06 the target RU host reported systemd 249 and Node 20.20.2. A temporary copy of these four units passed `systemd-analyze verify` on that host; `systemd-analyze calendar` accepted both calendar expressions. The host also emitted warnings from unrelated existing units. No recruiting unit was installed or enabled, no schedule was activated, and no HH/LLM request was made.
+
+Before enabling either timer, verify the private backup/restore receipts, exact profile and vacancy ownership, credential delivery, authorized HH and ladder canaries, accepted unknown-outcome dispositions, page/API parity and rollback. Run `--mode check` as the service user. Observe a successful manual canary and then a complete real schedule cycle for every required vacancy, including the rarest one, before considering the old GCP VM stop gate satisfied.

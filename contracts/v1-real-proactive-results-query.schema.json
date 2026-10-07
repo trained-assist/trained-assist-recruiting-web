@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/trained-assist/trained-assist-recruiting-web/contracts/v1-real-proactive-results-query.schema.json",
+  "type": "object",
+  "required": ["vacancyId"],
+  "properties": { "vacancyId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" } },
+  "additionalProperties": false
+}
