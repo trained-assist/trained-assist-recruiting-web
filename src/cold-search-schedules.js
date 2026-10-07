@@ -67,7 +67,7 @@ function scheduleId(profileId, vacancyId) { return `schedule_demo_${digest(JSON.
 function occurrenceKey(legacyJobId, scheduledAt) { return JSON.stringify([legacyJobId, scheduledAt]); }
 function occurrenceId(legacyJobId, scheduledAt) { return `occurrence_demo_${digest(occurrenceKey(legacyJobId, scheduledAt)).slice(0, 16)}`; }
 const clone = value => structuredClone(value);
-function validSearchContext(value, vacancyId) {
+export function validSearchContext(value, vacancyId) {
   const criteria = value?.criteria;
   return value?.vacancyId === vacancyId && /^criteria-search-demo-r[0-9]+$/.test(value?.criteriaRevision ?? '') && criteria && typeof criteria === 'object' && !Array.isArray(criteria) &&
     Object.keys(criteria).every(key => ['keywords', 'regions'].includes(key)) && Array.isArray(criteria.keywords) && Array.isArray(criteria.regions) &&
@@ -202,7 +202,7 @@ export function createColdSearchScheduleHandler({ repository, resolveSearchReque
       let currentRequest;
       try { currentRequest = await resolveSearchRequest(schedule.profileId, schedule.vacancyId); } catch { currentRequest = null; }
       if (!validSearchContext(currentRequest, schedule.vacancyId)) {
-        repository.finishOccurrence(occurrence.occurrenceId, workerId, { status: 'rejected', errorCode: 'criteria_context_unavailable' }, now);
+        repository.finishOccurrence(occurrence.occurrenceId, workerId, { status: 'rejected', errorCode: 'criteria_context_unavailable' }, clock().toISOString());
         continue;
       }
       try {
@@ -214,19 +214,19 @@ export function createColdSearchScheduleHandler({ repository, resolveSearchReque
         if (!result || result.status === 'failed' || result.providerError) {
           const errorCode = result?.providerError?.code ?? 'search_outcome_unknown';
           const status = result?.phase === 'pre_dispatch' ? 'rejected' : 'outcome_unknown';
-          repository.finishOccurrence(occurrence.occurrenceId, workerId, { status, criteriaRevision: currentRequest.criteriaRevision, errorCode, jobId: result?.jobId ?? null }, now);
+          repository.finishOccurrence(occurrence.occurrenceId, workerId, { status, criteriaRevision: currentRequest.criteriaRevision, errorCode, jobId: result?.jobId ?? null }, clock().toISOString());
           if (status === 'rejected') continue;
           unknown++;
         } else if (result.status !== 'completed') {
-          repository.finishOccurrence(occurrence.occurrenceId, workerId, { status: 'outcome_unknown', criteriaRevision: currentRequest.criteriaRevision, errorCode: 'scheduled_search_incomplete', jobId: result.jobId ?? null }, now);
+          repository.finishOccurrence(occurrence.occurrenceId, workerId, { status: 'outcome_unknown', criteriaRevision: currentRequest.criteriaRevision, errorCode: 'scheduled_search_incomplete', jobId: result.jobId ?? null }, clock().toISOString());
           unknown++;
         } else {
           const snapshot = { sourceRevision: result.sourceRevision, resultRevision: result.resultRevision, resultCount: result.resultCount, ranking: result.ranking };
-          if (repository.finishOccurrence(occurrence.occurrenceId, workerId, { status: 'succeeded', criteriaRevision: currentRequest.criteriaRevision, jobId: result.jobId, snapshot }, now)) completed++;
+          if (repository.finishOccurrence(occurrence.occurrenceId, workerId, { status: 'succeeded', criteriaRevision: currentRequest.criteriaRevision, jobId: result.jobId, snapshot }, clock().toISOString())) completed++;
           else unknown++;
         }
       } catch {
-        repository.finishOccurrence(occurrence.occurrenceId, workerId, { status: 'outcome_unknown', criteriaRevision: currentRequest.criteriaRevision, errorCode: 'search_outcome_unknown' }, now);
+        repository.finishOccurrence(occurrence.occurrenceId, workerId, { status: 'outcome_unknown', criteriaRevision: currentRequest.criteriaRevision, errorCode: 'search_outcome_unknown' }, clock().toISOString());
         unknown++;
       }
     }
