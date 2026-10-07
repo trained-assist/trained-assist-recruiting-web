@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-cold-search-reconciliation-receipt.schema.json",
+  "title": "Offline cold-search reconciliation audit receipt v1",
+  "type": "object",
+  "required": ["receiptVersion", "command", "jobCompletedAt", "reconciledAt", "priorStatus", "priorErrorCode", "snapshotJobId", "snapshotNewCount", "resultRevision", "materialized"],
+  "properties": {
+    "receiptVersion": { "const": "v1" },
+    "command": {
+      "type": "object",
+      "required": ["operatorId", "profileId", "vacancyId", "occurrenceId", "jobId", "operationId", "expectedCriteriaRevision", "expectedSourceRevision", "expectedResultRevision", "reasonCode"],
+      "properties": {
+        "operatorId": { "type": "string", "minLength": 1 }, "profileId": { "type": "string", "minLength": 1 },
+        "vacancyId": { "type": "string", "minLength": 1 }, "occurrenceId": { "type": "string", "minLength": 1 },
+        "jobId": { "type": "string", "minLength": 1 }, "operationId": { "type": "string", "minLength": 1 },
+        "expectedCriteriaRevision": { "type": "string", "minLength": 1 },
+        "expectedSourceRevision": { "type": "string", "minLength": 1 },
+        "expectedResultRevision": { "type": "string", "pattern": "^[a-f0-9]{16}$" },
+        "reasonCode": { "enum": ["state_commit_failed", "lease_expired_after_completion", "operator_verified"] }
+      },
+      "additionalProperties": false
+    },
+    "jobCompletedAt": { "type": "string" }, "reconciledAt": { "type": "string" },
+    "priorStatus": { "const": "outcome_unknown" }, "priorErrorCode": { "type": ["string", "null"] },
+    "snapshotJobId": { "type": "string", "minLength": 1 },
+    "snapshotNewCount": { "type": "integer", "minimum": 0 },
+    "resultRevision": { "type": "string", "pattern": "^[a-f0-9]{16}$" },
+    "materialized": { "type": "boolean" }
+  },
+  "additionalProperties": false
+}

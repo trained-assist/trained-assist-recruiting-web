@@ -65,7 +65,10 @@ export function createCandidateState({ store = createMemoryCandidateStateStore()
     },
     latestSnapshot(profileId, vacancyId) {
       const snapshots = read(profileId, vacancyId).snapshotsByVacancy[vacancyId] ?? [];
-      return snapshots.length ? clone(snapshots.at(-1)) : null;
+      // Reconciliation can append an older completed run after a newer manual
+      // run; append order must not make the page's freshness move backwards.
+      return snapshots.length ? clone(snapshots.reduce((latest, item) =>
+        item.searchedAt > latest.searchedAt || item.searchedAt === latest.searchedAt && item.jobId > latest.jobId ? item : latest)) : null;
     },
     seen(profileId, vacancyId) { return clone(read(profileId, vacancyId).seenByVacancy[vacancyId] ?? {}); },
     setReview({ profileId, vacancyId, candidateRef, status }) {
