@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-report-review.schema.json",
+  "title": "Explicit report review decision",
+  "type": "object",
+  "required": ["expectedReportRevision", "decision"],
+  "properties": {
+    "expectedReportRevision": { "type": "string", "pattern": "^report-demo-r[0-9]+$" },
+    "decision": { "type": "string", "enum": ["approved", "changes_requested"] }
+  },
+  "additionalProperties": false
+}
