@@ -12,7 +12,9 @@ The `(profileId, idempotencyKey)` pair is unique in SQLite and is bound to a
 hash of the canonical request. A new job, or a resumed page, first commits a
 `dispatching` row with an owner and deadline. Only then does it call the
 provider. A valid page is appended with its source revision and next cursor in
-one transaction. Result cursors are tied to the committed result revision.
+one transaction. The final page also stores `completedAt`; materializing
+candidate state after a restart uses that original completion time for
+freshness. Result cursors are tied to the committed result revision.
 Two web/worker processes using the same file cannot dispatch the same page
 from the same job concurrently.
 
