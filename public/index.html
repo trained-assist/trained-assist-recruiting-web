@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width">
+  <title>Recruiting API demo</title>
+  <style>
+    body { max-width: 52rem; margin: 3rem auto; padding: 0 1rem; font: 16px/1.5 system-ui, sans-serif; color: #182230; }
+    label { display: block; margin: 1rem 0 .25rem; font-weight: 600; }
+    select { min-width: 20rem; max-width: 100%; padding: .55rem; }
+    #responses { padding-left: 1.25rem; }
+    .notice { padding: .75rem; background: #fff6df; border-radius: .4rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Recruiting API demo</h1>
+    <p class="notice">Local UI fixture only; profile routes are not agent capabilities. The selected profile is a fixture principal, not production authentication.</p>
+    <label for="profile">Synthetic profile</label>
+    <select id="profile"><option value="profile_demo_001">Synthetic recruiter north</option><option value="profile_demo_002">Synthetic recruiter south</option></select>
+    <label for="vacancy">Select a vacancy</label>
+    <select id="vacancy"></select>
+    <h2>Read-only responses</h2>
+    <ul id="responses"></ul>
+    <button id="more" type="button" hidden>Load more responses</button>
+    <p id="message" role="status"></p>
+    <h2>Client report draft preview</h2>
+    <p>Preview only. This synthetic HTML is rendered locally and is not saved, published, or shared.</p>
+    <button id="preview-report" type="button">Preview synthetic client report</button>
+    <p id="report-revision" role="status"></p>
+    <iframe id="report-preview" title="Synthetic client report preview" sandbox style="width:100%;min-height:32rem;border:1px solid #ccd5db"></iframe>
+    <p><a href="/api/v1/manifest">API manifest</a> · <a href="/api/v1/vacancies">All synthetic vacancies</a></p>
+  </main>
+  <script type="module">
+    const profile = document.querySelector('#profile');
+    const vacancy = document.querySelector('#vacancy');
+    const responses = document.querySelector('#responses');
+    const message = document.querySelector('#message');
+    const more = document.querySelector('#more');
+    const reportPreview = document.querySelector('#report-preview');
+    const reportRevision = document.querySelector('#report-revision');
+    let nextCursor = null;
+    async function refreshVacancies() {
+      const profileId = profile.value;
+      const response = await fetch(`/api/v1/profiles/${profileId}/vacancies`, { headers: { 'X-Demo-Profile-Id': profileId } });
+      const payload = await response.json();
+      vacancy.replaceChildren(...payload.items.map(item => new Option(`${item.title} — ${item.location}`, item.id)));
+      await refreshResponses();
+    }
+    async function refreshResponses(reset = true) {
+      const profileId = profile.value;
+      if (!vacancy.value) { responses.replaceChildren(); more.hidden = true; message.textContent = 'No vacancies are assigned to this profile.'; return; }
+      if (reset) { nextCursor = null; responses.replaceChildren(); }
+      const params = new URLSearchParams({ limit: '1' });
+      if (!reset && nextCursor) params.set('cursor', nextCursor);
+      const response = await fetch(`/api/v1/profiles/${profileId}/vacancies/${vacancy.value}/responses?${params}`, { headers: { 'X-Demo-Profile-Id': profileId } });
+      const payload = await response.json();
+      if (response.status === 409) { nextCursor = null; more.hidden = true; responses.replaceChildren(); message.textContent = 'Response data changed; reload the selected vacancy.'; return; }
+      if (!response.ok) { more.hidden = true; responses.replaceChildren(); message.textContent = 'This synthetic profile is not granted response-read scope.'; return; }
+      responses.append(...payload.items.map(item => {
+        const li = document.createElement('li');
+        li.textContent = `${item.id} — ${item.status} — ${item.receivedAt}`;
+        return li;
+      }));
+      nextCursor = payload.nextCursor;
+      more.hidden = !nextCursor;
+      message.textContent = `${responses.children.length} synthetic response(s) · ${payload.freshness} · ${payload.revision}`;
+    }
+    profile.addEventListener('change', refreshVacancies);
+    vacancy.addEventListener('change', refreshResponses);
+    more.addEventListener('click', () => refreshResponses(false));
+    document.querySelector('#preview-report').addEventListener('click', async () => {
+      const params = new URLSearchParams({ candidateId: 'candidate_demo_001', vacancyId: 'vac_demo_001' });
+      const response = await fetch(`/api/v1/ui/report-previews?${params}`);
+      const payload = await response.json();
+      if (!response.ok) { reportRevision.textContent = 'Could not load synthetic preview.'; return; }
+      reportPreview.srcdoc = payload.html;
+      reportRevision.textContent = `Preview only · ${payload.audience} · source ${payload.sourceRevision}`;
+    });
+    refreshVacancies().catch(() => { message.textContent = 'Could not load local fixture data.'; });
+  </script>
+</body>
+</html>

@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-response-evaluation.schema.json",
+  "title": "Synthetic response evaluation or stale-source result",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["domainApiVersion", "evaluationId", "responseId", "vacancyId", "sourceRevisions", "result", "evidence", "gaps"],
+      "properties": {
+        "domainApiVersion": { "const": "v1" },
+        "evaluationId": { "type": "string", "pattern": "^evaluation_demo_[a-f0-9]{12}$" },
+        "responseId": { "type": "string", "pattern": "^response_demo_[0-9]{3}$" },
+        "vacancyId": { "type": "string", "pattern": "^vac_demo_[0-9]{3}$" },
+        "sourceRevisions": {
+          "type": "object",
+          "required": ["response", "resume", "vacancyCriteria"],
+          "properties": {
+            "response": { "type": "string", "minLength": 1 },
+            "resume": { "type": "string", "minLength": 1 },
+            "vacancyCriteria": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        },
+        "result": { "type": "string", "enum": ["meets", "partial", "does_not_meet"] },
+        "evidence": { "$ref": "v1-evaluator-result.schema.json#/properties/evidence" },
+        "gaps": { "$ref": "v1-evaluator-result.schema.json#/properties/gaps" }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": ["domainApiVersion", "error", "staleRevisions", "currentSourceRevisions"],
+      "properties": {
+        "domainApiVersion": { "const": "v1" },
+        "error": { "const": "stale_evaluation_inputs" },
+        "staleRevisions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["source", "requested", "current"],
+            "properties": {
+              "source": { "type": "string", "enum": ["response", "resume", "vacancyCriteria"] },
+              "requested": { "type": "string", "minLength": 1 },
+              "current": { "type": "string", "minLength": 1 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "currentSourceRevisions": {
+          "type": "object",
+          "required": ["response", "resume", "vacancyCriteria"],
+          "properties": {
+            "response": { "type": "string", "minLength": 1 },
+            "resume": { "type": "string", "minLength": 1 },
+            "vacancyCriteria": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-profile-vacancies.schema.json",
+  "title": "Local UI fixture-only profile-scoped vacancies response",
+  "type": "object",
+  "required": ["domainApiVersion", "profileId", "items"],
+  "properties": {
+    "domainApiVersion": { "const": "v1" },
+    "profileId": { "type": "string", "pattern": "^profile_demo_[0-9]{3}$" },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "location", "employmentType", "status", "summary"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^vac_demo_[0-9]{3}$" },
+          "title": { "type": "string" },
+          "location": { "type": "string" },
+          "employmentType": { "type": "string", "enum": ["full-time", "contract"] },
+          "status": { "const": "open" },
+          "summary": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

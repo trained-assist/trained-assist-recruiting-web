@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-vacancies.schema.json",
+  "title": "Recruiting API v1 vacancies response",
+  "type": "object",
+  "required": ["apiVersion", "items"],
+  "properties": {
+    "apiVersion": { "const": "v1" },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "location", "employmentType", "status", "summary"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^vac_demo_[0-9]{3}$" },
+          "title": { "type": "string" },
+          "location": { "type": "string" },
+          "employmentType": { "type": "string", "enum": ["full-time", "contract"] },
+          "status": { "const": "open" },
+          "summary": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

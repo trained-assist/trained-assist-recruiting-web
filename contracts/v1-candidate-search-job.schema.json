@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-candidate-search-job.schema.json",
+  "title": "Synthetic local candidate search job",
+  "type": "object",
+  "required": ["domainApiVersion", "jobId", "vacancyId", "criteriaRevision", "sourceRevision", "status", "resultCount", "canResume", "ranking", "providerError"],
+  "properties": {
+    "domainApiVersion": { "const": "v1" },
+    "jobId": { "type": "string", "pattern": "^search_demo_[a-f0-9]{12}$" },
+    "vacancyId": { "type": "string", "pattern": "^vac_demo_[0-9]{3}$" },
+    "criteriaRevision": { "type": "string", "minLength": 1 },
+    "sourceRevision": { "type": "string", "pattern": "^(cold-search-provider-demo-r[0-9]+|pending)$" },
+    "status": { "type": "string", "enum": ["running", "partial", "completed", "failed"] },
+    "resultCount": { "type": "integer", "minimum": 0 },
+    "canResume": { "type": "boolean" },
+    "ranking": { "const": "provider_order_unranked" },
+    "providerError": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "object", "required": ["code", "retryable"], "properties": { "code": { "type": "string", "enum": ["provider_forbidden", "provider_unavailable", "provider_invalid_response"] }, "retryable": { "type": "boolean" } }, "additionalProperties": false }
+      ]
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-client-report-preview.schema.json",
+  "title": "Client audience report preview envelope",
+  "type": "object",
+  "required": ["domainApiVersion", "mode", "audience", "previewOnly", "publication", "candidateId", "vacancyId", "sourceRevision", "clientView", "html"],
+  "properties": {
+    "domainApiVersion": { "const": "v1" },
+    "mode": { "const": "preview" },
+    "audience": { "const": "client" },
+    "previewOnly": { "const": true },
+    "publication": { "const": "disabled" },
+    "candidateId": { "type": "string", "pattern": "^candidate_demo_[0-9]{3}$" },
+    "vacancyId": { "type": "string", "pattern": "^vac_demo_[0-9]{3}$" },
+    "sourceRevision": { "type": "string", "pattern": "^synthetic-[a-z0-9-]+-r[0-9]+$" },
+    "clientView": {
+      "type": "object",
+      "required": ["candidateName", "position", "vacancyTitle", "summary", "experience", "fit", "conclusion"],
+      "properties": {
+        "candidateName": { "type": "string" },
+        "position": { "type": "string" },
+        "vacancyTitle": { "type": "string" },
+        "summary": { "type": "string" },
+        "experience": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["company", "role", "period", "details"],
+            "properties": {
+              "company": { "type": "string" },
+              "role": { "type": "string" },
+              "period": { "type": "string" },
+              "details": { "type": "array", "items": { "type": "string" } }
+            },
+            "additionalProperties": false
+          }
+        },
+        "fit": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["requirement", "status", "comment"],
+            "properties": {
+              "requirement": { "type": "string" },
+              "status": { "type": "string", "enum": ["yes", "partial", "no"] },
+              "comment": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "conclusion": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "html": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": false
+}
