@@ -1,0 +1,11 @@
+{
+  "urn": "urn:trained-assist:capability-relay-contract:v1",
+  "version": 1,
+  "protocolVersion": "2024-11-05",
+  "sourceRepository": "trained-assist/trained-assist-agent",
+  "sourceRevision": "ffdc3dde6f1390d1965825a046533f3a4524c78b",
+  "sourcePath": "contracts/capability-relay-v1.contract.json",
+  "sourceFileSha256": "222d8ca4d3354a361482120520056d94ceb7eb62890e53fe14c088faeb8828f1",
+  "testedSurface": ["initialize", "tools/list", "tools/call", "JSON-RPC 2.0", "stdio transport"],
+  "note": "Pinned compatibility facts extracted from the relay-owned contract at sourceRevision. The Recruiting fixture is not the production relay and does not implement relay HTTP binding, auth issuer, deadlines, or telemetry."
+}

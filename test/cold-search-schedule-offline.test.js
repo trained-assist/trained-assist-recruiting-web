@@ -127,6 +127,7 @@ test('minute tick claims unique occurrences, coalesces downtime, leases overlap,
     await started;
     const overlap = await schedule.tick('worker-b');
     assert.deepEqual(overlap, { claimed: 0, completed: 0, unknown: 0 });
+    current = new Date(new Date(dueAt).getTime() + 30_000);
     gateRelease();
     await first;
     gateRelease = null;
@@ -136,6 +137,7 @@ test('minute tick claims unique occurrences, coalesces downtime, leases overlap,
   assert.equal(firstOccurrence.status, 'succeeded');
   assert.equal(firstOccurrence.legacyJobId, enabled.schedule.legacyJobId);
   assert.equal(firstOccurrence.scheduledAt, dueAt);
+  assert.equal(firstOccurrence.finishedAt, current.toISOString(), 'finish time reflects provider completion after the tick began');
   const occurrenceSchema = JSON.parse(await (await import('node:fs/promises')).readFile(new URL('../contracts/v1-cold-search-occurrence.schema.json', import.meta.url), 'utf8'));
   const validateOccurrence = new Ajv2020({ allErrors: true }).compile(occurrenceSchema);
   const publicOccurrence = Object.fromEntries(Object.entries(firstOccurrence).filter(([key]) => key !== 'scheduleId' && key !== 'profileId' && key !== 'leaseOwner' && key !== 'leaseUntil'));
