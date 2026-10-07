@@ -1,0 +1,14 @@
+{
+  "kind": "r03-synthetic-worker-fixture-v1",
+  "bindings": [
+    {
+      "profileId": "profile_demo_001",
+      "vacancyId": "vac_demo_001",
+      "criteriaRevision": "criteria-search-demo-r1",
+      "criteria": {
+        "keywords": ["synthetic engineer"],
+        "regions": ["region_demo_001"]
+      }
+    }
+  ]
+}

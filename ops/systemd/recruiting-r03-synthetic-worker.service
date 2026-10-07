@@ -1,0 +1,26 @@
+[Unit]
+Description=Recruiting R-03 synthetic minute worker (fixture only)
+ConditionPathExists=/etc/trained-assist/recruiting-web/ALLOW_SYNTHETIC_R03_WORKER
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=recruiting-web
+Group=recruiting-web
+WorkingDirectory=/opt/trained-assist/recruiting-web/current
+StateDirectory=trained-assist-recruiting-web
+StateDirectoryMode=0700
+ExecStart=/usr/bin/node src/r03-minute-worker.js --db /var/lib/trained-assist-recruiting-web/r03.sqlite --once --synthetic-fixture --synthetic-dry-run
+TimeoutStartSec=250s
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/trained-assist-recruiting-web
+MemoryMax=512M
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
