@@ -24,6 +24,11 @@
     <ul id="responses"></ul>
     <button id="more" type="button" hidden>Load more responses</button>
     <p id="message" role="status"></p>
+    <h2>Client report draft preview</h2>
+    <p>Preview only. This synthetic HTML is rendered locally and is not saved, published, or shared.</p>
+    <button id="preview-report" type="button">Preview synthetic client report</button>
+    <p id="report-revision" role="status"></p>
+    <iframe id="report-preview" title="Synthetic client report preview" sandbox style="width:100%;min-height:32rem;border:1px solid #ccd5db"></iframe>
     <p><a href="/api/v1/manifest">API manifest</a> · <a href="/api/v1/vacancies">All synthetic vacancies</a></p>
   </main>
   <script type="module">
@@ -32,6 +37,8 @@
     const responses = document.querySelector('#responses');
     const message = document.querySelector('#message');
     const more = document.querySelector('#more');
+    const reportPreview = document.querySelector('#report-preview');
+    const reportRevision = document.querySelector('#report-revision');
     let nextCursor = null;
     async function refreshVacancies() {
       const profileId = profile.value;
@@ -62,6 +69,14 @@
     profile.addEventListener('change', refreshVacancies);
     vacancy.addEventListener('change', refreshResponses);
     more.addEventListener('click', () => refreshResponses(false));
+    document.querySelector('#preview-report').addEventListener('click', async () => {
+      const params = new URLSearchParams({ candidateId: 'candidate_demo_001', vacancyId: 'vac_demo_001' });
+      const response = await fetch(`/api/v1/ui/report-previews?${params}`);
+      const payload = await response.json();
+      if (!response.ok) { reportRevision.textContent = 'Could not load synthetic preview.'; return; }
+      reportPreview.srcdoc = payload.html;
+      reportRevision.textContent = `Preview only · ${payload.audience} · source ${payload.sourceRevision}`;
+    });
     refreshVacancies().catch(() => { message.textContent = 'Could not load local fixture data.'; });
   </script>
 </body>

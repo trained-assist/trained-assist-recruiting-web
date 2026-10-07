@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "urn": "urn:trained-assist:recruiting-capabilities:v1",
+  "version": 1,
+  "domainApiVersion": "v1",
+  "platformContractRange": ">=1.0.0 <2.0.0",
+  "relayContract": {
+    "urn": "urn:trained-assist:capability-relay-contract:v1",
+    "versionRange": ">=1 <2",
+    "source": {
+      "repository": "trained-assist/trained-assist-agent",
+      "revision": "ffdc3dde6f1390d1965825a046533f3a4524c78b",
+      "path": "contracts/capability-relay-v1.contract.json",
+      "sha256": "222d8ca4d3354a361482120520056d94ceb7eb62890e53fe14c088faeb8828f1",
+      "protocolVersion": "2024-11-05"
+    }
+  },
+  "capabilities": [
+    {
+      "toolId": "recruiting.cold_search.manage_schedule",
+      "name": "manage_cold_search_schedule",
+      "description": "Enable, disable, or read a synthetic cold-search schedule for the caller's trusted profile.",
+      "mutates": true,
+      "operationRef": "createColdSearchScheduleHandler.handle",
+      "inputSchemaRef": "v1-cold-search-schedule-command.schema.json",
+      "outputSchemaRef": "v1-cold-search-schedule-result.schema.json",
+      "effect": "schedule_state",
+      "requiredScopes": ["recruiting.candidateSearch"]
+    },
+    {
+      "toolId": "recruiting.cold_search.list_occurrences",
+      "name": "list_cold_search_occurrences",
+      "description": "Read synthetic search occurrence statuses and completed result snapshots for the caller's trusted profile.",
+      "mutates": false,
+      "operationRef": "createColdSearchScheduleHandler.listOccurrences",
+      "inputSchemaRef": "v1-cold-search-occurrences-query.schema.json",
+      "outputSchemaRef": "v1-cold-search-occurrences.schema.json",
+      "effect": "read",
+      "requiredScopes": ["recruiting.candidateSearch"]
+    }
+  ]
+}

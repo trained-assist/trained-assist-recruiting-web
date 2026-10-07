@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-evaluator-result.schema.json",
+  "title": "Deterministic recruiting evaluator adapter result",
+  "type": "object",
+  "required": ["result", "evidence", "gaps"],
+  "properties": {
+    "result": { "type": "string", "enum": ["meets", "partial", "does_not_meet"] },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["criterionId", "source", "excerpt"],
+        "properties": {
+          "criterionId": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+          "source": { "const": "resume" },
+          "excerpt": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "gaps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["criterionId", "kind", "required", "reason"],
+        "properties": {
+          "criterionId": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+          "kind": { "const": "missing_evidence" },
+          "required": { "type": "boolean" },
+          "reason": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-report-source-internal.schema.json",
+  "title": "Synthetic internal report source draft",
+  "type": "object",
+  "required": ["candidateId", "vacancyId", "sourceRevision", "audience", "candidate", "client", "internal"],
+  "properties": {
+    "candidateId": { "type": "string", "pattern": "^candidate_demo_[0-9]{3}$" },
+    "vacancyId": { "type": "string", "pattern": "^vac_demo_[0-9]{3}$" },
+    "sourceRevision": { "type": "string", "pattern": "^synthetic-[a-z0-9-]+-r[0-9]+$" },
+    "audience": { "const": "internal" },
+    "candidate": {
+      "type": "object",
+      "required": ["name", "position"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "position": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "client": {
+      "type": "object",
+      "required": ["summary", "experience", "fit", "conclusion"],
+      "properties": {
+        "summary": { "type": "string" },
+        "experience": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["company", "role", "period", "details"],
+            "properties": {
+              "company": { "type": "string" },
+              "role": { "type": "string" },
+              "period": { "type": "string" },
+              "details": { "type": "array", "items": { "type": "string" } }
+            },
+            "additionalProperties": false
+          }
+        },
+        "fit": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["requirement", "status", "comment"],
+            "properties": {
+              "requirement": { "type": "string" },
+              "status": { "type": "string", "enum": ["yes", "partial", "no"] },
+              "comment": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "conclusion": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "internal": {
+      "type": "object",
+      "required": ["score", "expertCheck", "riskLog", "evidence", "questionsNextStage", "correspondence"],
+      "properties": {
+        "score": { "type": "number" },
+        "expertCheck": { "type": "string" },
+        "riskLog": { "type": "array", "items": { "type": "string" } },
+        "evidence": { "type": "array", "items": { "type": "string" } },
+        "questionsNextStage": { "type": "array", "items": { "type": "string" } },
+        "correspondence": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
