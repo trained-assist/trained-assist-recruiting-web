@@ -10,7 +10,7 @@ const vacancyA = 'vac_demo_001';
 const vacancyB = 'vac_demo_002';
 const owned = (profile, vacancy) => profile === profileId && [vacancyA, vacancyB].includes(vacancy);
 const createModel = options => createCandidateState({ isVacancyOwned: owned, ...options });
-const candidate = (candidateRef, vacancyId, score = null) => ({ candidateRef, vacancyId, title: 'Synthetic engineer', score });
+const candidate = (candidateRef, vacancyId, score = null) => ({ candidateRef, vacancyId, title: 'Synthetic engineer', region: 'Synthetic region', evidenceSummary: 'Synthetic evidence', score });
 const search = (vacancyId, candidates, jobId = 'job_demo_001') => ({ profileId, vacancyId, jobId, searchedAt: '2026-10-06T06:00:00.000Z', criteriaRevision: 'criteria-r1', sourceRevision: 'provider-r1', candidates, totalCollected: candidates.length });
 
 test('full candidate pool commits before seen IDs, and one profile cannot read another', () => {
@@ -49,6 +49,7 @@ test('candidate identity is shared; vacancy review and seen state remain separat
   assert.equal(second.newCount, 1);
   model.setReview({ profileId, vacancyId: vacancyA, candidateRef: 'candidate_demo_001', status: 'starred' });
   assert.equal(model.candidates(profileId, vacancyA)[0].review.score, 8);
+  assert.deepEqual([model.candidates(profileId, vacancyA)[0].region, model.candidates(profileId, vacancyA)[0].evidenceSummary], ['Synthetic region', 'Synthetic evidence']);
   assert.equal(model.candidates(profileId, vacancyA)[0].review.status, 'starred');
   assert.equal(model.candidates(profileId, vacancyB)[0].review.score, 3);
   assert.equal(model.candidates(profileId, vacancyB)[0].review.status, 'active');
@@ -101,6 +102,7 @@ test('sanitized legacy conversion is dry-run, preserves multi-vacancy and wildca
   assert.deepEqual(plan.summary, { candidates: 2, seenBuckets: 2, snapshots: 2, manualQueries: 1 });
   assert.equal(plan.dryRun, true);
   assert.equal(plan.state.candidates.candidate_demo_002.wildcard, true);
+  assert.deepEqual([plan.state.candidates.candidate_demo_001.region, plan.state.candidates.candidate_demo_001.evidenceSummary], ['Synthetic region alpha', 'Synthetic API evidence']);
   assert.ok(candidateViewFromState(plan.state, vacancyA).some(item => item.candidateRef === 'candidate_demo_002'));
   assert.ok(candidateViewFromState(plan.state, vacancyB).some(item => item.candidateRef === 'candidate_demo_002'));
   assert.deepEqual(plan.state.candidates.candidate_demo_001.reviewsByVacancy, { vac_demo_001: { status: 'starred', score: 8 }, vac_demo_002: { status: 'archived', score: 3 } });

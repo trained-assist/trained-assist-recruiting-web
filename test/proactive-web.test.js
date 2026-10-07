@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRecruitingServer } from '../src/server.js';
 import { syntheticColdSearchProvider } from '../src/candidate-search-jobs.js';
+import { createMemoryCandidateStateStore } from '../src/candidate-state.js';
 
 const vacancyId = 'vac_demo_001';
 const request = { vacancyId, criteriaRevision: 'criteria-search-demo-r1', criteria: { keywords: ['synthetic engineer'], regions: ['region_demo_001'] } };
@@ -145,4 +146,66 @@ test('concurrent manual retries share one finalized job and one search time', as
     assert.deepEqual([firstBody.replayed, secondBody.replayed], [false, true]);
     assert.equal(providerCalls, 2, 'one two-page provider search runs');
   } finally { releaseResolve(); await new Promise(resolve => server.close(resolve)); }
+});
+
+test('scheduled and manual completions share an accumulated profile-owned feed; partial work stays out', async () => {
+  const vacancyB = 'vac_demo_002';
+  let current = new Date('2026-10-06T00:00:00.000Z');
+  let startsA = 0;
+  const stateStore = createMemoryCandidateStateStore();
+  const server = createRecruitingServer({
+    candidateStateStore: stateStore,
+    resolveTrustedProfileContext: req => ({ profileId: req.headers['x-test-principal'], scopes: ['recruiting.candidateSearch'] }),
+    resolveCurrentSearchCriteriaRevision: () => request.criteriaRevision,
+    resolveScheduledSearchRequest: async (_profileId, selectedVacancy) => ({ ...request, vacancyId: selectedVacancy }),
+    candidateSearchProvider: async ({ vacancyId: selectedVacancy, cursor }) => {
+      if (selectedVacancy === vacancyB) return { kind: 'page', sourceRevision: 'cold-search-provider-demo-r1', items: [{
+        candidateRef: 'candidate_search_demo_001', vacancyId: vacancyB, title: 'Synthetic B candidate', region: 'Synthetic B region', evidenceSummary: 'Synthetic B evidence'
+      }], nextCursor: null, complete: true };
+      if (cursor === 'unfinished-page') return { kind: 'error', code: 'provider_unavailable', retryable: false };
+      startsA++;
+      const ref = `candidate_search_demo_${String(startsA).padStart(3, '0')}`;
+      return { kind: 'page', sourceRevision: 'cold-search-provider-demo-r1', items: [{
+        candidateRef: ref, vacancyId, title: `Synthetic candidate ${startsA}`, region: `Synthetic region ${startsA}`, evidenceSummary: `Synthetic evidence ${startsA}`
+      }], nextCursor: startsA === 3 ? 'unfinished-page' : null, complete: startsA !== 3 };
+    },
+    scheduleClock: () => new Date(current)
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const headersA = { 'X-Test-Principal': 'profile_demo_001' };
+  const headersB = { 'X-Test-Principal': 'profile_demo_002' };
+  const read = async (vacancy, headers) => (await fetch(`${base}/api/hh/proactive/candidates?vacancy_id=${vacancy}`, { headers })).json();
+  const post = (vacancy, headers, key, path = 'search') => fetch(`${base}/api/hh/proactive/${path}`, {
+    method: 'POST', headers: { ...headers, 'Content-Type': 'application/json', 'Idempotency-Key': key },
+    body: JSON.stringify(path === 'search' ? { vacancy_id: vacancy } : { vacancy_id: vacancy, action: 'enable', interval_hours: 1 })
+  });
+  try {
+    const enabled = await (await post(vacancyId, headersA, 'schedule-enable', 'vacancy-state')).json();
+    current = new Date(enabled.schedule.nextRunAt);
+    assert.deepEqual(await server.coldSearchSchedules.tick('synthetic-minute-worker'), { claimed: 1, completed: 1, unknown: 0 });
+    const first = await read(vacancyId, headersA);
+    assert.deepEqual([first.source, first.total, first.latestRunTotal, first.newCount], ['scheduled', 1, 1, 1]);
+    assert.equal(first.candidates[0].region, 'Synthetic region 1');
+    current = new Date(current.getTime() + 60_000);
+    assert.equal((await post(vacancyId, headersA, 'manual-feed-run-002')).status, 200);
+    const second = await read(vacancyId, headersA);
+    assert.deepEqual([second.source, second.total, second.latestRunTotal, second.newCount], ['manual', 2, 1, 1]);
+    assert.deepEqual(second.candidates.map(item => item.candidateRef), ['candidate_search_demo_001', 'candidate_search_demo_002']);
+    assert.deepEqual(second.candidates.map(item => [item.inLatestRun, item.isNew]), [[false, false], [true, true]]);
+    assert.equal(second.candidates[0].evidenceSummary, 'Synthetic evidence 1', 'older card keeps its UI display fields');
+    assert.notEqual(second.resultRevision, first.resultRevision);
+    current = new Date(current.getTime() + 60_000);
+    assert.equal((await post(vacancyId, headersA, 'manual-partial-003')).status, 503);
+    const afterPartial = await read(vacancyId, headersA);
+    assert.equal(afterPartial.resultRevision, second.resultRevision);
+    assert.equal(afterPartial.total, 2);
+    assert.equal(stateStore.read('profile_demo_001').seenByVacancy[vacancyId].candidate_search_demo_003, undefined);
+    assert.equal((await fetch(`${base}/api/hh/proactive/candidates?vacancy_id=${vacancyId}`, { headers: headersB })).status, 404);
+    assert.equal((await post(vacancyB, headersB, 'manual-other-profile-001')).status, 200);
+    const other = await read(vacancyB, headersB);
+    assert.equal(other.total, 1);
+    assert.equal(other.candidates[0].title, 'Synthetic B candidate');
+    assert.equal((await read(vacancyId, headersA)).total, 2);
+  } finally { await new Promise(resolve => server.close(resolve)); }
 });

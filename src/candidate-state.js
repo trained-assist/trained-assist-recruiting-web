@@ -26,7 +26,8 @@ function assertCandidate(item) {
 export function candidateViewFromState(state, vacancyId) {
   if (!safeId(vacancyId)) throw new TypeError('safe vacancyId is required');
   return Object.values(state.candidates).filter(item => item.wildcard || item.vacancyIds.includes(vacancyId)).map(item => ({
-    candidateRef: item.candidateRef, title: item.title, source: item.source, foundAt: item.foundAt,
+    candidateRef: item.candidateRef, title: item.title, region: item.region, evidenceSummary: item.evidenceSummary,
+    source: item.source, foundAt: item.foundAt,
     review: clone(item.reviewsByVacancy[vacancyId] ?? { status: 'active', score: null })
   }));
 }
@@ -108,12 +109,13 @@ export function createCandidateState({ store = createMemoryCandidateStateStore()
       if (!record) return null;
       return record.manual || record.revision === this.queryRevision(profileId, vacancyId, criteriaRevision) ? clone(record) : null;
     },
-    recordSearch({ profileId, vacancyId, jobId, searchedAt, criteriaRevision, sourceRevision, candidates, totalCollected }) {
+    recordSearch({ profileId, vacancyId, jobId, searchedAt, criteriaRevision, sourceRevision, source, candidates, totalCollected }) {
       assertOwned(profileId, vacancyId);
-      if (!safeId(jobId) || ![searchedAt, criteriaRevision, sourceRevision].every(nonempty) || !Array.isArray(candidates) || !Number.isSafeInteger(totalCollected) || totalCollected < candidates.length) throw new TypeError('invalid completed search');
+      if (!safeId(jobId) || ![searchedAt, criteriaRevision, sourceRevision].every(nonempty) || (source !== undefined && !['manual', 'scheduled'].includes(source)) || !Array.isArray(candidates) || !Number.isSafeInteger(totalCollected) || totalCollected < candidates.length) throw new TypeError('invalid completed search');
       const unique = new Set();
       for (const candidate of candidates) {
         assertCandidate(candidate);
+        if (candidate.region !== undefined && typeof candidate.region !== 'string' || candidate.evidenceSummary !== undefined && typeof candidate.evidenceSummary !== 'string') throw new TypeError('invalid candidate display fields');
         if (candidate.vacancyId !== vacancyId) throw new Error('candidate_vacancy_mismatch');
         if (candidate.score != null && (typeof candidate.score !== 'number' || !Number.isFinite(candidate.score) || candidate.score < 0 || candidate.score > 10)) throw new TypeError('invalid candidate score');
         if (unique.has(candidate.candidateRef)) throw new TypeError('duplicate candidate in search');
@@ -121,6 +123,14 @@ export function createCandidateState({ store = createMemoryCandidateStateStore()
       }
       return store.transact(profileId, (state, step) => {
         if (state.profileId !== profileId) throw new Error('candidate_state_owner_mismatch');
+        for (const [storedVacancyId, snapshots] of Object.entries(state.snapshotsByVacancy)) {
+          const previous = snapshots.find(item => item.jobId === jobId);
+          if (previous) {
+            if (storedVacancyId !== vacancyId || previous.criteriaRevision !== criteriaRevision || previous.sourceRevision !== sourceRevision || previous.source !== source ||
+                JSON.stringify(previous.candidateRefs) !== JSON.stringify([...unique])) throw new Error('search_job_snapshot_conflict');
+            return clone(previous);
+          }
+        }
         const prior = bucket(state.seenByVacancy, vacancyId);
         const newIds = candidates.filter(item => !prior[item.candidateRef]).map(item => item.candidateRef);
         for (const item of candidates) {
@@ -129,7 +139,8 @@ export function createCandidateState({ store = createMemoryCandidateStateStore()
           const priorReview = reviewsByVacancy[vacancyId] ?? {};
           reviewsByVacancy[vacancyId] = { status: priorReview.status ?? 'active', score: item.score ?? priorReview.score ?? null };
           state.candidates[item.candidateRef] = {
-            candidateRef: item.candidateRef, title: item.title, source: old?.source === 'manual' ? 'manual' : 'search',
+            candidateRef: item.candidateRef, title: item.title, region: item.region ?? old?.region ?? '',
+            evidenceSummary: item.evidenceSummary ?? old?.evidenceSummary ?? '', source: old?.source === 'manual' ? 'manual' : 'search',
             foundAt: old?.foundAt ?? searchedAt, wildcard: false,
             vacancyIds: [...new Set([...(old?.vacancyIds ?? []), vacancyId])], reviewsByVacancy
           };
@@ -137,7 +148,7 @@ export function createCandidateState({ store = createMemoryCandidateStateStore()
         step('candidate_pool'); // A failed pool write must never mark an ID as seen.
         for (const id of unique) prior[id] ??= searchedAt;
         step('seen_ledger');
-        const snapshot = { stateVersion: CANDIDATE_STATE_VERSION, profileId, vacancyId, jobId, searchedAt, criteriaRevision, sourceRevision,
+        const snapshot = { stateVersion: CANDIDATE_STATE_VERSION, profileId, vacancyId, jobId, searchedAt, criteriaRevision, sourceRevision, ...(source ? { source } : {}),
           candidateRefs: [...unique], totalCollected, totalAfterFilter: candidates.length, newCount: newIds.length, newCandidateRefs: newIds };
         (state.snapshotsByVacancy[vacancyId] ??= []).push(snapshot);
         step('snapshot');
@@ -151,14 +162,15 @@ export function createCandidateState({ store = createMemoryCandidateStateStore()
       const state = emptyState(profileId);
       for (const [id, raw] of Object.entries(legacy.allCandidates ?? {})) {
         if (!/^candidate_demo_[0-9]{3}$/.test(id) || !raw || !/^Synthetic [a-zA-Z0-9 .-]{1,80}$/.test(raw.title) || !['search', 'manual'].includes(raw.source) || !isoUtc(raw.found_at)) throw new Error('unsafe_legacy_candidate');
-        if (Object.keys(raw).some(key => !['title', 'source', 'found_at', 'vacancy_ids', 'vacancy_data'].includes(key))) throw new Error('unsafe_legacy_candidate_field');
+        if (Object.keys(raw).some(key => !['title', 'region', 'evidence_summary', 'source', 'found_at', 'vacancy_ids', 'vacancy_data'].includes(key))) throw new Error('unsafe_legacy_candidate_field');
+        if (raw.region !== undefined && !/^Synthetic [a-zA-Z0-9 .-]{1,80}$/.test(raw.region) || raw.evidence_summary !== undefined && !/^Synthetic [a-zA-Z0-9 .-]{1,120}$/.test(raw.evidence_summary)) throw new Error('unsafe_legacy_candidate_field');
         if (!Array.isArray(raw.vacancy_ids) || raw.vacancy_ids.some(v => !/^vac_demo_[0-9]{3}$/.test(v) || !isVacancyOwned(profileId, v))) throw new Error('unsafe_legacy_vacancy');
         const reviewsByVacancy = {};
         for (const [vacancyId, review] of Object.entries(raw.vacancy_data ?? {})) {
           if (!/^vac_demo_[0-9]{3}$/.test(vacancyId) || !raw.vacancy_ids.includes(vacancyId) || !statuses.has(review.status) || (review.score != null && (typeof review.score !== 'number' || review.score < 0 || review.score > 10)) || Object.keys(review).some(key => !['status', 'score'].includes(key))) throw new Error('unsafe_legacy_review');
           reviewsByVacancy[vacancyId] = { status: review.status, score: review.score ?? null };
         }
-        state.candidates[id] = { candidateRef: id, title: raw.title, source: raw.source, foundAt: raw.found_at,
+        state.candidates[id] = { candidateRef: id, title: raw.title, region: raw.region ?? '', evidenceSummary: raw.evidence_summary ?? '', source: raw.source, foundAt: raw.found_at,
           wildcard: raw.vacancy_ids.length === 0, vacancyIds: [...new Set(raw.vacancy_ids)], reviewsByVacancy };
       }
       for (const [vacancyId, seen] of Object.entries(legacy.seenIds ?? {})) {

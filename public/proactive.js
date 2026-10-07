@@ -24,7 +24,7 @@ async function refresh() {
     ]);
     statusNode.textContent = results.status === 'never_run'
       ? 'No search has completed for this vacancy yet.'
-      : `${results.total} candidates from ${results.source} search at ${results.searchedAt}`;
+      : `${results.total} candidates in this vacancy · ${results.newCount} new in ${results.source} search at ${results.searchedAt}`;
     scheduleNode.textContent = schedule.schedules.length
       ? `${schedule.schedules[0].enabled ? 'Enabled' : 'Disabled'} · next ${schedule.schedules[0].nextRunAt}`
       : 'No schedule configured';
@@ -34,7 +34,7 @@ async function refresh() {
       const heading = document.createElement('strong');
       heading.textContent = candidate.title;
       const details = document.createElement('span');
-      details.textContent = ` · ${candidate.region} · ${candidate.evidenceSummary}`;
+      details.textContent = `${candidate.isNew ? ' · NEW' : ''} · ${candidate.region} · ${candidate.evidenceSummary}`;
       row.append(heading, details);
       candidatesNode.append(row);
     }
