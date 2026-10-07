@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createCipheriv } from 'node:crypto';
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync,
   rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -11,7 +12,13 @@ import { runPrivateFullCostPreflight } from '../src/r03-private-full-cost-prefli
 const profileId = 'invented_profile'; const vacancyId = 'invented_vacancy';
 const ats = { vacancy_id: vacancyId, vacancy_title: 'Вымышленный инженер',
   vacancy_context: 'Вымышленный клиент', filters: { area: { id: '1' },
-    min_experience_years: 0 }, required: [{ name: 'инженер', weight: 1 }], knockout: [] };
+  min_experience_years: 0 }, required: [{ name: 'инженер', weight: 1 }], knockout: [] };
+const key = 'a'.repeat(64);
+const sealed = value => {
+  const iv = Buffer.alloc(16, 3); const cipher = createCipheriv('aes-256-gcm', Buffer.from(key, 'hex'), iv);
+  const ciphertext = Buffer.concat([cipher.update(JSON.stringify(value), 'utf8'), cipher.final()]);
+  return Buffer.concat([Buffer.from([2]), iv, cipher.getAuthTag(), ciphertext]).toString('base64');
+};
 
 function fixture(t) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'r03-full-cost-')));
@@ -36,8 +43,8 @@ function fixture(t) {
   write('proactive', `queries-${vacancyId}.json`, JSON.stringify({ vacancy_id: vacancyId,
     queries: ['вымышленный инженер', 'вымышленный конструктор'],
     config_hash: legacyQueryConfigHash(ats) }));
-  write('tokens', 'hh', 'invented_token');
-  write('secrets', 'hh_encryption_key', 'a'.repeat(64));
+  write('tokens', 'hh', sealed({ access_token: 'invented_token' }));
+  write('secrets', 'hh_encryption_key', key);
   write('secrets', 'hh_user_agent', 'invented-recruiting/1.0 (contact@example.test)');
   return { root, hostConfigFile, stageReceiptFile, secretsDirectory: join(root, 'secrets'),
     outputFile: join(root, 'cost-preflight.json'), profileId, vacancyId,

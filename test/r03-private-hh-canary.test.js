@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createCipheriv } from 'node:crypto';
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +9,12 @@ import { legacyQueryConfigHash } from '../src/r03-private-base-plan.js';
 
 const profileId = 'invented_profile';
 const vacancyId = 'invented_vacancy';
+const encryptionKey = 'a'.repeat(64);
+const sealed = value => {
+  const iv = Buffer.alloc(16, 3); const cipher = createCipheriv('aes-256-gcm', Buffer.from(encryptionKey, 'hex'), iv);
+  const ciphertext = Buffer.concat([cipher.update(JSON.stringify(value), 'utf8'), cipher.final()]);
+  return Buffer.concat([Buffer.from([2]), iv, cipher.getAuthTag(), ciphertext]).toString('base64');
+};
 const ats = { vacancy_id: vacancyId, vacancy_title: 'Вымышленный аналитик',
   vacancy_context: 'Вымышленная организация', filters: { area: { id: '1' } },
   required: [{ name: 'аналитик', weight: 1 }], knockout: [] };
@@ -26,8 +33,8 @@ function fixture(t) {
   write('contexts', `ats_config:${vacancyId}.json`, JSON.stringify({ value: JSON.stringify(ats) }));
   write('proactive', `queries-${vacancyId}.json`, JSON.stringify({ vacancy_id: vacancyId,
     queries: ['вымышленный аналитик'], config_hash: legacyQueryConfigHash(ats) }));
-  write('tokens', 'hh', 'invented_token');
-  write('secrets', 'hh_encryption_key', 'a'.repeat(64));
+  write('tokens', 'hh', sealed({ access_token: 'invented_token' }));
+  write('secrets', 'hh_encryption_key', encryptionKey);
   write('secrets', 'hh_user_agent', 'invented-recruiting/1.0 (contact@example.test)');
   return { configFile, secretsDirectory: join(root, 'secrets'), profileId, vacancyId, write };
 }
