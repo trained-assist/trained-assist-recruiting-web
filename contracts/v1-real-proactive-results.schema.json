@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/trained-assist/trained-assist-recruiting-web/contracts/v1-real-proactive-results.schema.json",
+  "type": "object",
+  "required": ["ok", "vacancyId", "status", "freshness", "total", "candidates", "resultRevision"],
+  "properties": {
+    "ok": { "const": true },
+    "vacancyId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+    "status": { "enum": ["completed", "never_run"] },
+    "freshness": { "enum": ["latest_completed", "latest_run_incomplete", "never_run"] },
+    "total": { "type": "integer", "minimum": 0 },
+    "resultRevision": { "type": "string", "pattern": "^[a-f0-9]{24}$" },
+    "candidates": { "type": "array", "maxItems": 50000, "items": { "$ref": "#/$defs/candidate" } }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "candidate": {
+      "type": "object",
+      "required": ["id", "vacancyId", "hhUrl", "title", "firstName", "lastName", "age", "area", "totalExperienceMonths", "totalExperienceYears", "salary", "recentCompanies", "experience", "preScore", "preScoreSignals", "preTag", "totalPossible", "atsScore", "atsTag", "knockout", "source", "jobId", "lastFoundAt", "review", "comment", "excludeFromSearch"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+        "vacancyId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+        "hhUrl": { "type": "string", "pattern": "^https://(www\\.)?hh\\.ru/resume/[A-Za-z0-9]+" },
+        "title": { "type": "string" }, "firstName": { "type": "string" }, "lastName": { "type": "string" },
+        "age": { "type": ["integer", "null"], "minimum": 0 }, "area": { "type": "string" },
+        "totalExperienceMonths": { "type": "integer", "minimum": 0 },
+        "totalExperienceYears": { "type": "number", "minimum": 0 },
+        "salary": { "type": ["object", "null"] },
+        "recentCompanies": { "type": "array", "items": { "type": "string" } },
+        "experience": { "type": "array", "items": { "type": "object" } },
+        "preScore": { "type": "number", "minimum": 0 },
+        "preScoreSignals": { "type": "array", "items": { "type": "string" } },
+        "preTag": { "enum": ["PASS", "REVIEW", "WEAK"] },
+        "totalPossible": { "type": "number", "minimum": 0 },
+        "atsScore": { "type": ["number", "null"], "minimum": 0, "maximum": 10 },
+        "atsTag": { "enum": ["PASS", "REVIEW", "WEAK", null] },
+        "knockout": { "type": "object" },
+        "source": { "enum": ["manual", "scheduled"] },
+        "jobId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+        "lastFoundAt": { "type": "string", "pattern": "^20[0-9]{2}-[0-9]{2}-[0-9]{2}T" },
+        "review": { "type": "object", "required": ["status", "revision"],
+          "properties": { "status": { "enum": ["active", "starred", "archived"] }, "revision": { "type": "integer", "minimum": 0 } }, "additionalProperties": false },
+        "comment": { "type": ["string", "null"], "maxLength": 1000 },
+        "excludeFromSearch": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -17,8 +17,18 @@ function validatedPlan(value, profileId, vacancyId, expectedCriteriaRevision, ex
       !Array.isArray(value.queryCache.queries) || value.queryCache.queries.length < 1 || value.queryCache.queries.length > 15 ||
       value.queryCache.queries.some(query => typeof query !== 'string' || !query.trim() || query !== query.trim() || query.length > 500) ||
       new Set(value.queryCache.queries).size !== value.queryCache.queries.length ||
-      !value.atsConfig || typeof value.atsConfig !== 'object' || !has(value, 'area')) throw new HhColdSearchRunError('search_plan_unavailable');
+      !value.atsConfig || typeof value.atsConfig !== 'object' || !has(value, 'area') ||
+      value.feedbackRevision !== undefined && !/^[a-f0-9]{24}$/.test(value.feedbackRevision) ||
+      value.excludedResumeIds !== undefined && (!Array.isArray(value.excludedResumeIds) || value.excludedResumeIds.length > 20000 ||
+        value.excludedResumeIds.some(id => !safeId(id)) || new Set(value.excludedResumeIds).size !== value.excludedResumeIds.length))
+    throw new HhColdSearchRunError('search_plan_unavailable');
   return value;
+}
+
+function sourceKey(plan) {
+  const key = [plan.criteriaRevision, plan.queryCache.revision, plan.queryCache.queries, plan.area, plan.atsConfig];
+  if (plan.excludedResumeIds?.length) key.push([...plan.excludedResumeIds].sort());
+  return key;
 }
 
 export function createOfflineHhColdSearch({ loadSearchPlan, transport, candidateState, clock = () => new Date() } = {}) {
@@ -35,7 +45,7 @@ export function createOfflineHhColdSearch({ loadSearchPlan, transport, candidate
       let plan;
       try { plan = validatedPlan(await loadSearchPlan(profileId, vacancyId), profileId, vacancyId, expectedCriteriaRevision, expectedQueryRevision); }
       catch { throw new HhColdSearchRunError('search_plan_unavailable'); }
-      const sourceRevision = `hh-search-${hash([plan.criteriaRevision, plan.queryCache.revision, plan.queryCache.queries, plan.area, plan.atsConfig]).slice(0, 24)}`;
+      const sourceRevision = `hh-search-${hash(sourceKey(plan)).slice(0, 24)}`;
       const previously = candidateState.resultPage?.({ profileId, vacancyId, jobId, limit: 1 });
       if (previously) {
         const snapshot = previously.snapshot;
@@ -44,31 +54,36 @@ export function createOfflineHhColdSearch({ loadSearchPlan, transport, candidate
       }
       const candidates = new Map();
       const collectedIds = new Set();
+      const excluded = new Set(plan.excludedResumeIds ?? []);
       let areas = null;
       for (const query of plan.queryCache.queries) {
         let page;
         try { page = await transport.search({ trustedContext, vacancyId, query, area: plan.area }); }
         catch { throw new HhColdSearchRunError('provider_search_failed'); }
-        if (page.profileId !== profileId || page.vacancyId !== vacancyId || !Array.isArray(page.areas) || !Array.isArray(page.items) || page.items.length > 50 ||
+        if (page.profileId !== profileId || page.vacancyId !== vacancyId || !Array.isArray(page.areas) || !Array.isArray(page.items) || page.items.length > 2000 ||
             (areas !== null && JSON.stringify(areas) !== JSON.stringify(page.areas))) throw new HhColdSearchRunError('provider_scope_or_area_mismatch');
         areas ??= page.areas;
-        let mapped;
-        try { mapped = mapHhResumePage(page.items, plan.atsConfig, vacancyId); }
-        catch { throw new HhColdSearchRunError('provider_mapping_failed'); }
+        const mappedCandidates = [];
+        try {
+          for (let offset = 0; offset < page.items.length; offset += 50) {
+            const mapped = mapHhResumePage(page.items.slice(offset, offset + 50), plan.atsConfig, vacancyId);
+            mappedCandidates.push(...mapped.candidates);
+          }
+        } catch { throw new HhColdSearchRunError('provider_mapping_failed'); }
         for (const item of page.items) collectedIds.add(item.id);
-        for (const candidate of mapped.candidates) if (!candidates.has(candidate.id)) candidates.set(candidate.id, candidate);
+        for (const candidate of mappedCandidates) if (!excluded.has(candidate.id) && !candidates.has(candidate.id)) candidates.set(candidate.id, candidate);
       }
       let current;
       try { current = validatedPlan(await loadSearchPlan(profileId, vacancyId), profileId, vacancyId, expectedCriteriaRevision, expectedQueryRevision); }
       catch { throw new HhColdSearchRunError('search_plan_stale'); }
-      if (hash([current.criteriaRevision, current.queryCache.revision, current.queryCache.queries, current.area, current.atsConfig]) !==
-          hash([plan.criteriaRevision, plan.queryCache.revision, plan.queryCache.queries, plan.area, plan.atsConfig])) throw new HhColdSearchRunError('search_plan_stale');
+      if (hash(sourceKey(current)) !== hash(sourceKey(plan))) throw new HhColdSearchRunError('search_plan_stale');
       const searchedAt = clock().toISOString();
       let snapshot;
       try {
         snapshot = candidateState.recordCompletedSearch({ version: REAL_HH_RESULT_VERSION, profileId, vacancyId, jobId,
           searchedAt, criteriaRevision: plan.criteriaRevision, sourceRevision, source,
-          totalCollected: collectedIds.size, candidates: [...candidates.values()] });
+          totalCollected: collectedIds.size, candidates: [...candidates.values()],
+          ...(plan.feedbackRevision ? { expectedFeedbackRevision: plan.feedbackRevision } : {}) });
       } catch { throw new HhColdSearchRunError('candidate_commit_failed'); }
       return { status: 'completed', snapshot, replayed: false };
     }
