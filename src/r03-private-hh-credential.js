@@ -13,6 +13,25 @@ const envelope = raw => {
   return bytes.toString('base64') === value && bytes.length >= 33 && bytes[0] === 2 ? bytes : null;
 };
 
+function decryptEnvelope(sealed, encryptionKey) {
+  if (!validKey(encryptionKey)) fail('hh_credential_key_unavailable');
+  try {
+    const decipher = createDecipheriv('aes-256-gcm', Buffer.from(encryptionKey, 'hex'), sealed.subarray(1, 17));
+    decipher.setAuthTag(sealed.subarray(17, 33));
+    return Buffer.concat([decipher.update(sealed.subarray(33)), decipher.final()]).toString('utf8');
+  } catch { fail('hh_credential_decryption_failed'); }
+}
+
+function credentialValue(raw) {
+  try {
+    const value = raw.trim().startsWith('{') ? JSON.parse(raw) : { access_token: raw.trim() };
+    if (!value || typeof value !== 'object' || Array.isArray(value) ||
+        typeof value.access_token !== 'string' || !value.access_token.trim() ||
+        value.refresh_token !== undefined && typeof value.refresh_token !== 'string') fail('hh_credential_unavailable');
+    return value;
+  } catch { fail('hh_credential_unavailable'); }
+}
+
 function privateDirectory(directory) {
   try { if (!lstatSync(directory).isDirectory() || lstatSync(directory).mode & 0o077) fail('credential_scope_unavailable'); }
   catch { fail('credential_scope_unavailable'); }
@@ -33,18 +52,7 @@ function readCredentialFile(directory, encryptionKey) {
   finally { if (fd !== undefined) closeSync(fd); }
   const sealed = envelope(raw);
   if (!sealed) fail('hh_credential_unencrypted');
-  if (!validKey(encryptionKey)) fail('hh_credential_key_unavailable');
-  try {
-    const decipher = createDecipheriv('aes-256-gcm', Buffer.from(encryptionKey, 'hex'), sealed.subarray(1, 17));
-    decipher.setAuthTag(sealed.subarray(17, 33));
-    raw = Buffer.concat([decipher.update(sealed.subarray(33)), decipher.final()]).toString('utf8');
-  } catch { fail('hh_credential_decryption_failed'); }
-  try {
-    const value = raw.trim().startsWith('{') ? JSON.parse(raw) : { access_token: raw.trim() };
-    if (!value || typeof value.access_token !== 'string' || !value.access_token.trim() ||
-        value.refresh_token !== undefined && typeof value.refresh_token !== 'string') fail('hh_credential_unavailable');
-    return value;
-  } catch { fail('hh_credential_unavailable'); }
+  return credentialValue(decryptEnvelope(sealed, encryptionKey));
 }
 
 function sealCredential(value, encryptionKey) {
@@ -53,6 +61,24 @@ function sealCredential(value, encryptionKey) {
   const cipher = createCipheriv('aes-256-gcm', Buffer.from(encryptionKey, 'hex'), iv);
   const ciphertext = Buffer.concat([cipher.update(JSON.stringify(value), 'utf8'), cipher.final()]);
   return Buffer.concat([Buffer.from([2]), iv, cipher.getAuthTag(), ciphertext]).toString('base64');
+}
+
+// Converts bytes from the frozen legacy archive into the target's encrypted
+// at-rest format. Existing v2 files are authenticated before being resealed.
+export function encryptPrivateHhCredential(sourceBytes, encryptionKey) {
+  if (!Buffer.isBuffer(sourceBytes) || sourceBytes.length < 1 || sourceBytes.length > 64_000)
+    fail('hh_credential_unavailable');
+  if (!validKey(encryptionKey)) fail('hh_credential_key_unavailable');
+  const raw = sourceBytes.toString('utf8');
+  const sealed = envelope(raw);
+  let value;
+  if (sealed) value = credentialValue(decryptEnvelope(sealed, encryptionKey));
+  else {
+    const possibleEnvelope = Buffer.from(raw.trim(), 'base64');
+    if (possibleEnvelope.length && possibleEnvelope[0] === 2) fail('hh_credential_unavailable');
+    value = credentialValue(raw);
+  }
+  return Buffer.from(sealCredential(value, encryptionKey), 'utf8');
 }
 
 function replaceCredential(directory, value, encryptionKey) {
