@@ -44,7 +44,7 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
       candidateState: candidates, manualRuns });
     const actions = createR03RealProactiveActions({ scheduleRepository: schedules,
       manualRuns, feed, loadSearchPlan: stack.loadSearchPlan,
-      isVacancyOwned: config.isVacancyOwned, clock });
+      isVacancyOwned: config.isVacancyOwned, vacancyFlags: schedules, clock });
     const prompt = createR03PrivatePromptSettings({ loadBasePlan: stack.loadBasePlan,
       queryOverrides: stack.queryOverrides, isVacancyOwned: config.isVacancyOwned, clock });
     const seenImport = createR03PrivateSeenImport({ candidateState: candidates,
@@ -57,6 +57,7 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
       realProactiveActions: actions, realProactivePrompt: prompt,
       realProactiveSeenImport: seenImport,
       resolveTrustedProfileContext: auth,
+      resolveLegacyOpenTab: auth.resolveLegacyOpenTab,
       resolveRealVacancyOwnership: (context, vacancyId) => config.isVacancyOwned(context.profileId, vacancyId),
       resolveRealDefaultVacancy: context => {
         const ids = config.vacancyIdsForProfile(context.profileId);

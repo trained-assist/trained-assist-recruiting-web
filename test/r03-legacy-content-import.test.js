@@ -52,16 +52,48 @@ function withBytes(input) {
   return input;
 }
 
-function fixture(t, onStep = () => {}) {
+function fixture(t, onStep = () => {}, isQuarantinedSourceVacancy = () => false) {
   const directory = mkdtempSync(join(tmpdir(), 'r03-legacy-content-'));
   const filename = join(directory, 'private.sqlite');
   const opened = [];
   t.after(() => { for (const store of opened) if (store.db.open) store.close(); rmSync(directory, { recursive: true, force: true }); });
   return { filename, open: () => {
-    const store = new R03LegacyContentImporter({ filename, bindProfile: bind, isVacancyOwned: owned, onStep });
+    const store = new R03LegacyContentImporter({ filename, bindProfile: bind,
+      isVacancyOwned: owned, isQuarantinedSourceVacancy, onStep });
     opened.push(store); return store;
   } };
 }
+
+test('explicit historical-only vacancy is retained as raw quarantined evidence', t => {
+  const historical = 'historical_unowned';
+  const input = content();
+  input.seenIds[historical] = { resume_invented_bound: '2026-10-02' };
+  input.snapshots.push({ sourceFile: `search-results-2026-10-04-${historical}.json`, payload: {
+    vacancy_id: historical, searched_at: '2026-10-04T06:00:00.000Z',
+    candidates: [{ id: 'resume_invented_bound' }] } });
+  input.expectedCounts.seenIds++;
+  input.expectedCounts.snapshots++;
+  input.expectedCounts.quarantinedSnapshots++;
+  input.expectedCounts.mismatchedSeen++;
+  input.expectedCounts.mismatchedSnapshotMembers++;
+  withBytes(input);
+  const denied = fixture(t).open();
+  assert.throws(() => denied.import(input), /invalid_legacy_content_seen/);
+  denied.close();
+  const { open } = fixture(t, () => {}, (profileId, vacancyId) =>
+    profileId === profile && vacancyId === historical);
+  const importer = open();
+  const receipt = importer.import(input);
+  assert.deepEqual(receipt.quarantine, { unownedVacancyIds: [historical],
+    unownedSeenRows: 1, unownedSnapshots: 1 });
+  assert.equal(importer.db.prepare('SELECT unowned_vacancy FROM r03_legacy_content_seen WHERE vacancy_id=?')
+    .get(historical).unowned_vacancy, 1);
+  assert.equal(importer.db.prepare('SELECT unowned_vacancy,acceptance_status FROM r03_legacy_content_snapshot WHERE vacancy_id=?')
+    .get(historical).unowned_vacancy, 1);
+  assert.equal(importer.db.prepare('SELECT quarantine FROM r03_legacy_content_import').get().quarantine,
+    JSON.stringify(receipt.quarantine));
+  assert.equal(importer.import(input).kind, 'replayed');
+});
 
 test('private import preserves invented content and quarantines wildcard and legacy snapshots', t => {
   const { filename, open } = fixture(t);

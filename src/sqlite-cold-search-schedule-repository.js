@@ -49,6 +49,13 @@ export class SqliteColdSearchScheduleRepository {
         ON cold_search_occurrences(profile_id, scheduled_at);
       CREATE INDEX IF NOT EXISTS cold_search_running_idx
         ON cold_search_occurrences(status, lease_until);
+      CREATE TABLE IF NOT EXISTS cold_search_vacancy_flags (
+        profile_id TEXT NOT NULL, vacancy_id TEXT NOT NULL,
+        starred INTEGER NOT NULL DEFAULT 0 CHECK (starred IN (0, 1)),
+        archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1)),
+        revision INTEGER NOT NULL DEFAULT 1,
+        PRIMARY KEY (profile_id, vacancy_id)
+      );
     `);
     this.scheduleById = this.db.prepare('SELECT payload FROM cold_search_schedules WHERE schedule_id = ?');
     this.occurrenceById = this.db.prepare('SELECT payload FROM cold_search_occurrences WHERE occurrence_id = ?');
@@ -70,6 +77,37 @@ export class SqliteColdSearchScheduleRepository {
   }
 
   close() { this.db.close(); }
+
+  getVacancyFlags(profileId, vacancyId) {
+    const row = this.db.prepare('SELECT starred, archived, revision FROM cold_search_vacancy_flags WHERE profile_id = ? AND vacancy_id = ?')
+      .get(profileId, vacancyId);
+    return { starred: Boolean(row?.starred), archived: Boolean(row?.archived), revision: row?.revision ?? 0 };
+  }
+
+  setVacancyFlag(profileId, vacancyId, flag, value, expectedRevision, disableSchedule = null, updatedAt = null) {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(profileId) || !/^[A-Za-z0-9_-]{1,128}$/.test(vacancyId) ||
+        !['starred', 'archived'].includes(flag) || typeof value !== 'boolean' ||
+        !Number.isSafeInteger(expectedRevision) || expectedRevision < 0)
+      throw new TypeError('invalid_vacancy_flag');
+    return this.db.transaction(() => {
+      const current = this.getVacancyFlags(profileId, vacancyId);
+      if (current.revision !== expectedRevision) return { kind: 'conflict', current };
+      if (disableSchedule) {
+        if (flag !== 'archived' || value !== true || disableSchedule.profileId !== profileId ||
+            disableSchedule.vacancyId !== vacancyId) throw new TypeError('invalid_archive_schedule');
+        const latest = this.getSchedule(disableSchedule.scheduleId);
+        if (latest?.enabled) this.upsertSchedule({ ...latest, enabled: false,
+          updatedAt }, latest.nextRunAt);
+      }
+      if (current[flag] === value) return { kind: 'unchanged', state: current };
+      const next = { ...current, [flag]: value, revision: current.revision + 1 };
+      this.db.prepare(`INSERT INTO cold_search_vacancy_flags (profile_id, vacancy_id, starred, archived, revision)
+        VALUES (?, ?, ?, ?, ?) ON CONFLICT (profile_id, vacancy_id) DO UPDATE SET
+        starred = excluded.starred, archived = excluded.archived, revision = excluded.revision`)
+        .run(profileId, vacancyId, Number(next.starred), Number(next.archived), next.revision);
+      return { kind: 'updated', state: next };
+    }).immediate();
+  }
 
   persistSchedule(value) {
     this.writeSchedule.run({

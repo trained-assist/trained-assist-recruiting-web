@@ -7,6 +7,8 @@ if (root) {
   const status = document.getElementById('action-status');
   const manualStatus = document.getElementById('manual-status');
   const scheduleStatus = document.getElementById('schedule-status');
+  const flagsStatus = document.getElementById('vacancy-flags-status');
+  let currentFlags = null;
   const list = new URL(location.href).searchParams.get('list');
   history.replaceState(null, '', `/hh/proactive?vacancy_id=${encodeURIComponent(vacancyId)}${list ? `&list=${encodeURIComponent(list)}` : ''}`);
 
@@ -29,6 +31,10 @@ if (root) {
   const refreshSchedule = async () => {
     const result = await request(`/api/hh/proactive/schedule?vacancy_id=${encodeURIComponent(vacancyId)}`);
     const schedule = result.schedules[0];
+    currentFlags = result.flags;
+    flagsStatus.textContent = currentFlags ?
+      `Вакансия: ${currentFlags.archived ? 'в архиве' : 'активна'}${currentFlags.starred ? ', в избранном' : ''}.` :
+      'Статус вакансии недоступен.';
     scheduleStatus.textContent = !schedule ? 'Расписание не создано.' :
       schedule.blockedByUnknownOccurrenceId ? 'Расписание заблокировано: исход прошлого запуска неизвестен.' :
       schedule.enabled ? `Включено. Следующий запуск: ${schedule.nextRunAt || 'уточняется'}.` : 'Выключено.';
@@ -102,6 +108,25 @@ if (root) {
     await refreshSchedule();
     status.textContent = 'Расписание выключено.';
   }));
+  for (const action of ['star', 'unstar', 'archive', 'restore']) {
+    document.getElementById(`vacancy-${action}`).addEventListener('click', event => run(event.currentTarget, async () => {
+      if (!currentFlags) throw new Error('Сначала загрузите статус вакансии.');
+      try {
+        await command('/api/hh/proactive/vacancy-state', { vacancy_id: vacancyId, action,
+          expected_revision: currentFlags.revision });
+      } catch (error) {
+        if (message(error) === 'vacancy_flag_revision_conflict') {
+          await refreshSchedule();
+          throw new Error('Статус вакансии изменился. Проверьте обновлённое состояние.');
+        }
+        throw error;
+      }
+      await refreshSchedule();
+      status.textContent = action === 'archive' ? 'Вакансия архивирована, расписание выключено.' :
+        action === 'restore' ? 'Вакансия восстановлена. Расписание можно включить отдельно.' :
+        action === 'star' ? 'Вакансия в избранном.' : 'Вакансия убрана из избранного.';
+    }));
+  }
 
   const runStorageKey = `r03:manual-run:${profileId}:${vacancyId}`;
   const requestStorageKey = `r03:manual-request:${profileId}:${vacancyId}`;
