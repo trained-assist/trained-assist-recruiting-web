@@ -76,6 +76,27 @@ test('429 and 5xx retry twice with bounded exponential waits; terminal errors st
   }
 });
 
+test('reads every HH page, with page-local retry and no partial return', async () => {
+  const requested = [];
+  let secondPageAttempts = 0;
+  const { transport } = fixture({ fetchImpl: async url => {
+    const page = Number(new URL(url).searchParams.get('page'));
+    requested.push(page);
+    if (page === 1 && secondPageAttempts++ === 0) return response(503);
+    return response(200, { items: [{ id: `synthetic_resume_${page}` }], found: 3, pages: 3 });
+  } });
+  const result = await search(transport);
+  assert.deepEqual(requested, [0, 1, 1, 2]);
+  assert.deepEqual(result.items.map(item => item.id), ['synthetic_resume_0', 'synthetic_resume_1', 'synthetic_resume_2']);
+  assert.equal(result.pages, 3);
+  await rejectsCode(search(fixture({ fetchImpl: async url => response(200, {
+    items: [{ id: 'synthetic_resume' }], pages: Number(new URL(url).searchParams.get('page')) === 0 ? 2 : 3
+  }) }).transport), 'provider_page_count_changed');
+  await rejectsCode(search(fixture({ fetchImpl: async () => response(200, {
+    items: [], pages: 41
+  }) }).transport), 'provider_result_window_exceeded');
+});
+
 test('401/403 refresh once and retry; missing or wrong-profile refresh fails closed', async () => {
   for (const status of [401, 403]) {
     const auth = [];

@@ -193,4 +193,23 @@ export class SqliteColdSearchScheduleRepository {
       return true;
     }).immediate();
   }
+
+  renewOccurrenceLease(id, workerId, now, leaseUntil) {
+    if (typeof id !== 'string' || !id || typeof workerId !== 'string' || !workerId ||
+        !Number.isFinite(Date.parse(now)) || !Number.isFinite(Date.parse(leaseUntil)) ||
+        leaseUntil <= now) throw new TypeError('valid occurrence heartbeat required');
+    return this.db.transaction(() => {
+      const row = this.getOccurrence(id);
+      if (!row || row.status !== 'running' || row.leaseOwner !== workerId || row.leaseUntil <= now ||
+          row.leaseUntil >= leaseUntil) return false;
+      const schedule = this.getSchedule(row.scheduleId);
+      if (!schedule || schedule.leaseOwner !== workerId || schedule.leaseUntil !== row.leaseUntil ||
+          schedule.leaseUntil <= now) return false;
+      row.leaseUntil = leaseUntil;
+      schedule.leaseUntil = leaseUntil;
+      this.persistOccurrence(row);
+      this.persistSchedule(schedule);
+      return true;
+    }).immediate();
+  }
 }
