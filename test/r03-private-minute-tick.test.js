@@ -16,16 +16,37 @@ function fixture(t) {
 
 test('host lease renews during a long tick; overlapping process skips without dispatch', async t => {
   const repo = fixture(t);
+  let releaseWorker;
+  const workerGate = new Promise(resolve => { releaseWorker = resolve; });
+  let resolveHeartbeat;
+  const heartbeatObserved = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('heartbeat_not_observed')), 5000);
+    resolveHeartbeat = () => { clearTimeout(timeout); resolve(); };
+  });
+  let clockCalls = 0;
+  const clock = () => {
+    clockCalls++;
+    if (clockCalls === 2) resolveHeartbeat();
+    return new Date(Date.parse('2026-10-06T00:00:00.000Z') + clockCalls * 1000);
+  };
+  let dispatches = 0;
   const worker = { tick: async () => {
-    await new Promise(resolve => setTimeout(resolve, 180));
+    dispatches++;
+    await workerGate;
     return { claimed: 1, completed: 1, rejected: 0, unknown: 0 };
   } };
   const first = runPrivateHhMinuteTick({ worker, scheduleRepository: repo,
-    workerId: 'worker_first', leaseMs: 70, heartbeatMs: 15 });
-  await new Promise(resolve => setTimeout(resolve, 110));
-  assert.deepEqual(await runPrivateHhMinuteTick({ worker, scheduleRepository: repo,
-    workerId: 'worker_second', leaseMs: 70, heartbeatMs: 15 }),
-  { status: 'skipped', reason: 'timer_busy' });
+    workerId: 'worker_first', clock, leaseMs: 60_000, heartbeatMs: 5 });
+  const initialExpiry = repo.db.prepare('SELECT expires_at FROM r03_minute_worker_lease').get().expires_at;
+  try {
+    await heartbeatObserved;
+    assert.ok(repo.db.prepare('SELECT expires_at FROM r03_minute_worker_lease').get().expires_at > initialExpiry,
+      'heartbeat extended the held lease before the second process attempted dispatch');
+    assert.deepEqual(await runPrivateHhMinuteTick({ worker, scheduleRepository: repo,
+      workerId: 'worker_second', clock, leaseMs: 60_000, heartbeatMs: 5 }),
+    { status: 'skipped', reason: 'timer_busy' });
+    assert.equal(dispatches, 1);
+  } finally { releaseWorker(); }
   assert.deepEqual(await first, { status: 'completed',
     result: { claimed: 1, completed: 1, rejected: 0, unknown: 0 } });
   assert.equal(repo.db.prepare('SELECT COUNT(*) AS n FROM r03_minute_worker_lease').get().n, 0);
