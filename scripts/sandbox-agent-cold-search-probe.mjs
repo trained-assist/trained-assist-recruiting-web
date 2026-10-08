@@ -17,13 +17,14 @@ assert.equal(origin.protocol, 'https:');
 assert.match(origin.hostname, /^[a-z0-9-]+\.skillset-apply\.workers\.dev$/);
 const profileId = 'profile_demo_001';
 const vacancyId = 'vac_demo_001';
-const cookieName = '__Host-recruiting-sandbox';
+const pendingCookieName = '__Host-recruiting-oauth-pending';
+const sessionCookieName = '__Host-recruiting-app-session';
 const serverId = 'recruiting-web-public-sandbox';
 const bindingRef = `cred:recruiting-sandbox-${randomBytes(6).toString('hex')}`;
 const workDir = mkdtempSync(join(tmpdir(), 'recruiting-agent-public-mcp-'));
 const toolNames = ['recruiting.cold_search.manage_schedule', 'recruiting.cold_search.list_occurrences'];
-const parseCookie = response => response.headers.getSetCookie().map(value => value.split(';', 1)[0])
-  .find(value => value.startsWith(`${cookieName}=`));
+const parseCookie = (response, name) => response.headers.getSetCookie().map(value => value.split(';', 1)[0])
+  .find(value => value.startsWith(`${name}=`));
 const request = (path, options = {}) => fetch(`${publicOrigin}${path}`, { redirect: 'manual', ...options });
 const readMcpEvidence = runRoot => readFileSync(join(runRoot, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)
   .filter(event => event.type === 'log' && event.payload?.stream === 'stdout' &&
@@ -34,10 +35,29 @@ let runner;
 try {
   const login = await request('/__sandbox-login');
   assert.equal(login.status, 303);
-  const session = parseCookie(login);
-  assert.ok(session, 'sandbox login must return a synthetic profile session');
-  const pagePath = new URL(login.headers.get('location'), publicOrigin).pathname +
-    new URL(login.headers.get('location'), publicOrigin).search;
+  const startUrl = new URL(login.headers.get('location'), publicOrigin);
+  const start = await request(`${startUrl.pathname}${startUrl.search}`);
+  assert.equal(start.status, 303);
+  const pending = parseCookie(start, pendingCookieName);
+  assert.ok(pending, 'sandbox PKCE start must set an HttpOnly transaction cookie');
+  const authorizeUrl = new URL(start.headers.get('location'));
+  assert.equal(authorizeUrl.origin, publicOrigin);
+  const authorize = await request(`${authorizeUrl.pathname}${authorizeUrl.search}`, {
+    headers: { cookie: pending }
+  });
+  assert.equal(authorize.status, 303);
+  const callbackUrl = new URL(authorize.headers.get('location'));
+  assert.equal(callbackUrl.origin, publicOrigin);
+  const callback = await request(`${callbackUrl.pathname}${callbackUrl.search}`, { headers: { cookie: pending } });
+  assert.equal(callback.status, 303);
+  const session = parseCookie(callback, sessionCookieName);
+  assert.ok(session, 'synthetic identity authority must return a protected app session');
+  const sessionResponse = await request('/auth/connected/session', { headers: { cookie: session } });
+  assert.equal(sessionResponse.status, 200);
+  const sessionContext = await sessionResponse.json();
+  assert.ok(/^[A-Za-z0-9_-]{43}$/.test(sessionContext.csrfToken));
+  const pagePath = new URL(callback.headers.get('location'), publicOrigin).pathname +
+    new URL(callback.headers.get('location'), publicOrigin).search;
   const page = await request(pagePath, { headers: { cookie: session } });
   assert.equal(page.status, 200);
   assert.match(await page.text(), /Fresh candidates/);
@@ -67,7 +87,8 @@ try {
             { headers: { cookie: context.bindingValue } });
         } else if (toolName === 'manage_cold_search_schedule') {
           response = await request('/api/hh/proactive/vacancy-state', { method: 'POST',
-            headers: { cookie: context.bindingValue, 'content-type': 'application/json' },
+            headers: { cookie: context.bindingValue, origin: publicOrigin,
+              'x-csrf-token': sessionContext.csrfToken, 'content-type': 'application/json' },
             body: JSON.stringify({ vacancy_id: vacancyId, action: args.action,
               ...(args.action === 'enable' && 'interval_hours' in args ? { interval_hours: args.interval_hours } : {}) }) });
         } else {
@@ -99,7 +120,7 @@ try {
       // The persisted synthetic sandbox may retain many previous test occurrences.
       // Keep the MCP evidence below Runner's default 4 KiB log-line cap so it stays
       // complete and parseable instead of silently testing a truncated response.
-      envAllowlist: [], limits: { timeoutMs: 60_000, maxLogBytes: 1_048_576 }, credentialBindings: [
+      envAllowlist: [], limits: { timeoutMs: 120_000, maxLogBytes: 1_048_576 }, credentialBindings: [
         { ref: bindingRef, scope: 'recruiting.candidateSearch' }],
     mcp: { servers: [{ serverId, transport: 'stdio', command: process.execPath,
     args: [facade], envAllowlist, bindingRef, allowedTools: capabilities.map(item => item.toolId) }] },
@@ -107,7 +128,7 @@ try {
     const validated = validateRunSpec(rawSpec);
     assert.equal(validated.ok, true, validated.errors?.join('; '));
     const receipt = runner.start(validated.value);
-    const outcome = await runner.waitFor(receipt.runId, 30_000);
+    const outcome = await runner.waitFor(receipt.runId, 150_000);
     const runRoot = join(workDir, 'runs', receipt.runId);
     const events = readFileSync(join(runRoot, 'events.jsonl'), 'utf8');
     assert.equal(outcome.outcome, 'succeeded', `${JSON.stringify(outcome)}\n${events}`);
@@ -115,23 +136,22 @@ try {
     return { receipt, evidence: readMcpEvidence(runRoot), eventText: events };
   };
 
-  const statusRun = await invoke({ calls: [
+  const initialRun = await invoke({ calls: [
     { tool: toolNames[0], arguments: { action: 'status', vacancyId } },
-    { tool: toolNames[1], arguments: { vacancyId } }
+    { tool: toolNames[1], arguments: { vacancyId } },
+    { tool: toolNames[0], arguments: { action: 'enable', vacancyId, interval_hours: 24 } }
   ] });
-  const listed = statusRun.evidence.find(item => item.step === 'tools_list');
-  const status = statusRun.evidence.find(item => item.step === 'tool_call' && item.tool === toolNames[0]);
-  const occurrences = statusRun.evidence.find(item => item.step === 'tool_call' && item.tool === toolNames[1]);
+  const listed = initialRun.evidence.find(item => item.step === 'tools_list');
+  const status = initialRun.evidence.find(item => item.step === 'tool_call' && item.tool === toolNames[0] && item.result?.kind === 'status');
+  const occurrences = initialRun.evidence.find(item => item.step === 'tool_call' && item.tool === toolNames[1]);
   assert.ok(toolNames.every(name => listed?.tools.some(tool => tool.name === name)));
   assert.equal(status?.ok, true, JSON.stringify(status));
   assert.equal(status.result.kind, 'status');
   assert.equal(occurrences?.ok, true, JSON.stringify(occurrences));
   assert.equal(occurrences.result.kind, 'occurrences');
 
-  const enableRun = await invoke({ calls: [{ tool: toolNames[0], arguments: {
-    action: 'enable', vacancyId, interval_hours: 24
-  } }] });
-  const enabled = enableRun.evidence.find(item => item.step === 'tool_call');
+  const enabled = initialRun.evidence.find(item => item.step === 'tool_call' &&
+    item.tool === toolNames[0] && item.result?.kind === 'updated');
   assert.equal(enabled?.ok, true, JSON.stringify(enabled));
   assert.equal(enabled.result.kind, 'updated');
   assert.equal(enabled.result.schedule.enabled, true);
@@ -159,7 +179,7 @@ try {
   const feedData = await feed.json();
   assert.equal(feedData.total > 0, true);
 
-  const artifacts = [statusRun, enableRun, crossProfile, afterRun].flatMap(({ receipt, eventText }) => [
+  const artifacts = [initialRun, crossProfile, afterRun].flatMap(({ receipt, eventText }) => [
     ...['events.jsonl', 'state.json', 'result.json'].map(name => readFileSync(join(workDir, 'runs', receipt.runId, name), 'utf8')),
     eventText
   ]);
