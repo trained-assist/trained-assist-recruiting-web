@@ -71,7 +71,7 @@ async function fixture(t) {
     clock: () => new Date('2026-10-06T10:00:00.000Z') };
 }
 
-function provider({ failReal = false, runtimeBuild = build,
+function provider({ failReal = false, throwReal = false, runtimeBuild = build,
   rungs = ['opencode-go/space-bunny-free', 'openrouter/example:free'] } = {}) {
   let invented = 0, real = 0;
   return { calls: () => ({ invented, real }), fetchImpl: async (url, init) => {
@@ -85,6 +85,7 @@ function provider({ failReal = false, runtimeBuild = build,
     assert.equal(body.model, 'free'); assert.equal(body.max_tokens, 600);
     if (body.messages[0].content.includes('Вымышленный специалист')) invented++;
     else real++;
+    if (real && throwReal) throw new Error('PRIVATE candidate contact and prompt');
     if (real && failReal) return new Response('{}', { status: 503 });
     return new Response(JSON.stringify({ choices: [{ message: {
       content: '{"score":8,"knockout_failed":[]}' } }] }));
@@ -98,6 +99,8 @@ test('fresh free-ladder proof, one accepted real candidate, then replay without 
     fetchImpl: p.fetchImpl })).status, 'ready');
   const result = await runPrivateOneAtsCanary({ ...f, mode: 'run', fetchImpl: p.fetchImpl });
   assert.equal(result.status, 'assessed');
+  assert.deepEqual({ outcomeClass: result.outcomeClass, providerHttpStatus: result.providerHttpStatus },
+    { outcomeClass: 'assessed', providerHttpStatus: 200 });
   assert.deepEqual(p.calls(), { invented: 1, real: 1 });
   const copy = new Database(join(f.outputDirectory, 'candidate.sqlite'), { readonly: true });
   assert.equal(copy.prepare('SELECT COUNT(*) AS n FROM real_hh_assessment').get().n, 1);
@@ -106,6 +109,7 @@ test('fresh free-ladder proof, one accepted real candidate, then replay without 
     clock: () => new Date('2026-10-07T10:00:00.000Z'),
     fetchImpl: async () => { throw new Error('replay fetched'); } });
   assert.equal(replay.providerRequests, 0);
+  assert.equal(replay.outcomeClass, 'assessed');
   assert.equal(JSON.parse(readFileSync(join(f.outputDirectory, 'receipt.json'))).published, false);
 });
 
@@ -126,7 +130,38 @@ test('failed one-candidate provider call remains unknown and cannot rerun', asyn
   await runPrivateOneAtsCanary({ ...f, mode: 'preflight', fetchImpl: p.fetchImpl });
   const result = await runPrivateOneAtsCanary({ ...f, mode: 'run', fetchImpl: p.fetchImpl });
   assert.equal(result.status, 'outcome_unknown');
+  assert.equal(result.outcomeClass, 'provider_http_error');
+  assert.equal(result.providerHttpStatus, 503);
+  assert.deepEqual(p.calls(), { invented: 1, real: 1 });
+  const receipt = JSON.parse(readFileSync(join(f.outputDirectory, 'receipt.json')));
+  assert.equal(receipt.outcomeClass, 'provider_http_error');
+  assert.equal(receipt.providerHttpStatus, 503);
+  assert.equal(JSON.stringify(receipt).includes('Вымышленное Имя'), false);
+  delete receipt.outcomeClass;
+  delete receipt.providerHttpStatus;
+  writeFileSync(join(f.outputDirectory, 'receipt.json'), JSON.stringify(receipt) + '\n', { mode: 0o600 });
+  const replay = await runPrivateOneAtsCanary({ ...f, mode: 'replay',
+    fetchImpl: async () => { throw new Error('legacy replay must not dispatch'); } });
+  assert.equal(replay.status, 'replayed');
+  assert.equal(replay.outcomeClass, 'legacy_unclassified');
+  assert.equal(replay.providerRequests, 0);
   assert.deepEqual(p.calls(), { invented: 1, real: 1 });
   await assert.rejects(runPrivateOneAtsCanary({ ...f, mode: 'run',
     fetchImpl: async () => { throw new Error('must not dispatch'); } }));
+});
+
+test('transport failure is classified without storing provider exception or prompt', async t => {
+  const f = await fixture(t);
+  const p = provider({ throwReal: true });
+  await runPrivateOneAtsCanary({ ...f, mode: 'preflight', fetchImpl: p.fetchImpl });
+  const result = await runPrivateOneAtsCanary({ ...f, mode: 'run', fetchImpl: p.fetchImpl });
+  assert.equal(result.status, 'outcome_unknown');
+  assert.equal(result.outcomeClass, 'provider_transport_error');
+  assert.equal(result.providerHttpStatus, null);
+  const receiptText = readFileSync(join(f.outputDirectory, 'receipt.json'), 'utf8');
+  assert.equal(receiptText.includes('PRIVATE candidate'), false);
+  assert.equal(receiptText.includes('Вымышленный Имя'), false);
+  await assert.rejects(runPrivateOneAtsCanary({ ...f, mode: 'run',
+    fetchImpl: async () => { throw new Error('must not dispatch'); } }));
+  assert.deepEqual(p.calls(), { invented: 1, real: 1 });
 });

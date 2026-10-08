@@ -82,7 +82,7 @@ async function ladderPolicy(secretsDirectory, fetchImpl) {
   return { build: healthData.build, rungCount: free.rungs.length };
 }
 
-function boundedModelFetch(fetchImpl, onDispatch) {
+function boundedModelFetch(fetchImpl, onDispatch, onOutcome = () => {}) {
   let dispatched = false;
   return async (url, init) => {
     const body = JSON.parse(init?.body ?? '{}');
@@ -91,8 +91,33 @@ function boundedModelFetch(fetchImpl, onDispatch) {
       fail();
     dispatched = true;
     onDispatch();
-    return fetchImpl(url, init);
+    try {
+      const response = await fetchImpl(url, init);
+      const status = Number(response?.status);
+      onOutcome(Number.isInteger(status) && status >= 100 && status <= 599
+        ? { kind: response.ok === true ? 'http_success' : 'http_error', status }
+        : { kind: 'invalid_http_response' });
+      return response;
+    } catch {
+      // Preserve only a safe failure category. Never persist provider body,
+      // prompt, candidate data, credentials, or raw exception text.
+      onOutcome({ kind: 'transport_error' });
+      throw new Error('ladder_transport_unavailable');
+    }
   };
+}
+
+function assessmentOutcome(result, observation) {
+  if (result.written === 1) return { outcomeClass: 'assessed', providerHttpStatus: observation.status ?? null };
+  if (observation.kind === 'http_error')
+    return { outcomeClass: 'provider_http_error', providerHttpStatus: observation.status };
+  if (observation.kind === 'transport_error')
+    return { outcomeClass: 'provider_transport_error', providerHttpStatus: null };
+  if (observation.kind === 'invalid_http_response')
+    return { outcomeClass: 'provider_response_invalid', providerHttpStatus: null };
+  if (observation.kind === 'http_success')
+    return { outcomeClass: 'provider_response_unusable', providerHttpStatus: observation.status };
+  return { outcomeClass: 'provider_outcome_unobserved', providerHttpStatus: null };
 }
 
 export async function runPrivateOneAtsCanary({ mode, hostConfigFile, sourceReceiptFile,
@@ -167,7 +192,10 @@ export async function runPrivateOneAtsCanary({ mode, hostConfigFile, sourceRecei
           (prior.unknown === 1 && (row.status !== 'outcome_unknown' || assessed))) fail();
     } finally { copy.close(); }
     return { status: 'replayed', providerRequests: 0,
-      written: prior.written, unknown: prior.unknown, disposableOnly: true };
+      written: prior.written, unknown: prior.unknown,
+      outcomeClass: prior.outcomeClass ?? 'legacy_unclassified',
+      providerHttpStatus: Number.isInteger(prior.providerHttpStatus) ? prior.providerHttpStatus : null,
+      disposableOnly: true };
   }
   if (existsSync(outputDirectory)) fail(); // An incomplete run is uncertain; never auto retry.
   if (clock().getTime() < Date.parse(preflight.at) ||
@@ -188,13 +216,14 @@ export async function runPrivateOneAtsCanary({ mode, hostConfigFile, sourceRecei
   const schedules = new SqliteColdSearchScheduleRepository(dbPath);
   const candidates = new SqliteRealHhCandidateState({ filename: dbPath,
     isVacancyOwned: input.host.isVacancyOwned });
-  let queue, providerRequests = 0;
+  let queue, providerRequests = 0, providerObservation = { kind: 'not_observed' };
   try {
     const evaluate = createHhAssessmentEvaluator({ loadSearchPlan: (p, v) =>
       loadPlan(p, v, { allowGeneration: false }),
     chat: createFreeLadderChat({ loadToken: () =>
       loadPrivateHostSecret(secretsDirectory, 'ladder_token'),
-    fetchImpl: boundedModelFetch(fetchImpl, () => { providerRequests++; }) }) });
+    fetchImpl: boundedModelFetch(fetchImpl, () => { providerRequests++; },
+      value => { providerObservation = value; }) }) });
     queue = new SqliteAcceptedAssessmentQueue({ filename: dbPath,
       candidateState: candidates, scheduleRepository: schedules,
       evaluate, currentCriteriaRevision: async ({ profileId, vacancyId }) =>
@@ -216,6 +245,7 @@ export async function runPrivateOneAtsCanary({ mode, hostConfigFile, sourceRecei
       .all(input.receipt.profileId, input.receipt.vacancyId, input.receipt.jobId);
     if (affected.length !== 1 || (result.written && affected[0].status !== 'completed') ||
         (result.unknown && affected[0].status !== 'outcome_unknown')) fail();
+    const diagnostic = assessmentOutcome(result, providerObservation);
     const receipt = { version: 'r03-one-ats-canary-v1', disposition: 'disposable_only',
       sourceDbSha256: input.sourceDbSha256,
       sourceReceiptSha256: input.sourceReceiptSha256,
@@ -226,11 +256,13 @@ export async function runPrivateOneAtsCanary({ mode, hostConfigFile, sourceRecei
       written: result.written, unknown: result.unknown, blocked: result.blocked,
       assessmentStatus: result.written ? 'assessed' : result.blocked ?
         'blocked_revision_or_acceptance' : 'outcome_unknown',
+      ...diagnostic,
       published: false };
     writeFileSync(receiptFile, JSON.stringify(receipt) + '\n', { flag: 'wx', mode: 0o600 });
     return { status: receipt.assessmentStatus, providerRequests,
       claimed: result.claimed, written: result.written, unknown: result.unknown,
-      blocked: result.blocked,
+      blocked: result.blocked, outcomeClass: diagnostic.outcomeClass,
+      providerHttpStatus: diagnostic.providerHttpStatus,
       published: false, disposableOnly: true };
   } finally { queue?.close(); candidates.close(); schedules.close(); }
 }
