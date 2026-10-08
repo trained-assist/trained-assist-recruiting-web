@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, realpath, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { runInNewContext } from 'node:vm';
 import Ajv2020 from 'ajv/dist/2020.js';
 import { createRecruitingConnectedAppBff, createMemoryConnectedAppBffStore } from '../src/connected-app-bff.js';
 import { createMemoryAcceptedReportDraftStore } from '../src/accepted-report-drafts.js';
@@ -34,6 +35,34 @@ const sourceBase = {
   salary: 'SALARY_PRIVATE', email: 'candidate@example.invalid', hhUrl: 'https://hh.example.invalid/private-resume',
   recruiterComment: 'RECRUITER_PRIVATE_COMMENT', atsContext: 'ATS_CONTEXT_PRIVATE',
 };
+
+test('client report editor serializes experience details before sending an edit', async () => {
+  const script = await readFile(new URL('../public/client-report.js', import.meta.url), 'utf8');
+  const start = script.indexOf('function editedFields() {');
+  const end = script.indexOf('\nasync function refreshPreview()', start);
+  assert.ok(start >= 0 && end > start, 'the browser editor serializer is present');
+  const serializer = script.slice(start, end).trim();
+  const experienceInputs = [
+    { dataset: { experienceField: 'role' }, value: 'Synthetic Engineer' },
+    { dataset: { experienceField: 'company' }, value: 'Example Works' },
+    { dataset: { experienceField: 'period' }, value: '2021 — 2025' },
+  ];
+  const row = {
+    querySelectorAll: selector => selector === '[data-experience-field]' ? experienceInputs : [],
+    querySelector: () => ({ value: 'Built synthetic APIs\nReviewed contract tests' }),
+  };
+  const nodes = Object.fromEntries(['positionNode', 'vacancyTitleNode', 'locationNode', 'educationNode',
+    'coursesNode', 'skillsNode', 'languagesNode', 'summaryNodeEditor', 'conclusionNode']
+    .map(name => [name, { value: '' }]));
+  nodes.experienceNode = { querySelectorAll: () => [row] };
+  nodes.fitNode = { querySelectorAll: () => [] };
+  const actual = JSON.parse(JSON.stringify(runInNewContext(`(${serializer})()`, {
+    ...nodes,
+    lines: value => value.split('\n').map(item => item.trim()).filter(Boolean),
+  })));
+  assert.deepEqual(actual.experience, [{ role: 'Synthetic Engineer', company: 'Example Works',
+    period: '2021 — 2025', details: ['Built synthetic APIs', 'Reviewed contract tests'] }]);
+});
 
 function cookieValue(response, name) {
   const setCookie = response.headers.get('set-cookie') ?? '';

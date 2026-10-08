@@ -331,10 +331,10 @@ function editedFields() {
     education: lines(educationNode.value), courses: lines(coursesNode.value),
     skills: lines(skillsNode.value), languages: lines(languagesNode.value),
     summary: summaryNodeEditor.value.trim(), conclusion: conclusionNode.value.trim(),
-    experience: [...experienceNode.querySelectorAll('fieldset')].map(row => Object.fromEntries(
-      [...row.querySelectorAll('[data-experience-field]')].map(input => [input.dataset.experienceField, input.value.trim()])).concat([
-        ['details', [...row.querySelector('[data-experience-details]').value.split('\n')].map(item => item.trim()).filter(Boolean)]
-      ])),
+    experience: [...experienceNode.querySelectorAll('fieldset')].map(row => Object.fromEntries([
+      ...[...row.querySelectorAll('[data-experience-field]')].map(input => [input.dataset.experienceField, input.value.trim()]),
+      ['details', [...row.querySelector('[data-experience-details]').value.split('\n')].map(item => item.trim()).filter(Boolean)]
+    ])),
     fit: [...fitNode.querySelectorAll('fieldset')].map(row => Object.fromEntries(
       [...row.querySelectorAll('[data-fit-field]')].map(input => [input.dataset.fitField, input.value.trim()]))) };
 }
