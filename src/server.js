@@ -152,7 +152,7 @@ function validReportAction(value) {
   return isPlainObject(value) && Object.keys(value).sort().join(',') === 'expectedReportRevision' && isReportRevision(value.expectedReportRevision);
 }
 
-export function createRecruitingServer({ resolveTrustedProfileContext = () => null, resolveLegacyOpenTab = null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, candidateSearchJobStore = null, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), scheduleLeaseMs = 5 * 60_000, maxCandidateSearchJobs = 100, publicationAdapter, realProactiveFeed = null, realProactiveActions = null, realProactivePrompt = null, realProactiveSeenImport = null, realProactiveAiScore = null, realProactiveManualCandidate = null, liveResponseRead = null, resolveRealVacancyOwnership = null, resolveRealDefaultVacancy = () => null, privateProactiveOnly = false, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
+export function createRecruitingServer({ resolveTrustedProfileContext = () => null, resolveLegacyOpenTab = null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, candidateSearchJobStore = null, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), scheduleLeaseMs = 5 * 60_000, maxCandidateSearchJobs = 100, publicationAdapter, realProactiveFeed = null, realProactiveActions = null, realProactivePrompt = null, realProactiveSeenImport = null, realProactiveAiScore = null, realProactiveManualCandidate = null, liveResponseRead = null, acceptedReportSourceRead = null, resolveRealVacancyOwnership = null, resolveRealDefaultVacancy = () => null, privateProactiveOnly = false, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
   if (realProactiveFeed !== null && (typeof realProactiveFeed.read !== 'function' || typeof resolveRealVacancyOwnership !== 'function'))
     throw new TypeError('real proactive feed and trusted vacancy ownership ports required');
   if (realProactiveActions !== null && realProactiveFeed === null) throw new TypeError('real actions require real feed mode');
@@ -162,6 +162,8 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
     throw new TypeError('manual candidate requires real feed mode');
   if (liveResponseRead !== null && typeof liveResponseRead !== 'function')
     throw new TypeError('live response read port required');
+  if (acceptedReportSourceRead !== null && typeof acceptedReportSourceRead !== 'function')
+    throw new TypeError('report source read port required');
   if (resolveLegacyOpenTab !== null && (!privateProactiveOnly || typeof resolveLegacyOpenTab !== 'function'))
     throw new TypeError('legacy open-tab resolver requires private proactive mode');
   const realProactiveRead = realProactiveFeed === null ? null : createRealProactiveRead({
@@ -240,6 +242,29 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
       body = manifest;
     } else if (path === '/api/v1/capabilities') {
       body = { serviceId: manifest.serviceId, domainApiVersion: manifest.domainApiVersion, capabilities };
+    } else if (path === '/api/v1/ui/accepted-report-source' && acceptedReportSourceRead !== null) {
+      let context;
+      try { context = await resolveTrustedProfileContext(req, url, res); }
+      catch { status = 503; body = { error: 'trusted_profile_unavailable' }; }
+      if (status === 200 && (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes))) {
+        status = 401; body = { error: 'trusted_profile_context_required' };
+      } else if (status === 200 && !context.scopes.includes('recruiting.reports.read')) {
+        status = 403; body = { error: 'report_scope_required' };
+      } else if (status === 200) {
+        const keys = [...url.searchParams.keys()];
+        const vacancyId = url.searchParams.get('vacancyId');
+        const candidateId = url.searchParams.get('candidateId');
+        if (keys.length !== 2 || new Set(keys).size !== keys.length ||
+            !keys.every(key => ['vacancyId', 'candidateId'].includes(key)) ||
+            !isRealProactiveVacancy(vacancyId) || !isRealProactiveVacancy(candidateId)) {
+          status = 400; body = { error: 'invalid_report_source_request' };
+        } else {
+          try {
+            const result = await acceptedReportSourceRead(context, { vacancyId, candidateId });
+            status = result.status; body = result.body;
+          } catch { status = 503; body = { error: 'report_source_unavailable' }; }
+        }
+      }
     } else if (path === '/api/v1/ui/hh-responses' && liveResponseRead !== null) {
       let context;
       try { context = await resolveTrustedProfileContext(req, url, res); }
