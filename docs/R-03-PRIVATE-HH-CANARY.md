@@ -1,10 +1,13 @@
 # Private HH binding and one-request canary
 
 The host operator first runs `r03-private-hh-binding.js` against the verified
-`final_frozen` import config. It checks the archive SHA-256 and byte count,
-rejects unsafe tar members, and copies only explicitly owned ATS context,
-saved queries, comments and sealed tokens into a new owner-only staging tree.
-Its output is an aggregate count of owned vacancies whose saved search plan is
+`final_frozen` import config and the owner-only secrets directory (`--secrets`).
+It checks the archive SHA-256 and byte count, rejects unsafe tar members, and
+copies only explicitly owned ATS context, saved queries and comments into a
+new owner-only staging tree. It converts each legacy HH token to the target's
+AES-256-GCM v2 format using `hh_encryption_key`; plaintext is never written to
+the target tree. The key is required before the output tree is created. Its
+output is an aggregate count of owned vacancies whose saved search plan is
 ready or blocked. The immutable archive and imported candidate database are
 not changed. Historical unowned scopes stay quarantined in the archive.
 

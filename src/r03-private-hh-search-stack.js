@@ -37,5 +37,5 @@ export function createPrivateHhSearchStack({ resolveProfileBinding, isVacancyOwn
   const search = createOfflineHhColdSearch({ loadSearchPlan, transport, candidateState, clock });
   const worker = createDurableHhOccurrenceWorker({ scheduleRepository, loadSearchPlan,
     search, candidateState, clock });
-  return { loadBasePlan, loadSearchPlan, queryOverrides, search, worker };
+  return { loadBasePlan, loadSearchPlan, queryOverrides, credentialBroker: credentials, search, worker };
 }

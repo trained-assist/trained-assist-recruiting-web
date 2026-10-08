@@ -7,6 +7,7 @@ import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSy
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { preparePrivateHhBinding } from '../src/r03-private-hh-binding.js';
+import { createPrivateHhCredentialBroker } from '../src/r03-private-hh-credential.js';
 import { legacyQueryConfigHash } from '../src/r03-private-base-plan.js';
 
 test('verified frozen archive restores only owned scope to owner-only host binding', async t => {
@@ -15,6 +16,7 @@ test('verified frozen archive restores only owned scope to owner-only host bindi
   const source = join(root, 'source'); const stage = join(root, 'stage');
   mkdirSync(source, { mode: 0o700 }); mkdirSync(stage, { mode: 0o700 });
   const profile = 'invented_profile'; const owned = 'invented_owned'; const unowned = 'invented_unowned';
+  const encryptionKey = 'a'.repeat(64);
   const ats = { vacancy_id: owned, vacancy_title: 'Вымышленный инженер',
     vacancy_context: 'Вымышленный клиент', filters: { area: { id: '1' } },
     required: [{ name: 'инженер', weight: 1 }], knockout: [] };
@@ -47,10 +49,26 @@ test('verified frozen archive restores only owned scope to owner-only host bindi
     targetDbPath: join(stage, 'candidate.sqlite'), profiles: [{ sourceProfileRef: profile,
       profileId: profile, vacancyIds: [owned], quarantinedSourceVacancyIds: [unowned] }] }));
   const outputRoot = join(stage, 'host');
-  assert.deepEqual(await preparePrivateHhBinding({ importConfigFile, outputRoot }),
+  const secretsDirectory = join(stage, 'secrets');
+  mkdirSync(secretsDirectory, { mode: 0o700 });
+  put(join(secretsDirectory, 'hh_encryption_key'), encryptionKey);
+  assert.deepEqual(await preparePrivateHhBinding({ importConfigFile, outputRoot, secretsDirectory }),
     { status: 'bound', profileCount: 1, ownedVacancies: 1, readyVacancies: 1, blockedVacancies: 0 });
   assert.equal(statSync(outputRoot).mode & 0o777, 0o700);
   assert.equal(statSync(join(outputRoot, 'host-config.json')).mode & 0o777, 0o600);
-  assert.equal(statSync(join(outputRoot, profile, 'tokens', 'hh')).mode & 0o777, 0o600);
+  const restoredToken = join(outputRoot, profile, 'tokens', 'hh');
+  assert.equal(statSync(restoredToken).mode & 0o777, 0o600);
+  const encryptedBytes = readFileSync(restoredToken, 'utf8');
+  assert.equal(encryptedBytes.includes('invented_token'), false);
+  const broker = createPrivateHhCredentialBroker({
+    resolveProfileBinding: async profileId => profileId === profile
+      ? { profileId, tokenDirectory: join(outputRoot, profile, 'tokens') } : null,
+    encryptionKey, fetchImpl: async () => { throw new Error('no network expected'); }
+  });
+  assert.deepEqual(await broker.loadCredential(profile), { profileId: profile, accessToken: 'invented_token' });
   assert.equal(existsSync(join(outputRoot, profile, 'proactive', `queries-${unowned}.json`)), false);
+  const deniedOutput = join(stage, 'missing-key-host');
+  await assert.rejects(preparePrivateHhBinding({ importConfigFile, outputRoot: deniedOutput,
+    secretsDirectory: join(stage, 'missing-secrets') }), /private_hh_binding_unavailable/);
+  assert.equal(existsSync(deniedOutput), false, 'missing key fails before creating target data');
 });
