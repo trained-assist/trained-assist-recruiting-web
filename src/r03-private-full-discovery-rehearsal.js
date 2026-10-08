@@ -13,6 +13,7 @@ import { SqliteRealHhCandidateState } from './sqlite-real-hh-candidate-state.js'
 import { SqliteAcceptedAssessmentQueue } from './sqlite-accepted-assessment-queue.js';
 import { intervalPlan, nextOccurrenceAfter } from './cold-search-schedules.js';
 import { runPrivateHhMinuteTick } from './r03-private-minute-tick.js';
+import { createR03AccumulatedRealFeed } from './r03-accumulated-real-feed.js';
 
 const safeId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 const absolute = path => typeof path === 'string' && isAbsolute(path) && resolve(path) === path;
@@ -55,12 +56,38 @@ export async function runPrivateFullDiscoveryRehearsal({ hostConfigFile, stageRe
         prior.migrationId !== stage.migrationId || prior.profileId !== profileId ||
         prior.vacancyId !== vacancyId || prior.disposition !== (natural ? 'disposable_natural' : 'disposable_full') ||
         (natural && (prior.scheduleId !== naturalScheduleId || prior.scheduledAt !== expectedNaturalAt))) fail();
+    let occurrence;
     const db = new Database(join(outputDirectory, 'candidate.sqlite'), { readonly: true, fileMustExist: true });
     try {
       const row = db.prepare('SELECT payload FROM cold_search_occurrences WHERE occurrence_id=?').get(prior.occurrenceId);
-      const occurrence = row && JSON.parse(row.payload);
+      occurrence = row && JSON.parse(row.payload);
       if (occurrence?.status !== prior.occurrenceStatus || occurrence?.jobId !== prior.jobId) fail();
     } finally { db.close(); }
+    if (prior.occurrenceStatus === 'succeeded') {
+      const replaySchedules = new SqliteColdSearchScheduleRepository(join(outputDirectory, 'candidate.sqlite'));
+      const replayCandidates = new SqliteRealHhCandidateState({ filename: join(outputDirectory, 'candidate.sqlite'),
+        isVacancyOwned: host.isVacancyOwned });
+      try {
+        const feed = createR03AccumulatedRealFeed({ scheduleRepository: replaySchedules,
+          candidateState: replayCandidates }).read({ profileId, scopes: ['recruiting.candidateSearch'] }, vacancyId);
+        const scheduledItems = feed.items.filter(item => item.jobId === prior.jobId);
+        const persisted = replayCandidates.resultPage({ profileId, vacancyId, jobId: prior.jobId, limit: 1 })?.snapshot;
+        const hasFeedReceipt = ['morningFreshness', 'morningFeedRevision', 'morningFeedCount']
+          .some(key => Object.hasOwn(prior, key));
+        const feedReceiptComplete = ['morningFreshness', 'morningFeedRevision', 'morningFeedCount']
+          .every(key => Object.hasOwn(prior, key));
+        const expectedFeedCount = hasFeedReceipt ? prior.morningFeedCount : prior.candidateCount;
+        if (feed.freshness !== 'latest_completed' ||
+            hasFeedReceipt && (!feedReceiptComplete || prior.morningFreshness !== 'latest_completed' ||
+              !safeId(prior.morningFeedRevision) || feed.resultRevision !== prior.morningFeedRevision ||
+              !Number.isSafeInteger(prior.morningFeedCount)) ||
+            feed.total !== expectedFeedCount ||
+            scheduledItems.length !== persisted?.candidateCount || persisted?.candidateCount !== prior.candidateCount ||
+            persisted?.resultRevision !== occurrence?.snapshot?.resultRevision ||
+            persisted?.sourceRevision !== occurrence?.snapshot?.sourceRevision ||
+            persisted?.candidateCount !== occurrence?.snapshot?.resultCount) fail();
+      } finally { replayCandidates.close(); replaySchedules.close(); }
+    }
     return { status: 'replayed', originalStatus: prior.occurrenceStatus,
       providerRequests: 0, assessmentRequests: 0,
       disposableDiscoveryComplete: prior.disposableDiscoveryComplete, published: false };
@@ -166,6 +193,17 @@ export async function runPrivateFullDiscoveryRehearsal({ hostConfigFile, stageRe
       queue.sync(profileId, vacancyId); // durable pending rows; never calls the evaluator
       const morning = full.morningResults(profileId, vacancyId, { limit: 1 });
       if (morning.status !== 'completed' || morning.snapshot.jobId !== occurrence[0].jobId) fail();
+      const trustedTestContext = { profileId, scopes: ['recruiting.candidateSearch'] };
+      const feed = createR03AccumulatedRealFeed({ scheduleRepository: schedules, candidateState: candidates,
+        assessmentQueue: queue }).read(trustedTestContext, vacancyId);
+      const selectedFromFeed = feed.items.filter(item => item.jobId === occurrence[0].jobId);
+      const persisted = candidates.resultPage({ profileId, vacancyId, jobId: occurrence[0].jobId, limit: 1 })?.snapshot;
+      if (feed.status !== 'completed' || feed.freshness !== 'latest_completed' ||
+          !feed.resultRevision || selectedFromFeed.length !== persisted?.candidateCount ||
+          persisted?.resultRevision !== occurrence[0].snapshot?.resultRevision ||
+          persisted?.sourceRevision !== occurrence[0].snapshot?.sourceRevision ||
+          persisted?.candidateCount !== occurrence[0].snapshot?.resultCount ||
+          feed.total !== occurrence[0].snapshot?.resultCount) fail();
       assessmentStatus = morning.assessmentStatus;
       assessmentPendingCount = morning.assessmentPendingCount;
       candidateCount = morning.snapshot.candidateCount;
@@ -189,6 +227,11 @@ export async function runPrivateFullDiscoveryRehearsal({ hostConfigFile, stageRe
       jobId: occurrence[0].jobId, providerRequests, assessmentRequests: 0,
       queryCount: plan.queryCache.queries.length, candidateCount, newCount,
       assessmentStatus, assessmentPendingCount,
+      morningFreshness: occurrence[0].status === 'succeeded' ? 'latest_completed' : 'latest_run_incomplete',
+      morningFeedRevision: occurrence[0].status === 'succeeded'
+        ? createR03AccumulatedRealFeed({ scheduleRepository: schedules, candidateState: candidates,
+          assessmentQueue: queue }).read({ profileId, scopes: ['recruiting.candidateSearch'] }, vacancyId).resultRevision : null,
+      morningFeedCount: occurrence[0].status === 'succeeded' ? candidateCount : 0,
       disposableDiscoveryComplete: occurrence[0].status === 'succeeded', published: false,
       budget: FULL_DISCOVERY_BUDGET };
     writeFileSync(receiptFile, JSON.stringify(receipt) + '\n', { flag: 'wx', mode: 0o600 });
