@@ -2,7 +2,7 @@
 // Exercises Agent Runner -> per-run MCP stdio -> host capability handlers ->
 // Recruiting's HTTP handlers/page with synthetic profile and provider data.
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -98,18 +98,38 @@ try {
     const validated = validateRunSpec(rawSpec);
     assert.equal(validated.ok, true, validated.errors?.join('; '));
     const receipt = runner.start(validated.value);
+    const mcpConfigPath = join(cwd, '.runner', 'mcp.json');
+    let mcpConfigText = null;
+    const captureMcpConfig = (async () => {
+      // Current Runner retains run evidence but sweeps the workspace on
+      // waitFor() completion. Capture the ephemeral engine config while the
+      // run is active so the credential-leak assertion still covers it.
+      for (let attempt = 0; attempt < 2_000; attempt++) {
+        if (existsSync(mcpConfigPath)) {
+          mcpConfigText = readFileSync(mcpConfigPath, 'utf8');
+          return;
+        }
+        await new Promise(resolveWait => setTimeout(resolveWait, 2));
+      }
+    })();
     const outcome = await runner.waitFor(receipt.runId, 30_000);
+    await captureMcpConfig;
     const debugEvents = readFileSync(join(workDir, 'runs', receipt.runId, 'events.jsonl'), 'utf8');
     assert.equal(outcome.outcome, 'succeeded', `${JSON.stringify(outcome)}\n${debugEvents}`);
-    const evidenceText = readFileSync(join(cwd, 'mcp-evidence.jsonl'), 'utf8');
-    const evidence = evidenceText.trim().split('\n').map(JSON.parse);
+    assert.ok(mcpConfigText, 'Runner MCP config should be observed before workspace cleanup');
+    // Runner removes the per-run workspace during waitFor finalization. Read
+    // MCP evidence from its retained event transcript instead of the swept cwd.
+    const evidence = debugEvents.trim().split('\n').map(JSON.parse)
+      .filter(event => event.type === 'log' && event.payload?.stream === 'stdout' &&
+        event.payload.message.startsWith('mcp-evidence: '))
+      .map(event => JSON.parse(event.payload.message.slice('mcp-evidence: '.length)));
     const listed = evidence.find(item => item.step === 'tools_list');
     const toolCall = evidence.find(item => item.step === 'tool_call');
     const deniedProbe = evidence.find(item => item.step === 'tool_call_denied_probe');
     assert.ok(tools.every(name => listed?.tools.some(tool => tool.name === name)));
     if (call) assert.equal(toolCall?.ok, true, JSON.stringify(toolCall));
     if (denied.length) assert.equal(deniedProbe?.ok, true, JSON.stringify(deniedProbe));
-    agentRuns.push({ receipt, cwd, evidenceText });
+    agentRuns.push({ receipt, cwd, evidenceText: JSON.stringify(evidence), mcpConfigText });
     return toolCall?.result ?? deniedProbe;
   };
   const enabled = await invokeAgent({ tool: tools[0], arguments: { action: 'enable', vacancyId, interval_hours: 6 } });
@@ -143,9 +163,9 @@ try {
   assert.ok(feed.total > 0);
   assert.equal(feed.source, 'scheduled');
   assert.ok(feed.candidates.every(item => item.candidateRef && item.title && item.isNew === true));
-  const surfaces = agentRuns.flatMap(({ receipt, cwd, evidenceText }) => [
+  const surfaces = agentRuns.flatMap(({ receipt, evidenceText, mcpConfigText }) => [
     ...['events.jsonl', 'state.json', 'result.json'].map(name => readFileSync(join(workDir, 'runs', receipt.runId, name), 'utf8')),
-    evidenceText, readFileSync(join(cwd, '.runner/mcp.json'), 'utf8')
+    evidenceText, mcpConfigText
   ]);
   assert.equal(surfaces.some(value => value.includes(bindingSecret)), false,
     'the synthetic binding secret must not be persisted in Agent Run evidence or MCP config');
