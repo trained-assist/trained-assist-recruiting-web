@@ -4,6 +4,8 @@ import { SqliteColdSearchScheduleRepository } from './sqlite-cold-search-schedul
 import { SqliteRealHhCandidateState } from './sqlite-real-hh-candidate-state.js';
 import { SqliteRealHhManualRuns } from './sqlite-real-hh-manual-runs.js';
 import { createServiceLadderChat } from './r03-service-ladder-chat.js';
+import { createFreeLadderChat } from './r03-free-ladder-chat.js';
+import { createHhAssessmentEvaluator } from './r03-hh-assessment-evaluator.js';
 import { createHhQueryGenerator } from './r03-hh-query-generator.js';
 import { createPrivateHhSearchStack } from './r03-private-hh-search-stack.js';
 import { createR03AccumulatedRealFeedFromStores } from './r03-accumulated-real-feed.js';
@@ -11,6 +13,7 @@ import { createR03RealProactiveActions } from './r03-real-proactive-actions.js';
 import { createPrivateWebAuth } from './r03-private-web-auth.js';
 import { createR03PrivatePromptSettings } from './r03-private-prompt-settings.js';
 import { createR03PrivateSeenImport } from './r03-private-seen-import.js';
+import { createR03PrivateAiScore } from './r03-private-ai-score.js';
 import { createRecruitingServer } from './server.js';
 
 // Constructing the server makes no provider request or public bind. The owner
@@ -49,6 +52,13 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
       queryOverrides: stack.queryOverrides, isVacancyOwned: config.isVacancyOwned, clock });
     const seenImport = createR03PrivateSeenImport({ candidateState: candidates,
       isVacancyOwned: config.isVacancyOwned, clock });
+    const readAssessmentPlan = (profileId, vacancyId) =>
+      stack.loadBasePlan(profileId, vacancyId, { allowGeneration: false });
+    const aiScore = createR03PrivateAiScore({ feed, candidateState: candidates,
+      loadBasePlan: stack.loadBasePlan,
+      evaluate: createHhAssessmentEvaluator({ loadSearchPlan: readAssessmentPlan,
+        chat: createFreeLadderChat({ loadToken: () => loadPrivateHostSecret(secretsDirectory, 'ladder_token'), fetchImpl }) }),
+      isVacancyOwned: config.isVacancyOwned, clock });
     const auth = createPrivateWebAuth({ legacySecret,
       resolveLegacyProfile: config.resolveLegacyProfile,
       isWebProfileMapped: config.isWebProfileMapped, publicOrigin,
@@ -56,6 +66,7 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
     const server = createRecruitingServer({ realProactiveFeed: feed,
       realProactiveActions: actions, realProactivePrompt: prompt,
       realProactiveSeenImport: seenImport,
+      realProactiveAiScore: aiScore,
       resolveTrustedProfileContext: auth,
       resolveLegacyOpenTab: auth.resolveLegacyOpenTab,
       resolveRealVacancyOwnership: (context, vacancyId) => config.isVacancyOwned(context.profileId, vacancyId),

@@ -174,6 +174,12 @@ if (root) {
   for (const card of document.querySelectorAll('article[data-candidate-id]')) {
     const candidateId = card.dataset.candidateId;
     const expectedRevision = () => Number(card.dataset.reviewRevision);
+    const scoreButton = card.querySelector('.score-now');
+    if (scoreButton) scoreButton.addEventListener('click', event => run(event.currentTarget, async () => {
+      const result = await command('/api/hh/proactive/ai-score', { vacancy_id: vacancyId,
+        candidate_id: candidateId, expected_job_id: card.dataset.jobId });
+      card.querySelector('.score-result').textContent = ` ATS: ${result.atsScore} (${result.atsTag}).`;
+    }));
     card.querySelector('.save-status').addEventListener('click', event => run(event.currentTarget, async () => {
       await command('/api/hh/proactive/set-status', { vacancy_id: vacancyId, candidate_id: candidateId,
         expected_revision: expectedRevision(), status: card.querySelector('.candidate-status').value });

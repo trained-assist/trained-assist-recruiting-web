@@ -16,9 +16,10 @@ export function renderRealProactivePage({ profileId = '', vacancyId, feed, listV
   const counts = { active: 0, starred: 0, archived: 0 };
   for (const item of feed.items) counts[item.review?.status ?? 'active']++;
   const cards = feed.items.filter(item => (item.review?.status ?? 'active') === listView)
-    .map(item => `<article data-candidate-id="${escapeHtml(item.id)}" data-review-revision="${escapeHtml(item.review?.revision ?? 0)}"><h2>${escapeHtml(item.title)}</h2>
+    .map(item => `<article data-candidate-id="${escapeHtml(item.id)}" data-job-id="${escapeHtml(item.jobId ?? '')}" data-review-revision="${escapeHtml(item.review?.revision ?? 0)}"><h2>${escapeHtml(item.title)}</h2>
     <p>${escapeHtml(item.firstName)} ${escapeHtml(item.lastName)} · ${escapeHtml(item.area)}</p>
     <p>ATS: ${item.atsScore === null ? 'ожидает оценки' : escapeHtml(item.atsScore)} · ${escapeHtml(item.review.status)}</p>
+    ${item.jobId ? '<button type="button" class="score-now">Оценить ATS сейчас</button><span class="score-result" role="status"></span>' : ''}
     ${item.comment ? `<p class="comment">${escapeHtml(item.comment)}</p>` : ''}
     ${safeResumeUrl(item.hhUrl) ? `<a href="${escapeHtml(safeResumeUrl(item.hhUrl))}" target="_blank" rel="noopener noreferrer">Резюме HH</a>` : ''}
     <div class="controls"><label>Статус <select class="candidate-status"><option value="active"${item.review?.status === 'active' ? ' selected' : ''}>Активный</option><option value="starred"${item.review?.status === 'starred' ? ' selected' : ''}>Избранный</option><option value="archived"${item.review?.status === 'archived' ? ' selected' : ''}>Архив</option></select></label>
