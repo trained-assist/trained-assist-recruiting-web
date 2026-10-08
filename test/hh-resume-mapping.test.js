@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { mapHhResumeCandidate, mapHhResumePage, normalizeHhAtsConfig } from '../src/hh-resume-mapping.js';
+import { mapHhResumeCandidate, mapHhResumePage, mapHhResumeClientSections, normalizeHhAtsConfig } from '../src/hh-resume-mapping.js';
 
 const fixture = JSON.parse(await readFile(new URL('./fixtures/hh-resumes-invented.json', import.meta.url), 'utf8'));
 
@@ -42,6 +42,20 @@ test('ATS normalization accepts historical editor/LLM field names and double-ser
   assert.equal(normalizeHhAtsConfig({ filters: { min_experience_years: 0 } }).minExperienceYears, 0);
   assert.throws(() => normalizeHhAtsConfig('{broken'), /invalid_ats_config/);
   assert.throws(() => normalizeHhAtsConfig({ required: [{ name: 'bad', weight: -1 }] }), /invalid_ats_weight/);
+});
+
+test('client report sections project only bounded education, courses, skills, languages and location', () => {
+  const sections = mapHhResumeClientSections({ education: {
+    primary: [{ name: 'Synthetic university', organization: 'Synthetic institute', year: 2020 }],
+    additional: [{ name: 'Synthetic course', organization: 'Training lab', year: '2022' }],
+  }, skill_set: [{ name: 'TypeScript' }, { name: '<script>bad</script>' }],
+  language: [{ name: 'Русский', level: { name: 'Родной' } }], area: { name: 'Синтетический регион' },
+  email: 'private@example.invalid', phone: '+70000000000', salary: { amount: 999999 } });
+  assert.deepEqual(sections, { education: ['Synthetic university, Synthetic institute, 2020'],
+    courses: ['Synthetic course, Training lab, 2022'], skills: ['TypeScript', '<script>bad</script>'],
+    languages: ['Русский — Родной'], location: 'Синтетический регион' });
+  assert.deepEqual(mapHhResumeClientSections({ email: 'private@example.invalid' }),
+    { education: [], courses: [], skills: [], languages: [], location: null });
 });
 
 test('minimum experience is the only deterministic knockout; arbitrary ATS knockout remains pending AI', () => {

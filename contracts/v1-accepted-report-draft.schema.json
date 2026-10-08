@@ -3,7 +3,7 @@
   "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-accepted-report-draft.schema.json",
   "title": "Private report draft from an accepted profile-owned candidate source",
   "type": "object",
-  "required": ["domainApiVersion", "reportRef", "candidateId", "sourceKind", "vacancyId", "sourceRevision", "reportRevision", "policyRevision", "status", "reviewState", "clientFields", "createdAt", "updatedAt"],
+  "required": ["domainApiVersion", "reportRef", "candidateId", "sourceKind", "vacancyId", "sourceRevision", "reportRevision", "policyRevision", "status", "reviewState", "clientFields", "fieldProvenance", "createdAt", "updatedAt"],
   "properties": {
     "domainApiVersion": { "const": "v1" },
     "reportRef": { "type": "string", "pattern": "^report_[a-f0-9]{32}$" },
@@ -24,6 +24,11 @@
         "summary": { "type": "string", "maxLength": 3000 },
         "fit": { "type": "array", "maxItems": 20, "items": { "$ref": "#/$defs/fit" } },
         "conclusion": { "type": "string", "maxLength": 1500 },
+        "education": { "type": "array", "maxItems": 10, "items": { "type": "string", "maxLength": 300 } },
+        "courses": { "type": "array", "maxItems": 20, "items": { "type": "string", "maxLength": 300 } },
+        "skills": { "type": "array", "maxItems": 30, "items": { "type": "string", "maxLength": 100 } },
+        "languages": { "type": "array", "maxItems": 20, "items": { "type": "string", "maxLength": 150 } },
+        "location": { "type": ["string", "null"], "maxLength": 200 },
         "experience": { "type": "array", "maxItems": 5, "items": {
           "type": "object", "required": ["role", "company", "period"],
           "properties": {
@@ -35,10 +40,38 @@
         } }
       }, "additionalProperties": false
     },
+    "fieldProvenance": {
+      "type": "object",
+      "properties": {
+        "candidateName": { "$ref": "#/$defs/provenance" },
+        "position": { "$ref": "#/$defs/provenance" },
+        "vacancyTitle": { "$ref": "#/$defs/provenance" },
+        "summary": { "$ref": "#/$defs/provenance" },
+        "experience": { "$ref": "#/$defs/provenance" },
+        "fit": { "$ref": "#/$defs/provenance" },
+        "conclusion": { "$ref": "#/$defs/provenance" },
+        "education": { "$ref": "#/$defs/provenance" },
+        "courses": { "$ref": "#/$defs/provenance" },
+        "skills": { "$ref": "#/$defs/provenance" },
+        "languages": { "$ref": "#/$defs/provenance" },
+        "location": { "$ref": "#/$defs/provenance" }
+      }, "additionalProperties": false
+    },
     "createdAt": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[^ ]+Z$" },
     "updatedAt": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[^ ]+Z$" }
   }, "additionalProperties": false,
   "$defs": {
+    "provenance": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["source", "recruiter", "generated"] },
+        "sourceRevision": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "editedAt": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[^ ]+Z$" },
+        "generatedAt": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[^ ]+Z$" },
+        "instructionRevisions": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } }
+      }, "additionalProperties": false
+    },
     "fit": {
       "type": "object", "required": ["requirement", "status", "comment"],
       "properties": {

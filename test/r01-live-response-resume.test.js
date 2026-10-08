@@ -10,6 +10,9 @@ const atsConfig = { vacancy_title: 'Synthetic Engineer', filters: { min_experien
 const raw = { id: resumeId, title: 'Synthetic Platform Engineer', first_name: 'Синтетический', last_name: 'Кандидат',
   total_experience: { months: 60 }, area: { name: 'Тестовый регион' }, salary: { amount: 100000, currency: 'RUR' },
   email: 'private@example.test', alternate_url: 'https://hh.ru/resume/private',
+  education: { primary: [{ name: 'Вымышленный вуз', organization: 'Учебный центр', year: 2020 }],
+    additional: [{ name: 'Вымышленный курс' }] }, skill_set: [{ name: 'TypeScript' }],
+  language: [{ name: 'Русский', level: { name: 'Родной' } }],
   experience: [{ position: 'Инженер', company: 'Тестовая компания', start: '2020', end: null }] };
 
 test('response resume reader uses exact owned resume endpoint and returns only mapped private source fields', async () => {
@@ -33,6 +36,11 @@ test('response resume reader uses exact owned resume endpoint and returns only m
   assert.equal(calls[0].options.method, 'GET');
   assert.equal(calls[0].options.headers['HH-User-Agent'], userAgent);
   assert.equal(result.body.resume.title, raw.title);
+  assert.deepEqual(result.body.resume.education, ['Вымышленный вуз, Учебный центр, 2020']);
+  assert.deepEqual(result.body.resume.courses, ['Вымышленный курс']);
+  assert.deepEqual(result.body.resume.skills, ['TypeScript']);
+  assert.deepEqual(result.body.resume.languages, ['Русский — Родной']);
+  assert.equal(result.body.resume.location, 'Тестовый регион');
   assert.equal(result.body.candidateProjection.id, resumeId);
   assert.equal(result.body.candidateProjection.salary.amount, 100000);
   assert.equal(JSON.stringify(result.body).includes('private@example.test'), false);
