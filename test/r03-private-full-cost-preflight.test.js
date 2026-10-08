@@ -81,6 +81,26 @@ test('read-only page-zero probes write owner-only SHA-bound aggregate estimate',
 test('provider rejection leaves no preflight receipt', async t => {
   const f = fixture(t);
   await assert.rejects(runPrivateFullCostPreflight({ ...f, fetchImpl: async () =>
-    ({ status: 429, ok: false, json: async () => ({}) }) }));
+    ({ status: 429, ok: false, json: async () => ({}) }) }), error => {
+    assert.deepEqual(error.safeDiagnostic, { phase: 'provider_probe',
+      reason: 'provider_unavailable', httpStatus: 429, providerRequestCount: 1 });
+    assert.equal(JSON.stringify(error.safeDiagnostic).includes('вымышленный инженер'), false);
+    assert.equal(JSON.stringify(error.safeDiagnostic).includes('invented_token'), false);
+    return true;
+  });
+  assert.equal(existsSync(f.outputFile), false);
+});
+
+test('transport failures expose only safe phase and bounded request count', async t => {
+  const f = fixture(t);
+  await assert.rejects(runPrivateFullCostPreflight({ ...f, fetchImpl: async () => {
+    throw new Error('private query вымышленный инженер bearer invented_token');
+  } }), error => {
+    assert.deepEqual(error.safeDiagnostic, { phase: 'provider_probe',
+      reason: 'provider_unavailable', httpStatus: null, providerRequestCount: 1 });
+    assert.equal(JSON.stringify(error.safeDiagnostic).includes('invented_token'), false);
+    assert.equal(JSON.stringify(error.safeDiagnostic).includes('вымышленный инженер'), false);
+    return true;
+  });
   assert.equal(existsSync(f.outputFile), false);
 });
