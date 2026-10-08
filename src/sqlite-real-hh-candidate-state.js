@@ -295,7 +295,7 @@ export class SqliteRealHhCandidateState {
     const inputRevision = this.assessmentInputRevision(snapshot, candidate);
     const prior = this.assessmentById.get(profileId, vacancyId, jobId, candidateId);
     if (prior?.input_revision === inputRevision)
-      return { kind: 'scored', assessment: JSON.parse(prior.assessment) };
+      return { kind: 'scored', snapshot, candidate, inputRevision, assessment: JSON.parse(prior.assessment) };
     const failure = this.assessmentFailure.get(profileId, vacancyId, candidateId, inputRevision);
     if (failure?.retry_at > at) return { kind: 'retry_later', retryAt: failure.retry_at };
     return { kind: 'pending', snapshot, candidate, inputRevision };

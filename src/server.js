@@ -207,14 +207,25 @@ function validAcceptedReportRegenerate(value) {
     typeof value.replaceRecruiterEditedFields === 'boolean';
 }
 
+function validAcceptedReportExport(value) {
+  return isPlainObject(value) && Object.keys(value).length === 1 &&
+    Object.keys(value)[0] === 'expectedReportRevision' &&
+    /^report-r[1-9][0-9]*$/.test(value.expectedReportRevision ?? '');
+}
+
 function projectAcceptedClientFields(value) {
-  if (!isPlainObject(value) || Object.keys(value).sort().join(',') !== 'candidateName,experience,position,vacancyTitle' ||
+  if (!isPlainObject(value) || Object.keys(value).some(key => !['candidateName', 'experience', 'position', 'vacancyTitle', 'education', 'courses', 'skills', 'languages', 'location'].includes(key)) ||
       !['candidateName', 'position', 'vacancyTitle'].every(key => typeof value[key] === 'string' && value[key].length > 0 && value[key].length <= 300) ||
       !Array.isArray(value.experience) || value.experience.length > 5 ||
       !value.experience.every(row => isPlainObject(row) && Object.keys(row).sort().join(',') === 'company,period,role' &&
-        ['company', 'period', 'role'].every(key => typeof row[key] === 'string' && row[key].length > 0 && row[key].length <= 500))) return null;
+        ['company', 'period', 'role'].every(key => typeof row[key] === 'string' && row[key].length > 0 && row[key].length <= 500)) ||
+      ![['education', 10, 300], ['courses', 20, 300], ['skills', 30, 100], ['languages', 20, 150]].every(([key, maxItems, maxLength]) =>
+        value[key] === undefined || Array.isArray(value[key]) && value[key].length <= maxItems && value[key].every(item => typeof item === 'string' && item.trim() && item.length <= maxLength)) ||
+      value.location !== undefined && value.location !== null && (typeof value.location !== 'string' || value.location.length > 200)) return null;
   return { candidateName: value.candidateName, position: value.position, vacancyTitle: value.vacancyTitle,
-    experience: value.experience.map(row => ({ role: row.role, company: row.company, period: row.period })) };
+    experience: value.experience.map(row => ({ role: row.role, company: row.company, period: row.period })),
+    education: value.education ?? [], courses: value.courses ?? [], skills: value.skills ?? [],
+    languages: value.languages ?? [], location: value.location ?? null };
 }
 
 function validReportClientPatch(value) {
@@ -347,13 +358,13 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
     const isReportDraftPath = path === reportDraftRoot || new RegExp(`^${reportDraftRoot}/report_demo_[a-f0-9]{12}(?:/preview|/review|/publish|/revoke)?$`).test(path);
     const acceptedReportDraftRoot = '/api/v1/ui/accepted-report-drafts';
     const isAcceptedReportDraftPath = acceptedReportDrafts !== null &&
-      (path === acceptedReportDraftRoot || new RegExp(`^${acceptedReportDraftRoot}/report_[a-f0-9]{32}(?:/preview|/review|/edit|/regenerate)?$`).test(path));
+      (path === acceptedReportDraftRoot || new RegExp(`^${acceptedReportDraftRoot}/report_[a-f0-9]{32}(?:/preview|/review|/edit|/regenerate|/export)?$`).test(path));
     const acceptedReportPolicyPath = acceptedReportPolicies !== null && path === '/api/v1/ui/accepted-report-policy';
     const acceptedReportInstructionsPath = acceptedReportInstructions !== null && path === '/api/v1/ui/accepted-report-instructions';
     const acceptedReportPreviousPath = acceptedReportDrafts !== null && path === '/api/v1/ui/accepted-report-previous-approved';
     const acceptedReportRouteMethodAllowed = isAcceptedReportDraftPath &&
       (['GET', 'HEAD'].includes(req.method) && path !== acceptedReportDraftRoot ||
-        req.method === 'POST' && (path === acceptedReportDraftRoot || /\/(review|regenerate)$/.test(path)) ||
+        req.method === 'POST' && (path === acceptedReportDraftRoot || /\/(review|regenerate|export)$/.test(path)) ||
         req.method === 'PATCH' && /\/edit$/.test(path)) ||
       acceptedReportPolicyPath && (req.method === 'GET' || req.method === 'PUT') ||
       acceptedReportInstructionsPath && (req.method === 'GET' || req.method === 'PUT') ||
@@ -364,6 +375,7 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
     let status = 200;
     let type = mime.json;
     let body;
+    let extraResponseHeaders = {};
 
     if (privateProactiveOnly && !isProactivePath && path !== '/health/ready' &&
         !(connectedAppBff !== null && (liveResponseRead !== null &&
@@ -899,7 +911,8 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
               body = renderRealProactivePage({ profileId: context.profileId, vacancyId: realVacancyId, feed: result.feed,
                 listView: url.searchParams.get('list') ?? 'active',
                 historicalAvailable: realProactiveHistoricalRead?.has(context, realVacancyId) ?? false,
-                responsesAvailable: connectedAppBff !== null && liveResponseRead !== null });
+                responsesAvailable: connectedAppBff !== null && liveResponseRead !== null,
+                reportsAvailable: connectedAppBff !== null && acceptedReportDrafts !== null });
               res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'");
               res.setHeader('Referrer-Policy', 'no-referrer');
             } else body = result.value;
@@ -1181,7 +1194,7 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
         status = 401; body = { error: 'trusted_profile_context_required' };
       } else if (status === 200) {
         const rootRequest = path === acceptedReportDraftRoot && req.method === 'POST';
-        const match = path.match(/^\/api\/v1\/ui\/accepted-report-drafts\/(report_[a-f0-9]{32})(?:\/(preview|review|edit|regenerate))?$/);
+        const match = path.match(/^\/api\/v1\/ui\/accepted-report-drafts\/(report_[a-f0-9]{32})(?:\/(preview|review|edit|regenerate|export))?$/);
         const ref = match?.[1]; const action = match?.[2] ?? '';
         const requiredScope = rootRequest ? 'recruiting.reports.create' : action === 'review'
           ? 'recruiting.reports.review' : ['edit', 'regenerate'].includes(action) ? 'recruiting.reports.edit' : 'recruiting.reports.read';
@@ -1216,6 +1229,32 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
           else if (result.kind === 'source_not_found') { status = 404; body = { error: 'not_found' }; }
           else if (result.kind === 'not_found') { status = 404; body = { error: 'not_found' }; }
           else { status = 503; body = { error: 'report_source_unavailable' }; }
+        } else if (ref && action === 'export' && req.method === 'POST') {
+          let request;
+          try { request = await readJsonBody(req); } catch (error) {
+            status = error.message === 'body_too_large' ? 413 : 400; body = { error: 'invalid_report_export' };
+          }
+          if (status === 200 && !validAcceptedReportExport(request)) {
+            status = 400; body = { error: 'invalid_report_export' };
+          } else if (status === 200) {
+            const result = await acceptedReportDrafts.exportApproved(context, ref, request.expectedReportRevision);
+            if (result.kind === 'exported') {
+              type = 'text/html; charset=utf-8'; body = result.html;
+              extraResponseHeaders = {
+                'Cache-Control': 'private, no-store',
+                'Content-Disposition': `attachment; filename="candidate-report-${ref}.html"`,
+                'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+                'Content-Length': String(Buffer.byteLength(result.html)),
+                'Cross-Origin-Resource-Policy': 'same-origin',
+              };
+            } else if (result.kind === 'stale_report') { status = 409; body = { error: 'stale_report_revision' }; }
+            else if (result.kind === 'not_approved') { status = 409; body = { error: 'report_approval_required' }; }
+            else if (result.kind === 'stale_source') { status = 409; body = { error: 'stale_report_source' }; }
+            else if (result.kind === 'stale_policy') { status = 409; body = { error: 'stale_report_policy' }; }
+            else if (result.kind === 'source_not_found' || result.kind === 'not_found') { status = 404; body = { error: 'not_found' }; }
+            else if (result.kind === 'invalid_request') { status = 400; body = { error: 'invalid_report_export' }; }
+            else { status = 503; body = { error: 'report_source_unavailable' }; }
+          }
         } else if (ref && action === 'preview' && req.method === 'GET') {
           const result = await acceptedReportDrafts.preview(context, ref);
           if (result.kind === 'preview') body = result.body;
@@ -1677,7 +1716,7 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
       }
     }
 
-    const responseHeaders = { 'Content-Type': type, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' };
+    const responseHeaders = { 'Content-Type': type, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', ...extraResponseHeaders };
     if (status === 200 && path === '/hh/candidate-report') responseHeaders['Content-Security-Policy'] =
       "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
     res.writeHead(status, responseHeaders);

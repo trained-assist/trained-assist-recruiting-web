@@ -53,6 +53,11 @@
       <h2 id="preview-title">Клиентский вид</h2>
       <iframe id="preview" title="Предпросмотр черновика" sandbox=""></iframe>
     </section>
+    <section id="approved-export-section" aria-labelledby="approved-export-title" hidden>
+      <h2 id="approved-export-title">Утверждённый отчёт</h2>
+      <p>Файл содержит только проверенную клиентскую версию и остаётся приватным, пока вы сами не передадите его клиенту.</p>
+      <button id="download-approved-report" type="button">Скачать HTML отчёт</button>
+    </section>
     <section aria-labelledby="policy-title">
       <h2 id="policy-title">Запретные формулировки для этого кандидата и вакансии</h2>
       <p>Добавьте точные фразы, которые нельзя показывать клиенту. Они сохраняются для следующих черновиков этого кандидата по этой вакансии.</p>
@@ -62,13 +67,18 @@
     </section>
     <section aria-labelledby="edit-title">
       <h2 id="edit-title">Текст черновика</h2>
-      <p>Имя и опыт берутся из принятого источника. Генерация использует только эти данные и сохранённые инструкции; результат нужно проверить. Ваши ручные правки сохраняются, пока вы явно не разрешите их заменить.</p>
+      <p>Имя, опыт и доступные сведения резюме берутся из принятого источника. Проверьте или удалите лишнее до подтверждения отчёта. Генерация использует только эти данные и сохранённые инструкции; результат нужно проверить. Ваши ручные правки сохраняются, пока вы явно не разрешите их заменить.</p>
       <div id="field-provenance" aria-live="polite"></div>
       <label><input id="replace-edited-fields" type="checkbox"> Разрешить заменить поля, которые я исправлял вручную</label>
       <button id="regenerate-report" type="button" disabled>Составить / обновить текст</button>
       <label>Кратко о кандидате <textarea id="summary" maxlength="3000" rows="5"></textarea></label>
       <label>Должность <input id="position" maxlength="300" required></label>
       <label>Вакансия <input id="vacancy-title" maxlength="300" required></label>
+      <label>Локация <input id="location" maxlength="200"></label>
+      <label>Образование <textarea id="education" maxlength="3000" rows="3" placeholder="По одному пункту на строку"></textarea></label>
+      <label>Курсы <textarea id="courses" maxlength="5000" rows="3" placeholder="По одному пункту на строку"></textarea></label>
+      <label>Навыки <textarea id="skills" maxlength="3000" rows="3" placeholder="По одному пункту на строку"></textarea></label>
+      <label>Языки <textarea id="languages" maxlength="3000" rows="3" placeholder="По одному пункту на строку"></textarea></label>
       <div id="experience-editor"></div>
       <button id="add-experience" type="button">Добавить место работы</button>
       <h3>Соответствие требованиям вакансии</h3>

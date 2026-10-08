@@ -14,6 +14,11 @@
         "summary": { "type": "string", "maxLength": 3000 },
         "fit": { "type": "array", "maxItems": 20, "items": { "$ref": "#/$defs/fit" } },
         "conclusion": { "type": "string", "maxLength": 1500 },
+        "education": { "type": "array", "maxItems": 10, "items": { "type": "string", "maxLength": 300 } },
+        "courses": { "type": "array", "maxItems": 20, "items": { "type": "string", "maxLength": 300 } },
+        "skills": { "type": "array", "maxItems": 30, "items": { "type": "string", "maxLength": 100 } },
+        "languages": { "type": "array", "maxItems": 20, "items": { "type": "string", "maxLength": 150 } },
+        "location": { "type": ["string", "null"], "maxLength": 200 },
         "experience": { "type": "array", "maxItems": 5, "items": {
           "type": "object", "required": ["role", "company", "period"],
           "properties": {
