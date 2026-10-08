@@ -17,7 +17,13 @@ export function createRealProactiveRead({ feed, resolveVacancyOwnership }) {
     try { result = await feed.read(trustedContext, vacancyId); }
     catch { return { kind: 'unavailable' }; }
     return { kind: 'found', feed: result, value: { ok: true, vacancyId, status: result.status,
-      freshness: result.freshness, total: result.total, candidates: result.items,
+      freshness: result.freshness, assessmentStatus: result.assessmentStatus ??
+        (!result.total ? 'not_applicable' : result.items.some(item => item.atsScore === null)
+          ? 'assessment_pending' : 'assessed'),
+      assessmentPendingCount: result.assessmentPendingCount ??
+        result.items.filter(item => item.atsScore === null).length,
+      assessmentBlockedCount: result.assessmentBlockedCount ?? 0,
+      total: result.total, candidates: result.items,
       resultRevision: result.resultRevision } };
   };
 }
