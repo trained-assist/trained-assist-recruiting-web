@@ -118,7 +118,11 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
       reportDraftStore = new SqliteAcceptedReportDraftStore({ filename: reportDraftDbPath,
         encryptionKey: loadPrivateHostSecret(secretsDirectory, 'report_drafts_encryption_key') });
       acceptedReportSourceRead = createAcceptedReportSourceRead({ feed, candidateState: candidates,
-        loadBasePlan: stack.loadBasePlan, isVacancyOwned: config.isVacancyOwned });
+        loadBasePlan: stack.loadBasePlan,
+        readResume: createHhResponseResumeRead({ loadCredential: stack.credentialBroker.loadCredential,
+          refreshCredential: stack.credentialBroker.refreshCredential, fetchImpl,
+          loadBasePlan: stack.loadBasePlan, isVacancyOwned: config.isVacancyOwned, userAgent }),
+        isVacancyOwned: config.isVacancyOwned });
       acceptedHhResponseReportSourceRead = createHhResponseReportSourceRead({
         readResponseDetail: liveResponseDetailRead,
         readResume: createHhResponseResumeRead({ loadCredential: stack.credentialBroker.loadCredential,

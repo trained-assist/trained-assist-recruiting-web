@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-accepted-report-instructions-update.schema.json",
+  "title": "Optimistic replacement of one profile-owned report instruction scope",
+  "type": "object",
+  "required": ["candidateId", "vacancyId", "sourceKind", "scopeType", "expectedRevision", "instructions"],
+  "properties": {
+    "candidateId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+    "vacancyId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+    "sourceKind": { "enum": ["accepted_cold_search", "accepted_hh_response"] },
+    "scopeType": { "enum": ["profile", "vacancy", "candidate", "report_version"] },
+    "reportRef": { "type": "string", "pattern": "^report_[a-f0-9]{32}$" },
+    "reportRevision": { "type": "string", "pattern": "^report-r[1-9][0-9]*$" },
+    "expectedRevision": { "type": "integer", "minimum": 0 },
+    "instructions": {
+      "type": "object", "required": ["includeGuidance", "styleGuidance", "recruiterNotes"],
+      "properties": {
+        "includeGuidance": { "$ref": "#/$defs/textList" },
+        "styleGuidance": { "$ref": "#/$defs/textList" },
+        "recruiterNotes": { "$ref": "#/$defs/textList" }
+      }, "additionalProperties": false
+    }
+  }, "additionalProperties": false,
+  "$defs": {
+    "textList": { "type": "array", "maxItems": 30, "items": { "type": "string", "minLength": 1, "maxLength": 1000 } }
+  },
+  "allOf": [{ "if": { "properties": { "scopeType": { "const": "report_version" } }, "required": ["scopeType"] },
+    "then": { "required": ["reportRef", "reportRevision"] },
+    "else": { "not": { "anyOf": [{ "required": ["reportRef"] }, { "required": ["reportRevision"] }] } } }]
+}

@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-accepted-report-instructions.schema.json",
+  "title": "Profile-owned report instructions resolved in scope order",
+  "type": "object",
+  "required": ["domainApiVersion", "candidateId", "vacancyId", "sourceKind", "sourceRevision", "scopes", "effective", "provenance"],
+  "properties": {
+    "domainApiVersion": { "const": "v1" },
+    "candidateId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+    "vacancyId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+    "sourceKind": { "enum": ["accepted_cold_search", "accepted_hh_response"] },
+    "sourceRevision": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "reportRef": { "type": "string", "pattern": "^report_[a-f0-9]{32}$" },
+    "reportRevision": { "type": "string", "pattern": "^report-r[1-9][0-9]*$" },
+    "scopes": { "type": "array", "minItems": 3, "maxItems": 4, "items": { "$ref": "#/$defs/scope" } },
+    "effective": { "$ref": "#/$defs/effectiveInstructions" },
+    "provenance": { "type": "array", "maxItems": 360, "items": { "$ref": "#/$defs/provenance" } }
+  },
+  "additionalProperties": false,
+  "allOf": [{ "if": { "required": ["reportRef"] }, "then": { "required": ["reportRevision"] },
+    "else": { "not": { "required": ["reportRevision"] } } }],
+  "$defs": {
+    "instructions": {
+      "type": "object", "required": ["includeGuidance", "styleGuidance", "recruiterNotes"],
+      "properties": {
+        "includeGuidance": { "$ref": "#/$defs/textList" },
+        "styleGuidance": { "$ref": "#/$defs/textList" },
+        "recruiterNotes": { "$ref": "#/$defs/textList" }
+      }, "additionalProperties": false
+    },
+    "effectiveInstructions": {
+      "type": "object", "required": ["includeGuidance", "styleGuidance", "recruiterNotes"],
+      "properties": {
+        "includeGuidance": { "$ref": "#/$defs/effectiveTextList" },
+        "styleGuidance": { "$ref": "#/$defs/effectiveTextList" },
+        "recruiterNotes": { "$ref": "#/$defs/effectiveTextList" }
+      }, "additionalProperties": false
+    },
+    "textList": { "type": "array", "maxItems": 30, "items": { "type": "string", "minLength": 1, "maxLength": 1000 } },
+    "effectiveTextList": { "type": "array", "maxItems": 120, "items": { "type": "string", "minLength": 1, "maxLength": 1000 } },
+    "scope": {
+      "type": "object", "required": ["scopeType", "revision", "updatedAt", "instructions", "history"],
+      "properties": {
+        "scopeType": { "enum": ["profile", "vacancy", "candidate", "report_version"] },
+        "scopeId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "updatedAt": { "type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[^ ]+Z$" },
+        "instructions": { "$ref": "#/$defs/instructions" },
+        "history": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/historyEntry" } }
+      }, "additionalProperties": false
+    },
+    "historyEntry": {
+      "type": "object", "required": ["revision", "updatedAt", "instructions"],
+      "properties": {
+        "revision": { "type": "integer", "minimum": 1 },
+        "updatedAt": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[^ ]+Z$" },
+        "instructions": { "$ref": "#/$defs/instructions" }
+      }, "additionalProperties": false
+    },
+    "provenance": {
+      "type": "object", "required": ["field", "text", "scopeType", "revision"],
+      "properties": {
+        "field": { "enum": ["includeGuidance", "styleGuidance", "recruiterNotes"] },
+        "text": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "scopeType": { "enum": ["profile", "vacancy", "candidate", "report_version"] },
+        "scopeId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+        "revision": { "type": "integer", "minimum": 0 }
+      }, "additionalProperties": false
+    }
+  }
+}

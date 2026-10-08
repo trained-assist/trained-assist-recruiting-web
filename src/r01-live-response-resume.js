@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mapHhResumeCandidate } from './hh-resume-mapping.js';
+import { mapHhResumeCandidate, mapHhResumeClientSections } from './hh-resume-mapping.js';
 
 const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const fail = (status, error) => ({ status, body: { error } });
@@ -74,7 +74,8 @@ export function createHhResponseResumeRead({ loadCredential, refreshCredential, 
     if (mapped.kind !== 'candidate' || mapped.candidate.id !== resumeId)
       return fail(502, 'hh_resume_invalid');
     const resume = { firstName: mapped.candidate.firstName, lastName: mapped.candidate.lastName,
-      title: mapped.candidate.title, experience: mapped.candidate.experience };
+      title: mapped.candidate.title, experience: mapped.candidate.experience,
+      ...mapHhResumeClientSections(raw) };
     return { status: 200, body: { profileId, vacancyId, resumeId,
       sourceRevision: createHash('sha256').update(bytes).digest('hex'), criteriaRevision: plan.criteriaRevision,
       resume, candidateProjection: mapped.candidate } };
