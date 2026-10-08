@@ -5,9 +5,10 @@ import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
 
-const protocolVersion = '2025-06-18';
 const root = new URL('../../', import.meta.url);
 const descriptor = JSON.parse(readFileSync(new URL('contracts/recruiting-capabilities-v1.json', root), 'utf8'));
+const relayCompatibility = JSON.parse(readFileSync(new URL('contracts/capability-relay-v1.compatibility.json', root), 'utf8'));
+const protocolVersion = relayCompatibility.protocolVersion;
 const serverId = process.env.MCP_SERVER_ID ?? 'recruiting-web-sandbox';
 const allowedTools = new Set((process.env.MCP_ALLOWED_TOOLS ?? '').split(',').filter(Boolean));
 const runnerRoot = process.env.RECRUITING_AGENT_RUNNER_ROOT;

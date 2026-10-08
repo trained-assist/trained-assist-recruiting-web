@@ -115,7 +115,13 @@ try {
   const pageResponse = await fetch(`${site}/hh/proactive?vacancy_id=${vacancyId}`, { headers: auth });
   assert.equal(pageResponse.status, 200);
   const page = await pageResponse.text();
-  assert.match(page, /fresh|candidate|кандидат/i);
+  assert.match(page, /<title>Fresh candidates<\/title>/);
+  assert.match(page, /id="candidates"/);
+  const pageScript = readFileSync(join(root, 'public/proactive.js'), 'utf8');
+  assert.match(pageScript, /candidates\?vacancy_id=/);
+  assert.match(pageScript, /candidate\.title/);
+  assert.match(pageScript, /candidate\.isNew/);
+  assert.match(pageScript, /candidatesNode\.append\(row\)/);
   const manual = await fetch(`${site}/api/hh/proactive/search`, { method: 'POST',
     headers: { ...auth, 'Content-Type': 'application/json', 'Idempotency-Key': 'agent-sandbox-search-01' },
     body: JSON.stringify({ vacancy_id: vacancyId }) });
@@ -131,7 +137,8 @@ try {
     'the synthetic binding secret must not be persisted in Agent Run evidence or MCP config');
   process.stdout.write(`${JSON.stringify({ outcome: 'pass', runner: 'FakeEngine over Agent Runner MCP bridge',
     siteTransport: 'local Recruiting HTTP server', profileId, tools, schedule: scheduled.schedules[0].enabled,
-    page: pageResponse.status, freshCandidates: feed.total, source: feed.source })}\n`);
+    page: pageResponse.status, browserRenderContract: 'candidate title/NEW/region rendered from candidate feed',
+    freshCandidates: feed.total, source: feed.source })}\n`);
 } finally {
   runner?.dispose();
   await new Promise(resolveClose => server.close(resolveClose));
