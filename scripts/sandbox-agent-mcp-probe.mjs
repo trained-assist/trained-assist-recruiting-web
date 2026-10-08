@@ -83,18 +83,18 @@ try {
     host: { region: 'sandbox-eu', environment: 'sandbox' }, cancelGraceMs: 500,
     capabilities: registry, bindingResolver: ref => ref === bindingRef ? bindingSecret : null });
   const agentRuns = [];
-  const invokeAgent = async call => {
+  const invokeAgent = async (call, callerProfileId = profileId, denied = []) => {
     const cwd = join(workDir, `agent-workspace-${agentRuns.length + 1}`);
     const rawSpec = { contractVersion: 1, jobId: `job-${randomBytes(4).toString('hex')}`,
       runId: `run-${randomBytes(6).toString('hex')}`, operationId: `op-${randomBytes(6).toString('hex')}`,
-      userTaskId: `task-${randomBytes(6).toString('hex')}`, profileId,
+      userTaskId: `task-${randomBytes(6).toString('hex')}`, profileId: callerProfileId,
       conversationId: `conv-${randomBytes(6).toString('hex')}`, ownerGeneration: 1,
       engine: { name: 'fake', adapterVersion: '1' }, cwd,
       envAllowlist: [], limits: { timeoutMs: 60_000 }, credentialBindings: [binding],
       mcp: { servers: [{ serverId: 'recruiting-web-sandbox', transport: 'stdio', command: nodeBin,
         args: [facade], envAllowlist: ['PATH', 'RECRUITING_AGENT_RUNNER_ROOT', 'MCP_ALLOWED_TOOLS'],
         bindingRef, allowedTools: tools }] },
-      input: { inlinePrompt: JSON.stringify({ calls: [call], denied: [] }) } };
+      input: { inlinePrompt: JSON.stringify({ calls: call ? [call] : [], denied }) } };
     const validated = validateRunSpec(rawSpec);
     assert.equal(validated.ok, true, validated.errors?.join('; '));
     const receipt = runner.start(validated.value);
@@ -105,10 +105,12 @@ try {
     const evidence = evidenceText.trim().split('\n').map(JSON.parse);
     const listed = evidence.find(item => item.step === 'tools_list');
     const toolCall = evidence.find(item => item.step === 'tool_call');
+    const deniedProbe = evidence.find(item => item.step === 'tool_call_denied_probe');
     assert.ok(tools.every(name => listed?.tools.some(tool => tool.name === name)));
-    assert.equal(toolCall?.ok, true, JSON.stringify(toolCall));
+    if (call) assert.equal(toolCall?.ok, true, JSON.stringify(toolCall));
+    if (denied.length) assert.equal(deniedProbe?.ok, true, JSON.stringify(deniedProbe));
     agentRuns.push({ receipt, cwd, evidenceText });
-    return toolCall.result;
+    return toolCall?.result ?? deniedProbe;
   };
   const enabled = await invokeAgent({ tool: tools[0], arguments: { action: 'enable', vacancyId, interval_hours: 6 } });
   assert.equal(enabled.schedule.enabled, true);
@@ -122,6 +124,10 @@ try {
   assert.equal(occurrences.occurrences.length, 1);
   assert.equal(occurrences.occurrences[0].status, 'succeeded');
   assert.equal(occurrences.occurrences[0].snapshot.resultCount, 3);
+  const deniedProfile = await invokeAgent(null, 'profile_demo_002', [
+    { tool: tools[1], arguments: { vacancyId } }
+  ]);
+  assert.equal(deniedProfile.expect, 'refused');
   const pageResponse = await fetch(`${site}/hh/proactive?vacancy_id=${vacancyId}`, { headers: auth });
   assert.equal(pageResponse.status, 200);
   const page = await pageResponse.text();
@@ -146,7 +152,8 @@ try {
   process.stdout.write(`${JSON.stringify({ outcome: 'pass', runner: 'FakeEngine over Agent Runner MCP bridge',
     siteTransport: 'local Recruiting HTTP server', profileId, tools, schedule: scheduled.schedules[0].enabled,
     page: pageResponse.status, browserRenderContract: 'candidate title/NEW/region rendered from candidate feed',
-    schedulerTick: tick, freshCandidates: feed.total, source: feed.source })}\n`);
+    schedulerTick: tick, freshCandidates: feed.total, source: feed.source,
+    crossProfileMcpCall: 'refused' })}\n`);
 } finally {
   runner?.dispose();
   await new Promise(resolveClose => server.close(resolveClose));

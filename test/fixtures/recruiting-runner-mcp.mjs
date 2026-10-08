@@ -45,10 +45,12 @@ async function handle(line) {
   if (method === 'ping') { send({ id, result: {} }); return; }
   if (method === 'tools/list') { send({ id, result: { tools: tools.filter(tool => allowedTools.has(tool.name)) } }); return; }
   if (method !== 'tools/call') { send({ id, error: { code: -32601, message: 'Method not found' } }); return; }
-  if (!allowedTools.has(params.name)) { send({ id, result: result({ kind: 'technical_error', code: 'TOOL_NOT_ALLOWED' }), isError: true }); return; }
+  if (!allowedTools.has(params.name)) { send({ id, result: { ...result({ kind: 'technical_error', code: 'TOOL_NOT_ALLOWED' }), isError: true } }); return; }
   const capability = descriptor.capabilities.find(item => item.name === params.name);
   const response = await bridge.request('capability/invoke', { serverId, capabilityId: capability.name, arguments: params.arguments ?? {} });
-  if (response.ok === true && response.outcome) send({ id, result: result(response.outcome), ...(response.outcome.kind === 'completed' ? {} : { isError: true }) });
+  if (response.ok === true && response.outcome) send({ id, result: {
+    ...result(response.outcome), ...(response.outcome.kind === 'completed' ? {} : { isError: true })
+  } });
   else {
     process.stderr.write(`sandbox_bridge_failure ${JSON.stringify({ code: response.code, details: response.details ?? null })}\n`);
     send({ id, error: { code: -32001, message: String(response.code ?? 'CAPABILITY_INVOKE_FAILED'), data: response.details ?? null } });
