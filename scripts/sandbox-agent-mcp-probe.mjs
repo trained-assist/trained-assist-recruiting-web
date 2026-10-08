@@ -23,6 +23,7 @@ const capabilityIds = tools;
 const bindingRef = `cred:recruiting-${randomBytes(5).toString('hex')}`;
 const bindingSecret = `synthetic-binding-${randomBytes(16).toString('hex')}`;
 const workDir = mkdtempSync(join(tmpdir(), 'recruiting-agent-mcp-sandbox-'));
+let now = new Date('2026-10-08T00:00:00.000Z');
 const scheduleRequest = async (_profileId, requestedVacancyId) => requestedVacancyId === vacancyId ? ({
   vacancyId, criteriaRevision: 'criteria-search-demo-r1',
   criteria: { keywords: ['synthetic candidate'], regions: ['region_demo_001'] }
@@ -32,6 +33,7 @@ const server = createRecruitingServer({
     ? { profileId, scopes: ['recruiting.candidateSearch'] } : null,
   resolveCurrentSearchCriteriaRevision: () => 'criteria-search-demo-r1',
   resolveScheduledSearchRequest: scheduleRequest,
+  scheduleClock: () => new Date(now),
   candidateSearchProvider: syntheticColdSearchProvider
 });
 let runner;
@@ -80,38 +82,46 @@ try {
   runner = new Runner({ rootDir: workDir, adapters: { fake: new FakeEngine('mcp-tools') },
     host: { region: 'sandbox-eu', environment: 'sandbox' }, cancelGraceMs: 500,
     capabilities: registry, bindingResolver: ref => ref === bindingRef ? bindingSecret : null });
-  const rawSpec = { contractVersion: 1, jobId: `job-${randomBytes(4).toString('hex')}`,
-    runId: `run-${randomBytes(6).toString('hex')}`, operationId: `op-${randomBytes(6).toString('hex')}`,
-    userTaskId: `task-${randomBytes(6).toString('hex')}`, profileId,
-    conversationId: `conv-${randomBytes(6).toString('hex')}`, ownerGeneration: 1,
-    engine: { name: 'fake', adapterVersion: '1' }, cwd: join(workDir, 'agent-workspace'),
-    envAllowlist: [], limits: { timeoutMs: 60_000 }, credentialBindings: [binding],
-    mcp: { servers: [{ serverId: 'recruiting-web-sandbox', transport: 'stdio', command: nodeBin,
-      args: [facade], envAllowlist: ['PATH', 'RECRUITING_AGENT_RUNNER_ROOT', 'MCP_ALLOWED_TOOLS'],
-      bindingRef, allowedTools: tools }] },
-    input: { inlinePrompt: JSON.stringify({ calls: [
-      { tool: tools[0], arguments: { action: 'enable', vacancyId, interval_hours: 6 } },
-      { tool: tools[1], arguments: { vacancyId } }
-    ], denied: [] }) } };
-  const validated = validateRunSpec(rawSpec);
-  assert.equal(validated.ok, true, validated.errors?.join('; '));
-  const receipt = runner.start(validated.value);
-  const outcome = await runner.waitFor(receipt.runId, 30_000);
-  const debugEvents = readFileSync(join(workDir, 'runs', receipt.runId, 'events.jsonl'), 'utf8');
-  assert.equal(outcome.outcome, 'succeeded', `${JSON.stringify(outcome)}\n${debugEvents}`);
-  const evidenceText = readFileSync(join(validated.value.cwd, 'mcp-evidence.jsonl'), 'utf8');
-  const evidence = evidenceText.trim().split('\n').map(JSON.parse);
-  const listed = evidence.find(item => item.step === 'tools_list');
-  const calls = evidence.filter(item => item.step === 'tool_call');
-  assert.ok(tools.every(name => listed?.tools.some(tool => tool.name === name)));
-  assert.equal(calls.length, 2);
-  assert.ok(calls.every(item => item.ok), JSON.stringify(calls));
-  assert.equal(calls[0].result.schedule.enabled, true);
-  assert.equal(calls[0].result.schedule.profileId, profileId);
-  assert.deepEqual(calls[1].result.occurrences, []);
-
+  const agentRuns = [];
+  const invokeAgent = async call => {
+    const cwd = join(workDir, `agent-workspace-${agentRuns.length + 1}`);
+    const rawSpec = { contractVersion: 1, jobId: `job-${randomBytes(4).toString('hex')}`,
+      runId: `run-${randomBytes(6).toString('hex')}`, operationId: `op-${randomBytes(6).toString('hex')}`,
+      userTaskId: `task-${randomBytes(6).toString('hex')}`, profileId,
+      conversationId: `conv-${randomBytes(6).toString('hex')}`, ownerGeneration: 1,
+      engine: { name: 'fake', adapterVersion: '1' }, cwd,
+      envAllowlist: [], limits: { timeoutMs: 60_000 }, credentialBindings: [binding],
+      mcp: { servers: [{ serverId: 'recruiting-web-sandbox', transport: 'stdio', command: nodeBin,
+        args: [facade], envAllowlist: ['PATH', 'RECRUITING_AGENT_RUNNER_ROOT', 'MCP_ALLOWED_TOOLS'],
+        bindingRef, allowedTools: tools }] },
+      input: { inlinePrompt: JSON.stringify({ calls: [call], denied: [] }) } };
+    const validated = validateRunSpec(rawSpec);
+    assert.equal(validated.ok, true, validated.errors?.join('; '));
+    const receipt = runner.start(validated.value);
+    const outcome = await runner.waitFor(receipt.runId, 30_000);
+    const debugEvents = readFileSync(join(workDir, 'runs', receipt.runId, 'events.jsonl'), 'utf8');
+    assert.equal(outcome.outcome, 'succeeded', `${JSON.stringify(outcome)}\n${debugEvents}`);
+    const evidenceText = readFileSync(join(cwd, 'mcp-evidence.jsonl'), 'utf8');
+    const evidence = evidenceText.trim().split('\n').map(JSON.parse);
+    const listed = evidence.find(item => item.step === 'tools_list');
+    const toolCall = evidence.find(item => item.step === 'tool_call');
+    assert.ok(tools.every(name => listed?.tools.some(tool => tool.name === name)));
+    assert.equal(toolCall?.ok, true, JSON.stringify(toolCall));
+    agentRuns.push({ receipt, cwd, evidenceText });
+    return toolCall.result;
+  };
+  const enabled = await invokeAgent({ tool: tools[0], arguments: { action: 'enable', vacancyId, interval_hours: 6 } });
+  assert.equal(enabled.schedule.enabled, true);
+  assert.equal(enabled.schedule.profileId, profileId);
   const scheduled = await (await fetch(`${site}/api/hh/proactive/schedule?vacancy_id=${vacancyId}`, { headers: auth })).json();
   assert.equal(scheduled.schedules[0].enabled, true);
+  now = new Date(scheduled.schedules[0].nextRunAt);
+  const tick = await server.coldSearchSchedules.tick('sandbox-scheduled-worker');
+  assert.deepEqual(tick, { claimed: 1, completed: 1, unknown: 0 });
+  const occurrences = await invokeAgent({ tool: tools[1], arguments: { vacancyId } });
+  assert.equal(occurrences.occurrences.length, 1);
+  assert.equal(occurrences.occurrences[0].status, 'succeeded');
+  assert.equal(occurrences.occurrences[0].snapshot.resultCount, 3);
   const pageResponse = await fetch(`${site}/hh/proactive?vacancy_id=${vacancyId}`, { headers: auth });
   assert.equal(pageResponse.status, 200);
   const page = await pageResponse.text();
@@ -122,23 +132,21 @@ try {
   assert.match(pageScript, /candidate\.title/);
   assert.match(pageScript, /candidate\.isNew/);
   assert.match(pageScript, /candidatesNode\.append\(row\)/);
-  const manual = await fetch(`${site}/api/hh/proactive/search`, { method: 'POST',
-    headers: { ...auth, 'Content-Type': 'application/json', 'Idempotency-Key': 'agent-sandbox-search-01' },
-    body: JSON.stringify({ vacancy_id: vacancyId }) });
-  assert.equal(manual.status, 200, await manual.text());
   const feed = await (await fetch(`${site}/api/hh/proactive/candidates?vacancy_id=${vacancyId}`, { headers: auth })).json();
   assert.equal(feed.status, 'completed');
   assert.ok(feed.total > 0);
+  assert.equal(feed.source, 'scheduled');
   assert.ok(feed.candidates.every(item => item.candidateRef && item.title && item.isNew === true));
-  const runRoot = join(workDir, 'runs', receipt.runId);
-  const surfaces = ['events.jsonl', 'state.json', 'result.json'].map(name => readFileSync(join(runRoot, name), 'utf8'));
-  surfaces.push(evidenceText, readFileSync(join(validated.value.cwd, '.runner/mcp.json'), 'utf8'));
+  const surfaces = agentRuns.flatMap(({ receipt, cwd, evidenceText }) => [
+    ...['events.jsonl', 'state.json', 'result.json'].map(name => readFileSync(join(workDir, 'runs', receipt.runId, name), 'utf8')),
+    evidenceText, readFileSync(join(cwd, '.runner/mcp.json'), 'utf8')
+  ]);
   assert.equal(surfaces.some(value => value.includes(bindingSecret)), false,
     'the synthetic binding secret must not be persisted in Agent Run evidence or MCP config');
   process.stdout.write(`${JSON.stringify({ outcome: 'pass', runner: 'FakeEngine over Agent Runner MCP bridge',
     siteTransport: 'local Recruiting HTTP server', profileId, tools, schedule: scheduled.schedules[0].enabled,
     page: pageResponse.status, browserRenderContract: 'candidate title/NEW/region rendered from candidate feed',
-    freshCandidates: feed.total, source: feed.source })}\n`);
+    schedulerTick: tick, freshCandidates: feed.total, source: feed.source })}\n`);
 } finally {
   runner?.dispose();
   await new Promise(resolveClose => server.close(resolveClose));
