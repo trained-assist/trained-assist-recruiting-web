@@ -26,6 +26,9 @@ const atsConfig = { vacancy_id: vacancyId, vacancy_title: 'Synthetic Platform En
   required: [], preferred: [], knockout: [] };
 const rawResume = { id: resumeId, title: 'Synthetic Platform Engineer', first_name: 'Синтетический',
   last_name: 'Кандидат', total_experience: { months: 60 }, area: { name: 'Тестовый регион' }, salary: null,
+  education: { primary: [{ name: 'Synthetic university', organization: 'Synthetic Institute', year: 2019 }],
+    additional: [{ name: 'Synthetic course', organization: 'Synthetic Academy', year: 2022 }] },
+  skill_set: [{ name: 'TypeScript' }], language: [{ name: 'English', level: { name: 'C1' } }],
   email: 'private@example.test', alternate_url: 'https://hh.ru/resume/' + resumeId,
   experience: [{ position: 'Platform Engineer', company: 'Synthetic Company', start: '2021', end: null }] };
 
@@ -122,6 +125,35 @@ test('private runtime composes accepted HH response source, encrypted draft, BFF
 
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const base = 'http://127.0.0.1:' + server.address().port;
+  activeScopes = ['recruiting.candidateSearch'];
+  const proactiveEntry = await fetch(base + '/hh/proactive?vacancy_id=' + vacancyId, { redirect: 'manual' });
+  assert.equal(proactiveEntry.status, 303);
+  const proactiveStart = await fetch(base + proactiveEntry.headers.get('location'), { redirect: 'manual' });
+  assert.equal(proactiveStart.status, 303);
+  assert.equal(new URL(proactiveStart.headers.get('location')).searchParams.get('scope'), 'recruiting.candidateSearch');
+  const proactivePending = cookie(proactiveStart, '__Host-recruiting-oauth-pending');
+  const proactiveAuthorize = new URL(proactiveStart.headers.get('location'));
+  const proactiveCallbackUrl = new URL('/auth/connected/callback', base);
+  proactiveCallbackUrl.searchParams.set('code', 'd'.repeat(64));
+  proactiveCallbackUrl.searchParams.set('state', proactiveAuthorize.searchParams.get('state'));
+  proactiveCallbackUrl.searchParams.set('iss', issuer);
+  const proactiveCallback = await fetch(proactiveCallbackUrl, { redirect: 'manual', headers: { cookie: proactivePending } });
+  assert.equal(proactiveCallback.status, 303);
+  const proactiveCookie = cookie(proactiveCallback, '__Host-recruiting-app-session');
+  const morningPageResponse = await fetch(base + '/hh/proactive?vacancy_id=' + vacancyId,
+    { headers: { cookie: proactiveCookie } });
+  assert.equal(morningPageResponse.status, 200);
+  const morningPage = await morningPageResponse.text();
+  assert.match(morningPage, /data-reports-available="true"/);
+  const reportEntryPath = `/auth/connected/start?from=report&amp;vacancy_id=${vacancyId}&amp;candidate_id=${resumeId}`;
+  assert.ok(morningPage.includes(reportEntryPath));
+  assert.match(morningPage, /Подготовить отчёт клиенту/);
+  const reportStepUp = await fetch(base + reportEntryPath.replaceAll('&amp;', '&'), { redirect: 'manual' });
+  assert.equal(reportStepUp.status, 303);
+  assert.equal(new URL(reportStepUp.headers.get('location')).searchParams.get('scope'),
+    'recruiting.reports.read recruiting.reports.create recruiting.reports.edit recruiting.reports.review');
+
+  activeScopes = [...scopes];
   const entry = await fetch(base + '/hh/candidate-report?vacancy_id=' + vacancyId +
     '&candidate_id=' + negotiationId + '&source_kind=accepted_hh_response', { redirect: 'manual' });
   assert.equal(entry.status, 303);
@@ -149,7 +181,13 @@ test('private runtime composes accepted HH response source, encrypted draft, BFF
   const coldSource = await coldSourceResponse.json();
   assert.equal(coldSource.sourceKind, 'accepted_cold_search');
   assert.equal(coldSource.clientDraftFields.candidateName, 'Синтетический Кандидат');
+  assert.deepEqual(coldSource.clientDraftFields.education, ['Synthetic university, Synthetic Institute, 2019']);
+  assert.deepEqual(coldSource.clientDraftFields.courses, ['Synthetic course, Synthetic Academy, 2022']);
+  assert.deepEqual(coldSource.clientDraftFields.skills, ['TypeScript']);
+  assert.deepEqual(coldSource.clientDraftFields.languages, ['English — C1']);
+  assert.equal(coldSource.clientDraftFields.location, 'Тестовый регион');
   assert.equal(JSON.stringify(coldSource).includes('private@example.test'), false);
+  assert.equal(JSON.stringify(coldSource).includes('hh.ru/resume'), false);
   const coldCreate = await fetch(base + '/api/v1/ui/accepted-report-drafts', { method: 'POST',
     headers: { cookie: sessionCookie, origin, 'x-csrf-token': session.csrfToken,
       'content-type': 'application/json', 'Idempotency-Key': 'runtime-cold-search-report-001' },
@@ -171,6 +209,7 @@ test('private runtime composes accepted HH response source, encrypted draft, BFF
   const source = await sourceResponse.json();
   assert.equal(source.sourceKind, 'accepted_hh_response');
   assert.equal(source.clientDraftFields.candidateName, 'Синтетический Кандидат');
+  assert.deepEqual(source.clientDraftFields.skills, ['TypeScript']);
   assert.equal(JSON.stringify(source).includes('private@example.test'), false);
   assert.equal(JSON.stringify(source).includes('internalAssessment'), false);
 

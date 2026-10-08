@@ -18,6 +18,11 @@
         "candidateName": { "type": "string", "minLength": 1, "maxLength": 300 },
         "position": { "type": "string", "minLength": 1, "maxLength": 300 },
         "vacancyTitle": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "education": { "type": "array", "maxItems": 10, "items": { "type": "string", "maxLength": 300 } },
+        "courses": { "type": "array", "maxItems": 20, "items": { "type": "string", "maxLength": 300 } },
+        "skills": { "type": "array", "maxItems": 30, "items": { "type": "string", "maxLength": 100 } },
+        "languages": { "type": "array", "maxItems": 20, "items": { "type": "string", "maxLength": 150 } },
+        "location": { "type": ["string", "null"], "maxLength": 200 },
         "experience": { "type": "array", "maxItems": 5, "items": {
           "type": "object", "required": ["role", "company", "period"],
           "properties": { "role": { "type": "string", "minLength": 1 },

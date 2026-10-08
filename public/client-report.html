@@ -24,9 +24,39 @@
       <p id="source-summary">Загружаю подтверждённый источник…</p>
       <small id="source-revision"></small>
     </section>
+    <section id="instructions-section" aria-labelledby="instructions-title" hidden>
+      <h2 id="instructions-title">Сохранённые инструкции к отчётам</h2>
+      <p>Показываю правила профиля, вакансии, кандидата и этой версии отчёта. Они передаются составителю вместе только с разрешёнными клиентскими данными.</p>
+      <div id="effective-instructions" aria-live="polite"></div>
+      <label>Изменить область
+        <select id="instruction-scope">
+          <option value="profile">Все отчёты профиля</option>
+          <option value="vacancy">Эта вакансия</option>
+          <option value="candidate">Этот кандидат</option>
+          <option value="report_version">Эта версия отчёта</option>
+        </select>
+      </label>
+      <p>На одну область можно сохранить до 30 пунктов в каждом разделе, не более 1000 символов на пункт и 8000 символов суммарно.</p>
+      <label>Что включать <textarea id="instruction-include" rows="4" maxlength="8000"></textarea></label>
+      <label>Стиль оформления <textarea id="instruction-style" rows="4" maxlength="8000"></textarea></label>
+      <label>Заметки рекрутера <textarea id="instruction-recruiter" rows="4" maxlength="8000"></textarea></label>
+      <details id="instruction-history"><summary>История этой области</summary><ol id="instruction-history-list"></ol></details>
+      <button id="save-instructions" type="button" disabled>Сохранить инструкции</button>
+      <p id="instructions-status" role="status" aria-live="polite"></p>
+    </section>
+    <section id="previous-approved-section" aria-labelledby="previous-approved-title" hidden>
+      <h2 id="previous-approved-title">Предыдущая одобренная версия</h2>
+      <p id="previous-approved-date"></p>
+      <div id="previous-approved-content"></div>
+    </section>
     <section aria-labelledby="preview-title">
       <h2 id="preview-title">Клиентский вид</h2>
       <iframe id="preview" title="Предпросмотр черновика" sandbox=""></iframe>
+    </section>
+    <section id="approved-export-section" aria-labelledby="approved-export-title" hidden>
+      <h2 id="approved-export-title">Утверждённый отчёт</h2>
+      <p>Файл содержит только проверенную клиентскую версию и остаётся приватным, пока вы сами не передадите его клиенту.</p>
+      <button id="download-approved-report" type="button">Скачать HTML отчёт</button>
     </section>
     <section aria-labelledby="policy-title">
       <h2 id="policy-title">Запретные формулировки для этого кандидата и вакансии</h2>
@@ -37,11 +67,24 @@
     </section>
     <section aria-labelledby="edit-title">
       <h2 id="edit-title">Текст черновика</h2>
-      <p>Можно уточнить должность, название вакансии и опыт. Имя берётся из принятого источника и здесь не редактируется.</p>
+      <p>Имя, опыт и доступные сведения резюме берутся из принятого источника. Проверьте или удалите лишнее до подтверждения отчёта. Генерация использует только эти данные и сохранённые инструкции; результат нужно проверить. Ваши ручные правки сохраняются, пока вы явно не разрешите их заменить.</p>
+      <div id="field-provenance" aria-live="polite"></div>
+      <label><input id="replace-edited-fields" type="checkbox"> Разрешить заменить поля, которые я исправлял вручную</label>
+      <button id="regenerate-report" type="button" disabled>Составить / обновить текст</button>
+      <label>Кратко о кандидате <textarea id="summary" maxlength="3000" rows="5"></textarea></label>
       <label>Должность <input id="position" maxlength="300" required></label>
       <label>Вакансия <input id="vacancy-title" maxlength="300" required></label>
+      <label>Локация <input id="location" maxlength="200"></label>
+      <label>Образование <textarea id="education" maxlength="3000" rows="3" placeholder="По одному пункту на строку"></textarea></label>
+      <label>Курсы <textarea id="courses" maxlength="5000" rows="3" placeholder="По одному пункту на строку"></textarea></label>
+      <label>Навыки <textarea id="skills" maxlength="3000" rows="3" placeholder="По одному пункту на строку"></textarea></label>
+      <label>Языки <textarea id="languages" maxlength="3000" rows="3" placeholder="По одному пункту на строку"></textarea></label>
       <div id="experience-editor"></div>
       <button id="add-experience" type="button">Добавить место работы</button>
+      <h3>Соответствие требованиям вакансии</h3>
+      <div id="fit-editor"></div>
+      <button id="add-fit" type="button">Добавить требование</button>
+      <label>Вывод рекрутера <textarea id="conclusion" maxlength="1500" rows="4"></textarea></label>
       <button id="save-edits" type="button" disabled>Сохранить изменения</button>
     </section>
     <section>

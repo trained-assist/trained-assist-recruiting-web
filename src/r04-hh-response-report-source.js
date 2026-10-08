@@ -16,7 +16,12 @@ function clientFields(resume, vacancyTitle) {
     experience.push({ role: item.position, company: item.company,
       period: item.end ? `${item.start} — ${item.end}` : `${item.start} — настоящее время` });
   }
-  return { candidateName, position: resume.title, vacancyTitle, experience };
+  const safeList = (value, maxItems, maxLength) => Array.isArray(value)
+    ? value.slice(0, maxItems).filter(item => text(item, maxLength) && item.trim()).map(item => item.trim()) : [];
+  return { candidateName, position: resume.title, vacancyTitle, experience,
+    education: safeList(resume.education, 10, 300), courses: safeList(resume.courses, 20, 300),
+    skills: safeList(resume.skills, 30, 100), languages: safeList(resume.languages, 20, 150),
+    location: text(resume.location, 200) ? resume.location.trim() : null };
 }
 
 /**
