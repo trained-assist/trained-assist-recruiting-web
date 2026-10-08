@@ -95,10 +95,13 @@ test('full queries and pages commit once; assessment remains explicit bounded ba
   assert.equal(morning.assessmentPendingCount, 12);
   f.setNow(new Date(Date.parse(f.due) + 5 * 60_000).toISOString());
   const first = await f.budgeted.scoreTick(profileId, vacancyId, 'assessment_worker_a');
-  assert.equal(first.written, 10);
-  assert.equal(f.budgeted.morningResults(profileId, vacancyId).assessmentPendingCount, 2);
+  assert.equal(first.written, 6);
+  assert.equal(f.budgeted.morningResults(profileId, vacancyId).assessmentPendingCount, 6);
   const second = await f.budgeted.scoreTick(profileId, vacancyId, 'assessment_worker_b');
-  assert.equal(second.written, 2);
+  assert.equal(second.written, 0);
+  f.setNow(new Date(Date.parse(f.due) + 10 * 60_000).toISOString());
+  const third = await f.budgeted.scoreTick(profileId, vacancyId, 'assessment_worker_c');
+  assert.equal(third.written, 6);
   assert.equal(f.budgeted.morningResults(profileId, vacancyId).assessmentStatus, 'assessed');
   assert.equal((await f.budgeted.worker.tick('invented_worker_again')).claimed, 0);
   assert.equal(f.calls, 1);
