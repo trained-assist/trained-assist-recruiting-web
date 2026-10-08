@@ -57,4 +57,6 @@ The R-04 lifecycle foundation creates a profile-scoped synthetic draft from a ca
 
 These are **R-01 and R-04 foundations**, not completion of the production scenarios. Actual identity-to-profile mapping, tenant semantics, response meaning/fields, trusted scope grants, freshness against a live canonical store, report owner, client-field approval, and report-source revision semantics remain open under issue #3. See [`docs/R-04-REPORT-FOUNDATION.md`](docs/R-04-REPORT-FOUNDATION.md) for inspected legacy behavior and deliberate differences.
 
+For an explicitly temporary public transport demo using only the synthetic profile/provider, see [`docs/PUBLIC-SANDBOX.md`](docs/PUBLIC-SANDBOX.md). It uses a local in-memory service behind Cloudflare Quick Tunnel; it is not the production/staging deployment or a durable scheduler.
+
 The existing `trained-assist-hh-skill` is coupled to in-process execution and profile files. It is a source of requirements to inspect during a later migration, not code to copy blindly into this service. This repository has no production integration, credentials, real candidate data, database, or deployment configuration. The schema and endpoint names are initial proposals and need review before a real integration or persistence layer is added.
