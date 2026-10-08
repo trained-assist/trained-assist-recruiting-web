@@ -118,9 +118,18 @@ export function createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins, 
     async handle(req, res, url) {
       if (!url.pathname.startsWith('/auth/connected/')) return false;
       if (url.pathname === '/auth/connected/start' && req.method === 'GET') {
-        if (url.searchParams.size !== 0) { respond(res, 400, { error: 'invalid_auth_request' }); return true; }
+        const entries = [...url.searchParams.keys()];
+        const fromProactive = url.searchParams.get('from') === 'proactive';
+        const vacancyId = url.searchParams.get('vacancy_id');
+        if (new Set(entries).size !== entries.length ||
+            (entries.length !== 0 && (!fromProactive ||
+              entries.some(key => !['from', 'vacancy_id'].includes(key)) ||
+              vacancyId !== null && !safeId(vacancyId)))) {
+          respond(res, 400, { error: 'invalid_auth_request' }); return true;
+        }
+        const returnPath = `/hh/proactive${fromProactive && vacancyId ? `?vacancy_id=${encodeURIComponent(vacancyId)}` : ''}`;
         const pendingHandle = random(); const state = random(); const verifier = random();
-        await store.putPending(hash(pendingHandle), { state, verifier, createdAt: clock() });
+        await store.putPending(hash(pendingHandle), { state, verifier, returnPath, createdAt: clock() });
         const auth = new URL(`${issuer}/v1/connected-app-sessions/authorize`);
         auth.searchParams.set('response_type', 'code');
         auth.searchParams.set('client_id', audience);
@@ -137,7 +146,9 @@ export function createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins, 
         const transaction = pendingHandle ? await store.takePending(hash(pendingHandle)) : null;
         const entries = [...url.searchParams.keys()];
         const code = url.searchParams.get('code'); const state = url.searchParams.get('state');
-        if (!transaction || clock() - transaction.createdAt > 300_000 ||
+        const returnPath = transaction?.returnPath ?? '/hh/proactive';
+        if (!transaction || clock() < transaction.createdAt || clock() - transaction.createdAt > 300_000 ||
+            !/^\/hh\/proactive(?:\?vacancy_id=[A-Za-z0-9_-]{1,128})?$/.test(returnPath) ||
             entries.length !== 3 || new Set(entries).size !== 3 || !entries.every(key => ['code', 'state', 'iss'].includes(key)) ||
             !/^[a-f0-9]{64}$/.test(code ?? '') || !equal(state, transaction.state) || url.searchParams.get('iss') !== issuer) {
           respond(res, 401, { error: 'invalid_auth_callback' }, { 'set-cookie': clearCookie(pendingCookie) }); return true;
@@ -159,10 +170,12 @@ export function createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins, 
         }
         const handle = random();
         await store.putSession(hash(handle), { token: exchanged.token, csrf: random(), createdAt: clock(),
+          expiresAt: claims.exp * 1000,
           sub: claims.sub, profileId: claims.profileId, sessionId: claims.sessionId });
         const prior = cookieValue(req, sessionCookie);
         if (prior) await store.deleteSession(hash(prior));
-        respond(res, 303, null, { location: publicOrigin, 'set-cookie': [clearCookie(pendingCookie), cookie(sessionCookie, handle, 3600)] });
+        respond(res, 303, null, { location: `${publicOrigin}${returnPath}`,
+          'set-cookie': [clearCookie(pendingCookie), cookie(sessionCookie, handle, 3600)] });
         return true;
       }
       if (url.pathname === '/auth/connected/session' && req.method === 'GET') {
