@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, realpath, rm, stat } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, realpath, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Ajv2020 from 'ajv/dist/2020.js';
@@ -315,6 +315,159 @@ test('accepted report UI uses real BFF handlers, profile-owned source, private d
   assert.equal(publicShare.status, 404);
   assert.equal(sendCalls + publishCalls + hhCalls + modelCalls, 0);
   assert.deepEqual(capturedLogs, [], 'report names, source data, cookies, and tokens are not logged');
+});
+
+test('approved report export is profile-scoped, revision-bound, audited and survives SQLite restart', async t => {
+  const root = await mkdtemp(join(await realpath(tmpdir()), 'r04-approved-export-'));
+  await chmod(root, 0o700);
+  const filename = join(root, 'reports.db');
+  const encryptionKey = 'e'.repeat(64);
+  let currentSourceRevision = sourceRevision;
+  const sourceRead = async context => context.profileId === profileOne
+    ? { status: 200, body: { ...structuredClone(sourceBase), sourceRevision: currentSourceRevision } }
+    : { status: 404, body: { error: 'not_found' } };
+  let draftStore = new SqliteAcceptedReportDraftStore({ filename, encryptionKey });
+  const makeServer = store => {
+    const bff = createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins: [issuer], publicOrigin,
+      redirectUri: `${publicOrigin}/auth/connected/callback`, store: createMemoryConnectedAppBffStore(),
+      clock: () => now, exchangeCode: async ({ code }) => ({ token: code, expiresAt: now / 1000 + 300 }),
+      introspectToken: async token => claimsFor(token) });
+    return createRecruitingServer({ connectedAppBff: bff, acceptedReportSourceRead: sourceRead,
+      acceptedReportDraftStore: store });
+  };
+  let server = makeServer(draftStore);
+  const listen = async instance => {
+    await new Promise(resolve => instance.listen(0, '127.0.0.1', resolve));
+    return `http://127.0.0.1:${instance.address().port}`;
+  };
+  const close = instance => new Promise(resolve => instance.close(resolve));
+  let base = await listen(server);
+  t.after(async () => {
+    if (server?.listening) await close(server);
+    try { draftStore.close(); } catch {}
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const owner = await connect(base);
+  const sourceUrl = new URL('/api/v1/ui/accepted-report-client-source', base);
+  sourceUrl.searchParams.set('vacancyId', vacancyId);
+  sourceUrl.searchParams.set('candidateId', candidateId);
+  sourceUrl.searchParams.set('sourceKind', 'accepted_cold_search');
+  const source = await (await fetch(sourceUrl, { headers: { cookie: owner.cookie } })).json();
+  const createdResponse = await fetch(`${base}/api/v1/ui/accepted-report-drafts`, { method: 'POST',
+    headers: { cookie: owner.cookie, origin: publicOrigin, 'x-csrf-token': owner.csrfToken,
+      'content-type': 'application/json', 'Idempotency-Key': 'r04-export-private-001' },
+    body: JSON.stringify({ candidateId, vacancyId, sourceKind: 'accepted_cold_search',
+      expectedSourceRevision: source.sourceRevision }) });
+  assert.equal(createdResponse.status, 201);
+  const created = await createdResponse.json();
+  const editedResponse = await fetch(`${base}/api/v1/ui/accepted-report-drafts/${created.reportRef}/edit`, {
+    method: 'PATCH', headers: { cookie: owner.cookie, origin: publicOrigin, 'x-csrf-token': owner.csrfToken,
+      'content-type': 'application/json' },
+    body: JSON.stringify({ expectedReportRevision: created.reportRevision, clientFields: {
+      summary: 'Synthetic summary for the client.', conclusion: 'Synthetic recruiter conclusion.' } }),
+  });
+  assert.equal(editedResponse.status, 200);
+  const edited = await editedResponse.json();
+  const exportPath = `/api/v1/ui/accepted-report-drafts/${created.reportRef}/export`;
+  const exportRequest = (session, expectedReportRevision, headers = {}) => fetch(`${base}${exportPath}`, {
+    method: 'POST', headers: { cookie: session.cookie, origin: publicOrigin,
+      'x-csrf-token': session.csrfToken, 'content-type': 'application/json', ...headers },
+    body: JSON.stringify({ expectedReportRevision }),
+  });
+
+  const missingCsrf = await fetch(`${base}${exportPath}`, { method: 'POST', headers: { cookie: owner.cookie,
+    'content-type': 'application/json' }, body: JSON.stringify({ expectedReportRevision: created.reportRevision }) });
+  assert.equal(missingCsrf.status, 401, 'download preparation is a CSRF-protected state-changing request');
+  const foreign = await connect(base, 'b');
+  const foreignExport = await exportRequest(foreign, created.reportRevision);
+  assert.equal(foreignExport.status, 404, 'another connected profile cannot discover or export the report');
+  const unapproved = await exportRequest(owner, edited.reportRevision);
+  assert.equal(unapproved.status, 409);
+  assert.deepEqual(await unapproved.json(), { error: 'report_approval_required' });
+
+  const approvedResponse = await fetch(`${base}/api/v1/ui/accepted-report-drafts/${created.reportRef}/review`, {
+    method: 'POST', headers: { cookie: owner.cookie, origin: publicOrigin, 'x-csrf-token': owner.csrfToken,
+      'content-type': 'application/json' },
+    body: JSON.stringify({ decision: 'approved', expectedReportRevision: edited.reportRevision }),
+  });
+  assert.equal(approvedResponse.status, 200);
+  const approved = await approvedResponse.json();
+  const staleRevision = await exportRequest(owner, edited.reportRevision);
+  assert.equal(staleRevision.status, 409);
+  assert.deepEqual(await staleRevision.json(), { error: 'stale_report_revision' });
+
+  const firstExport = await exportRequest(owner, approved.reportRevision);
+  assert.equal(firstExport.status, 200);
+  assert.match(firstExport.headers.get('content-type'), /^text\/html; charset=utf-8$/);
+  assert.match(firstExport.headers.get('content-disposition'), /^attachment; filename="candidate-report-report_[a-f0-9]{32}\.html"$/);
+  assert.equal(firstExport.headers.get('cache-control'), 'private, no-store');
+  assert.equal(firstExport.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal(firstExport.headers.get('content-security-policy'),
+    "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
+  const firstBytes = await firstExport.text();
+  assert.match(firstBytes, /Synthetic Candidate/);
+  assert.match(firstBytes, /Synthetic summary/);
+  assert.doesNotMatch(firstBytes, /ЧЕРНОВИК · ТРЕБУЕТ ПРОВЕРКИ/);
+  assert.match(firstBytes, /&lt;img src=x onerror=synthetic&gt;/);
+  for (const privateValue of ['INTERNAL_PRIVATE_COMMENT', 'SALARY_PRIVATE', 'candidate@example.invalid',
+    'RECRUITER_PRIVATE_COMMENT', 'ATS_CONTEXT_PRIVATE', 'private-resume'])
+    assert.equal(firstBytes.includes(privateValue), false, `export excludes ${privateValue}`);
+  let events = draftStore.listExportAudit(profileOne, created.reportRef);
+  assert.equal(events.length, 1);
+  assert.deepEqual(Object.keys(events[0]).sort(), ['occurredAt', 'outcome', 'policyRevision', 'reportRef',
+    'reportRevision', 'sourceRevision'].sort());
+  assert.deepEqual({ reportRef: events[0].reportRef, reportRevision: events[0].reportRevision,
+    sourceRevision: events[0].sourceRevision, policyRevision: events[0].policyRevision,
+    outcome: events[0].outcome }, { reportRef: created.reportRef, reportRevision: 3,
+    sourceRevision, policyRevision: 0, outcome: 'served' });
+  assert.equal(JSON.stringify(events).includes('Synthetic Candidate'), false);
+
+  await close(server);
+  draftStore.close();
+  draftStore = new SqliteAcceptedReportDraftStore({ filename, encryptionKey });
+  server = makeServer(draftStore);
+  base = await listen(server);
+  const ownerAfterRestart = await connect(base);
+  const secondExport = await exportRequest(ownerAfterRestart, approved.reportRevision);
+  assert.equal(secondExport.status, 200);
+  const secondBytes = await secondExport.text();
+  assert.equal(secondBytes, firstBytes, 'restart returns the exact approved client projection');
+
+  currentSourceRevision = 'b'.repeat(64);
+  const changedSource = await exportRequest(ownerAfterRestart, approved.reportRevision);
+  assert.equal(changedSource.status, 409);
+  assert.deepEqual(await changedSource.json(), { error: 'stale_report_source' });
+  assert.equal(changedSource.headers.has('content-disposition'), false);
+  currentSourceRevision = sourceRevision;
+  const policyUpdate = await fetch(`${base}/api/v1/ui/accepted-report-policy`, { method: 'PUT',
+    headers: { cookie: ownerAfterRestart.cookie, origin: publicOrigin,
+      'x-csrf-token': ownerAfterRestart.csrfToken, 'content-type': 'application/json' },
+    body: JSON.stringify({ candidateId, vacancyId, sourceKind: 'accepted_cold_search',
+      expectedPolicyRevision: 0, policy: { forbiddenPhrases: ['Synthetic Candidate'] } }) });
+  assert.equal(policyUpdate.status, 200);
+  const changedPolicy = await exportRequest(ownerAfterRestart, approved.reportRevision);
+  assert.equal(changedPolicy.status, 409);
+  assert.deepEqual(await changedPolicy.json(), { error: 'stale_report_policy' });
+  assert.equal(changedPolicy.headers.has('content-disposition'), false);
+  events = draftStore.listExportAudit(profileOne, created.reportRef);
+  assert.equal(events.length, 2, 'stale source and policy attempts do not create successful export audit events');
+  assert.equal(JSON.stringify(events).includes('Synthetic Candidate'), false);
+
+  const noReadScopeServer = createRecruitingServer({
+    connectedAppBff: { handle: async () => false, resolve: async () => ({ profileId: profileOne, scopes: [] }) },
+    acceptedReportSourceRead: sourceRead, acceptedReportDraftStore: draftStore });
+  const noReadBase = await listen(noReadScopeServer);
+  const noRead = await fetch(`${noReadBase}/api/v1/ui/accepted-report-drafts/${created.reportRef}/export`, {
+    method: 'POST', headers: { origin: publicOrigin, 'x-csrf-token': 'a'.repeat(64), 'content-type': 'application/json' },
+    body: JSON.stringify({ expectedReportRevision: approved.reportRevision }),
+  });
+  assert.equal(noRead.status, 403);
+  assert.deepEqual(await noRead.json(), { error: 'report_scope_required' });
+  await close(noReadScopeServer);
+
+  const capabilities = await (await fetch(`${base}/api/v1/capabilities`)).json();
+  assert.equal(JSON.stringify(capabilities).includes('export'), false, 'export stays outside Agent MCP discovery');
 });
 
 test('regeneration uses current scoped notes, preserves recruiter fields, records provenance and rejects races', async t => {

@@ -1,0 +1,8 @@
+name = "trained-assist-recruiting-web-sandbox-bridge"
+main = "src/sandbox-edge-proxy.js"
+compatibility_date = "2026-10-08"
+compatibility_flags = ["global_fetch_strictly_public"]
+workers_dev = true
+
+[vars]
+UPSTREAM_ORIGIN = "https://meet-clause-norm-calculator.trycloudflare.com"

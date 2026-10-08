@@ -201,6 +201,17 @@ if (root) {
       const result = await command('/api/hh/proactive/ai-score', { vacancy_id: vacancyId,
         candidate_id: candidateId, expected_job_id: card.dataset.jobId });
       card.querySelector('.score-result').textContent = ` ATS: ${result.atsScore} (${result.atsTag}).`;
+      if (root.dataset.reportsAvailable === 'true' && Number.isFinite(result.atsScore) &&
+          ['PASS', 'REVIEW', 'WEAK'].includes(result.atsTag) &&
+          ['active', 'starred'].includes(card.dataset.reviewStatus) && !card.querySelector('.candidate-report-entry')) {
+        const row = document.createElement('p');
+        const link = document.createElement('a');
+        link.className = 'candidate-report-entry';
+        link.href = `/auth/connected/start?from=report&vacancy_id=${encodeURIComponent(vacancyId)}&candidate_id=${encodeURIComponent(candidateId)}`;
+        link.textContent = 'Подготовить отчёт клиенту';
+        row.append(link);
+        card.querySelector('.score-result').after(row);
+      }
     }));
     card.querySelector('.save-status').addEventListener('click', event => run(event.currentTarget, async () => {
       await command('/api/hh/proactive/set-status', { vacancy_id: vacancyId, candidate_id: candidateId,

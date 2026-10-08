@@ -2,6 +2,8 @@ const statusNode = document.querySelector('#status');
 const summaryNode = document.querySelector('#source-summary');
 const revisionNode = document.querySelector('#source-revision');
 const previewNode = document.querySelector('#preview');
+const approvedExportSection = document.querySelector('#approved-export-section');
+const downloadApprovedReportButton = document.querySelector('#download-approved-report');
 const positionNode = document.querySelector('#position');
 const vacancyTitleNode = document.querySelector('#vacancy-title');
 const summaryNodeEditor = document.querySelector('#summary');
@@ -63,6 +65,7 @@ function reportError(response, payload) {
     not_found: 'Кандидат или черновик не найден для выбранного профиля.',
     report_scope_required: 'У профиля нет нужного доступа к отчётам.',
     stale_report_revision: 'Черновик изменился в другой вкладке. Перезагрузите его перед правкой.',
+    report_approval_required: 'Эта версия больше не утверждена. Обновите страницу и проверьте текущий вариант.',
     report_not_editable: 'Этот черновик уже подтверждён и больше не редактируется.',
     report_generator_unavailable: 'Составитель отчётов сейчас недоступен. Черновик не менялся.',
     report_generation_invalid: 'Составитель вернул неподдерживаемый формат. Черновик не менялся.',
@@ -347,6 +350,48 @@ async function refreshPreview() {
   return true;
 }
 
+function syncApprovedExport() {
+  approvedExportSection.hidden = report?.reviewState !== 'approved';
+  downloadApprovedReportButton.disabled = report?.reviewState !== 'approved';
+}
+
+downloadApprovedReportButton.addEventListener('click', async () => {
+  if (!report || report.reviewState !== 'approved') return;
+  downloadApprovedReportButton.disabled = true;
+  try {
+    const response = await request(`/api/v1/ui/accepted-report-drafts/${encodeURIComponent(report.reportRef)}/export`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ expectedReportRevision: report.reportRevision }),
+    });
+    if (!response.ok) {
+      let result = {};
+      try { result = await response.json(); } catch {}
+      if (response.status === 409) approvedExportSection.hidden = true;
+      showStatus(reportError(response, result));
+      return;
+    }
+    if (!response.headers.get('content-type')?.toLowerCase().includes('text/html')) {
+      approvedExportSection.hidden = true;
+      showStatus('Не удалось проверить файл отчёта. Обновите страницу перед скачиванием.');
+      return;
+    }
+    const file = await response.blob();
+    const url = URL.createObjectURL(file);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `candidate-report-${report.reportRef}.html`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    showStatus('Утверждённый HTML отчёт скачан. Он не был отправлен или опубликован.');
+  } catch {
+    showStatus('Не удалось скачать отчёт. Он остался приватным.');
+  } finally {
+    syncApprovedExport();
+  }
+});
+
 regenerateButton.addEventListener('click', async () => {
   if (!report || report.reviewState === 'approved') return;
   if (hasUnsavedInstructionChanges()) { showStatus('Сначала сохраните или удалите несохранённые инструкции.'); return; }
@@ -361,6 +406,7 @@ regenerateButton.addEventListener('click', async () => {
     const result = await response.json();
     if (!response.ok) { showStatus(reportError(response, result)); regenerateButton.disabled = false; return; }
     report = result; approvalNode.checked = false; instructionDrafts.delete('report_version');
+    syncApprovedExport();
     await loadReportInstructions(); syncReviewControls();
     renderEditor(report.clientFields); renderFieldProvenance(report.fieldProvenance);
     setEditorEnabled(true);
@@ -425,6 +471,7 @@ async function load() {
     renderEditor(report.clientFields);
     renderFieldProvenance(report.fieldProvenance);
     setEditorEnabled(report.reviewState !== 'approved');
+    syncApprovedExport();
     showStatus(report.reviewState === 'approved'
       ? 'Вы уже подтвердили проверку этого черновика.'
       : 'Проверьте предпросмотр. Подтверждение фиксирует только вашу проверку и не отправляет отчёт клиенту.');
@@ -445,10 +492,12 @@ approveButton.addEventListener('click', async () => {
     const result = await response.json();
     if (!response.ok) { showStatus(reportError(response, result)); approveButton.disabled = false; return; }
     report = result;
+    syncApprovedExport();
     instructionDrafts.delete('report_version'); await loadReportInstructions();
     syncReviewControls();
     setEditorEnabled(false);
-    showStatus('Проверка сохранена. Отчёт остался приватным черновиком и не отправлен.');
+    if (!await refreshPreview()) return;
+    showStatus('Проверка сохранена. Скачивание доступно для этой утверждённой версии; отчёт остаётся приватным.');
   } catch {
     showStatus('Не удалось сохранить отметку проверки. Черновик не отправлялся.');
     approveButton.disabled = false;
@@ -468,7 +517,8 @@ requestChangesButton.addEventListener('click', async () => {
     const result = await response.json();
     if (!response.ok) { showStatus(reportError(response, result)); syncReviewControls(); return; }
     report = result; approvalNode.checked = false; instructionDrafts.delete('report_version');
-    await loadReportInstructions(); syncReviewControls(); setEditorEnabled(true);
+    syncApprovedExport(); await loadReportInstructions(); syncReviewControls(); setEditorEnabled(true);
+    if (!await refreshPreview()) return;
     showStatus('Черновик возвращён на исправление. После правок нужно просмотреть и подтвердить новую версию.');
   } catch { showStatus('Не удалось вернуть черновик на исправление.'); syncReviewControls(); }
 });
@@ -511,6 +561,7 @@ saveEditsButton.addEventListener('click', async () => {
     const result = await response.json();
     if (!response.ok) { showStatus(reportError(response, result)); saveEditsButton.disabled = false; return; }
     report = result; approvalNode.checked = false; instructionDrafts.delete('report_version');
+    syncApprovedExport();
     await loadReportInstructions(); syncReviewControls();
     renderFieldProvenance(report.fieldProvenance);
     setEditorEnabled(true);
