@@ -42,14 +42,14 @@ export function normalizeHhAtsConfig(raw) {
   return { vacancyTitle: text(raw.vacancy_title || raw.title) || 'Вакансия', required, preferred, knockout, minExperienceYears };
 }
 
-export function mapHhResumeCandidate(raw, atsConfig, vacancyId) {
+export function mapHhResumeCandidate(raw, atsConfig, vacancyId, { bypassMinExperience = false } = {}) {
   if (!safeId(vacancyId) || !safeId(raw?.id) || typeof raw.title !== 'string' ||
       (raw.total_experience?.months != null && (!Number.isSafeInteger(raw.total_experience.months) || raw.total_experience.months < 0)) ||
       !Array.isArray(raw.experience ?? [])) throw new TypeError('invalid_hh_resume');
   const config = normalizeHhAtsConfig(atsConfig);
   const months = raw.total_experience?.months ?? 0;
   const minMonths = Math.round(config.minExperienceYears * 12);
-  if (months < minMonths) return { kind: 'excluded', resumeId: raw.id, vacancyId, reason: 'min_experience', minimumMonths: minMonths, actualMonths: months };
+  if (months < minMonths && !bypassMinExperience) return { kind: 'excluded', resumeId: raw.id, vacancyId, reason: 'min_experience', minimumMonths: minMonths, actualMonths: months };
 
   let allText = raw.title.toLowerCase();
   for (const entry of raw.experience) allText += ` ${text(entry?.position).toLowerCase()} ${text(entry?.company).toLowerCase()} ${text(entry?.description).toLowerCase()}`;

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createCipheriv } from 'node:crypto';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,6 +19,11 @@ const profileId = 'profile_invented_001';
 const vacancyId = 'vacancy_invented_001';
 const context = { profileId, scopes: ['recruiting.candidateSearch'] };
 const key = 'a'.repeat(64);
+const sealed = value => {
+  const iv = Buffer.alloc(16, 3); const cipher = createCipheriv('aes-256-gcm', Buffer.from(key, 'hex'), iv);
+  const ciphertext = Buffer.concat([cipher.update(JSON.stringify(value), 'utf8'), cipher.final()]);
+  return Buffer.concat([Buffer.from([2]), iv, cipher.getAuthTag(), ciphertext]).toString('base64');
+};
 const atsConfig = { vacancy_id: vacancyId, vacancy_title: 'Вымышленный инженер',
   vacancy_context: 'Вымышленная фабрика', filters: { area: 1, min_experience_years: 0 },
   required: [{ name: 'инженер', weight: 2 }], knockout: [] };
@@ -36,7 +42,7 @@ test('imported schedule, private profile and credential produce a durable mornin
   const tokenDirectory = join(directory, 'tokens');
   for (const path of [contextDirectory, proactiveDirectory, tokenDirectory]) mkdirSync(path, { mode: 0o700 });
   writeFileSync(join(contextDirectory, `ats_config:${vacancyId}.json`), JSON.stringify({ value: JSON.stringify(atsConfig) }));
-  writeFileSync(join(tokenDirectory, 'hh'), JSON.stringify({ access_token: 'old_invented_access',
+  writeFileSync(join(tokenDirectory, 'hh'), sealed({ access_token: 'old_invented_access',
     refresh_token: 'invented_refresh' }), { mode: 0o600 });
   const filename = join(directory, 'private.sqlite');
   const repository = new SqliteColdSearchScheduleRepository(filename);

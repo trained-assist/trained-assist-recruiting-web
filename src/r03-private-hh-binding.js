@@ -3,7 +3,8 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkedTar, digestPrivateFile, privateDirectory, readPrivateJson } from './r03-private-legacy-archive.js';
-import { loadPrivateHostConfig } from './r03-private-host-config.js';
+import { loadPrivateHostConfig, loadPrivateHostSecret } from './r03-private-host-config.js';
+import { encryptPrivateHhCredential } from './r03-private-hh-credential.js';
 import { createPrivateBaseSearchPlan } from './r03-private-base-plan.js';
 
 const safeId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
@@ -12,11 +13,16 @@ const fail = () => { throw new Error('private_hh_binding_unavailable'); };
 // Builds only explicitly owned profile material from a verified final archive.
 // The output is a new owner-only staging tree; unowned historical scope files
 // remain in the immutable archive and are never put in the live host config.
-export async function preparePrivateHhBinding({ importConfigFile, outputRoot } = {}) {
+export async function preparePrivateHhBinding({ importConfigFile, outputRoot, secretsDirectory } = {}) {
   if (typeof outputRoot !== 'string' || !isAbsolute(outputRoot) || resolve(outputRoot) !== outputRoot ||
       typeof importConfigFile !== 'string' || !isAbsolute(importConfigFile) ||
-      resolve(importConfigFile) !== importConfigFile) fail();
+      resolve(importConfigFile) !== importConfigFile || typeof secretsDirectory !== 'string' ||
+      !isAbsolute(secretsDirectory) || resolve(secretsDirectory) !== secretsDirectory) fail();
   privateDirectory(dirname(outputRoot));
+  let encryptionKey;
+  try { encryptionKey = loadPrivateHostSecret(secretsDirectory, 'hh_encryption_key'); }
+  catch { fail(); }
+  if (!/^[a-fA-F0-9]{64}$/.test(encryptionKey)) fail();
   const source = readPrivateJson(importConfigFile, 1024 * 1024);
   if (source?.version !== 'r03-private-legacy-import-v1' || !Array.isArray(source.profiles) ||
       !/^[a-f0-9]{64}$/.test(source.archiveSha256) ||
@@ -41,15 +47,22 @@ export async function preparePrivateHhBinding({ importConfigFile, outputRoot } =
       const tokenDirectory = join(root, 'tokens');
       for (const dir of [root, contextDirectory, proactiveDirectory, tokenDirectory])
         mkdirSync(dir, { mode: 0o700 });
-      const copy = (member, target, optional = false) => {
+      const readMember = (member, optional = false) => {
         if (!members.has(member)) { if (optional) return false; fail(); }
         const extracted = spawnSync('tar', ['-xOf', source.archivePath, member],
           { maxBuffer: 8 * 1024 * 1024 });
         if (extracted.status !== 0 || extracted.stdout.length > 8 * 1024 * 1024) fail();
-        writeFileSync(target, extracted.stdout, { flag: 'wx', mode: 0o600 });
+        return extracted.stdout;
+      };
+      const copy = (member, target, optional = false) => {
+        const bytes = readMember(member, optional);
+        if (bytes === false) return false;
+        writeFileSync(target, bytes, { flag: 'wx', mode: 0o600 });
         return true;
       };
-      copy(`agent-tokens/${old}/hh`, join(tokenDirectory, 'hh'));
+      const legacyToken = readMember(`agent-tokens/${old}/hh`);
+      writeFileSync(join(tokenDirectory, 'hh'),
+        encryptPrivateHhCredential(legacyToken, encryptionKey), { flag: 'wx', mode: 0o600 });
       copy(`users/${old}/contexts/hh/active_vacancies.json`,
         join(contextDirectory, 'active_vacancies.json'));
       for (const id of row.vacancyIds) {
@@ -89,6 +102,7 @@ function args(argv) {
     const arg = argv[i];
     if (arg === '--import-config' && options.importConfigFile === undefined) options.importConfigFile = argv[++i];
     else if (arg === '--output-root' && options.outputRoot === undefined) options.outputRoot = argv[++i];
+    else if (arg === '--secrets' && options.secretsDirectory === undefined) options.secretsDirectory = argv[++i];
     else fail();
   }
   return options;

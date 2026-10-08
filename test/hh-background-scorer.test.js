@@ -41,11 +41,15 @@ test('five-minute pass scores invented latest candidates, keeps source snapshot 
   const { open } = fixture(t);
   const state = open();
   state.recordCompletedSearch(search('job_synthetic_1', [candidate(1), candidate(2)]));
+  assert.equal(state.assessmentForLatest({ profileId, vacancyId, jobId: 'job_synthetic_1',
+    candidateId: candidate(1).id }).kind, 'pending');
   const original = state.resultPage({ profileId, vacancyId, jobId: 'job_synthetic_1' });
   let calls = 0;
   const options = { state, profileId, vacancyId, evaluate: async () => { calls++; return assessment; }, currentCriteriaRevision: async () => criteriaRevision,
     now: () => new Date('2026-10-06T06:05:00.000Z') };
   assert.deepEqual(await runHhBackgroundScoringTick(options), { pending: 2, written: 2, stale: 0, alreadyScored: 0, failed: 0 });
+  assert.equal(state.assessmentForLatest({ profileId, vacancyId, jobId: 'job_synthetic_1',
+    candidateId: candidate(1).id }).kind, 'scored');
   assert.equal(calls, 2);
   assert.deepEqual(state.resultPage({ profileId, vacancyId, jobId: 'job_synthetic_1' }), original);
   assert.deepEqual(state.assessedResultPage({ profileId, vacancyId, jobId: 'job_synthetic_1' }).items.map(item => item.atsScore), [8, 8]);
@@ -56,6 +60,8 @@ test('five-minute pass scores invented latest candidates, keeps source snapshot 
   assert.equal((await runHhBackgroundScoringTick({ ...options, state: reopened })).pending, 0);
   assert.equal(calls, 2);
   reopened.recordCompletedSearch(search('job_synthetic_2', [candidate(1), { ...candidate(2), title: 'Вымышленный старший инженер' }]));
+  assert.equal(reopened.assessmentForLatest({ profileId, vacancyId, jobId: 'job_synthetic_1',
+    candidateId: candidate(1).id }).kind, 'stale');
   assert.deepEqual(reopened.unassessedLatest({ profileId, vacancyId }).map(item => item.candidate.id), [candidate(2).id]);
   assert.deepEqual(reopened.assessedResultPage({ profileId, vacancyId, jobId: 'job_synthetic_2' }).items.map(item => item.atsScore).sort(), [8, null].sort());
   assert.equal((await runHhBackgroundScoringTick({ ...options, state: reopened })).written, 1);

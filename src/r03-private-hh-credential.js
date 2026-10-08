@@ -7,11 +7,30 @@ const safeId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.te
 const fail = code => { throw new Error(code); };
 const validKey = value => typeof value === 'string' && /^[a-fA-F0-9]{64}$/.test(value);
 const envelope = raw => {
-  const value = raw.trim();
+  const value = raw;
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(value) || value.length < 44) return null;
   const bytes = Buffer.from(value, 'base64');
-  return bytes.length >= 33 && bytes[0] === 2 ? bytes : null;
+  return bytes.toString('base64') === value && bytes.length >= 33 && bytes[0] === 2 ? bytes : null;
 };
+
+function decryptEnvelope(sealed, encryptionKey) {
+  if (!validKey(encryptionKey)) fail('hh_credential_key_unavailable');
+  try {
+    const decipher = createDecipheriv('aes-256-gcm', Buffer.from(encryptionKey, 'hex'), sealed.subarray(1, 17));
+    decipher.setAuthTag(sealed.subarray(17, 33));
+    return Buffer.concat([decipher.update(sealed.subarray(33)), decipher.final()]).toString('utf8');
+  } catch { fail('hh_credential_decryption_failed'); }
+}
+
+function credentialValue(raw) {
+  try {
+    const value = raw.trim().startsWith('{') ? JSON.parse(raw) : { access_token: raw.trim() };
+    if (!value || typeof value !== 'object' || Array.isArray(value) ||
+        typeof value.access_token !== 'string' || !value.access_token.trim() ||
+        value.refresh_token !== undefined && typeof value.refresh_token !== 'string') fail('hh_credential_unavailable');
+    return value;
+  } catch { fail('hh_credential_unavailable'); }
+}
 
 function privateDirectory(directory) {
   try { if (!lstatSync(directory).isDirectory() || lstatSync(directory).mode & 0o077) fail('credential_scope_unavailable'); }
@@ -25,27 +44,15 @@ function readCredentialFile(directory, encryptionKey) {
   try {
     fd = openSync(join(directory, 'hh'), constants.O_RDONLY | constants.O_NOFOLLOW);
     const info = fstatSync(fd);
-    if (!info.isFile() || info.size > 64_000) fail('hh_credential_unavailable');
+    if (!info.isFile() || info.size > 64_000 || info.mode & 0o077) fail('hh_credential_unavailable');
     const bytes = readFileSync(fd);
     if (bytes.length !== info.size) fail('hh_credential_unavailable');
     raw = bytes.toString('utf8');
   } catch { fail('hh_credential_unavailable'); }
   finally { if (fd !== undefined) closeSync(fd); }
   const sealed = envelope(raw);
-  if (sealed) {
-    if (!validKey(encryptionKey)) fail('hh_credential_key_unavailable');
-    try {
-      const decipher = createDecipheriv('aes-256-gcm', Buffer.from(encryptionKey, 'hex'), sealed.subarray(1, 17));
-      decipher.setAuthTag(sealed.subarray(17, 33));
-      raw = Buffer.concat([decipher.update(sealed.subarray(33)), decipher.final()]).toString('utf8');
-    } catch { fail('hh_credential_decryption_failed'); }
-  }
-  try {
-    const value = raw.trim().startsWith('{') ? JSON.parse(raw) : { access_token: raw.trim() };
-    if (!value || typeof value.access_token !== 'string' || !value.access_token.trim() ||
-        value.refresh_token !== undefined && typeof value.refresh_token !== 'string') fail('hh_credential_unavailable');
-    return value;
-  } catch { fail('hh_credential_unavailable'); }
+  if (!sealed) fail('hh_credential_unencrypted');
+  return credentialValue(decryptEnvelope(sealed, encryptionKey));
 }
 
 function sealCredential(value, encryptionKey) {
@@ -54,6 +61,24 @@ function sealCredential(value, encryptionKey) {
   const cipher = createCipheriv('aes-256-gcm', Buffer.from(encryptionKey, 'hex'), iv);
   const ciphertext = Buffer.concat([cipher.update(JSON.stringify(value), 'utf8'), cipher.final()]);
   return Buffer.concat([Buffer.from([2]), iv, cipher.getAuthTag(), ciphertext]).toString('base64');
+}
+
+// Converts bytes from the frozen legacy archive into the target's encrypted
+// at-rest format. Existing v2 files are authenticated before being resealed.
+export function encryptPrivateHhCredential(sourceBytes, encryptionKey) {
+  if (!Buffer.isBuffer(sourceBytes) || sourceBytes.length < 1 || sourceBytes.length > 64_000)
+    fail('hh_credential_unavailable');
+  if (!validKey(encryptionKey)) fail('hh_credential_key_unavailable');
+  const raw = sourceBytes.toString('utf8');
+  const sealed = envelope(raw);
+  let value;
+  if (sealed) value = credentialValue(decryptEnvelope(sealed, encryptionKey));
+  else {
+    const possibleEnvelope = Buffer.from(raw.trim(), 'base64');
+    if (possibleEnvelope.length && possibleEnvelope[0] === 2) fail('hh_credential_unavailable');
+    value = credentialValue(raw);
+  }
+  return Buffer.from(sealCredential(value, encryptionKey), 'utf8');
 }
 
 function replaceCredential(directory, value, encryptionKey) {

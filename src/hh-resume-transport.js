@@ -55,11 +55,16 @@ function requireBoundContext(value, profileId, vacancyId) {
 
 export function createHhResumeTransport({ loadVacancyContext, loadCredential, refreshCredential,
   fetchImpl, userAgent = 'trained-assist-recruiting-web/1.0 (support@recruiter-assistant.ru)',
-  sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), timeoutMs = 20_000 } = {}) {
+  sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), timeoutMs = 20_000,
+  pageLimit = MAX_PAGES, perPage = 50, maxAttempts = 3, allowPartialWindow = false } = {}) {
   if (typeof loadVacancyContext !== 'function' || typeof loadCredential !== 'function') throw new TypeError('trusted context and credential ports required');
   if (typeof fetchImpl !== 'function') throw new TypeError('explicit fetch adapter required');
   if (refreshCredential !== undefined && typeof refreshCredential !== 'function') throw new TypeError('invalid refresh port');
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) throw new TypeError('invalid timeout');
+  if (!Number.isInteger(pageLimit) || pageLimit < 1 || pageLimit > MAX_PAGES ||
+      !Number.isInteger(perPage) || perPage < 1 || perPage > 50 ||
+      !Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 3 ||
+      typeof allowPartialWindow !== 'boolean') throw new TypeError('invalid HH request budget');
   validateHhUserAgent(userAgent);
 
   return {
@@ -80,13 +85,13 @@ export function createHhResumeTransport({ loadVacancyContext, loadCredential, re
       try { loadedCredential = await loadCredential(profileId); }
       catch { throw new HhSearchError('credential_unavailable'); }
       let accessToken = requireBoundCredential(loadedCredential, profileId);
-      const params = new URLSearchParams({ text: query, page: '0', per_page: '50', order_by: 'relevance' });
+      const params = new URLSearchParams({ text: query, page: '0', per_page: String(perPage), order_by: 'relevance' });
       for (const area of areas) params.append('area', area);
       let refreshed = false;
       const items = [];
       let expectedPages = null;
       let found = null;
-      for (let page = 0; page < (expectedPages ?? 1); page++) {
+      for (let page = 0; page < Math.min(expectedPages ?? 1, pageLimit); page++) {
         params.set('page', String(page));
         let retries = 0;
         for (;;) {
@@ -98,7 +103,7 @@ export function createHhResumeTransport({ loadVacancyContext, loadCredential, re
           });
         } catch (error) {
           const transient = error?.name === 'TimeoutError' || error?.name === 'AbortError' || error instanceof TypeError;
-          if (transient && retries < 2) { await sleep(500 * 2 ** retries++); continue; }
+          if (transient && retries < maxAttempts - 1) { await sleep(500 * 2 ** retries++); continue; }
           throw new HhSearchError('provider_unavailable');
         }
         if (!response || !Number.isInteger(response.status) || typeof response.ok !== 'boolean' || typeof response.json !== 'function') {
@@ -113,7 +118,7 @@ export function createHhResumeTransport({ loadVacancyContext, loadCredential, re
           continue;
         }
         if (!response.ok) {
-          if ((response.status === 429 || response.status >= 500 && response.status <= 599) && retries < 2) {
+          if ((response.status === 429 || response.status >= 500 && response.status <= 599) && retries < maxAttempts - 1) {
             await sleep(500 * 2 ** retries++);
             continue;
           }
@@ -124,13 +129,13 @@ export function createHhResumeTransport({ loadVacancyContext, loadCredential, re
         let data;
         try { data = await response.json(); }
         catch { throw new HhSearchError('provider_invalid_response'); }
-        if (!data || !Array.isArray(data.items) || data.items.length > 50 ||
+        if (!data || !Array.isArray(data.items) || data.items.length > perPage ||
             data.pages !== undefined && (!Number.isSafeInteger(data.pages) || data.pages < 0) ||
             data.found !== undefined && (!Number.isSafeInteger(data.found) || data.found < 0))
           throw new HhSearchError('provider_invalid_response');
         const pages = data.pages ?? 1;
         if (pages === 0 && (page !== 0 || data.items.length !== 0)) throw new HhSearchError('provider_invalid_response');
-        if (pages > MAX_PAGES) throw new HhSearchError('provider_result_window_exceeded');
+        if (pages > (allowPartialWindow ? 10_000 : pageLimit)) throw new HhSearchError('provider_result_window_exceeded');
         if (expectedPages !== null && pages !== expectedPages) throw new HhSearchError('provider_page_count_changed');
         expectedPages = pages;
         found ??= data.found ?? null;
@@ -138,7 +143,8 @@ export function createHhResumeTransport({ loadVacancyContext, loadCredential, re
         break;
         }
       }
-      return { profileId, vacancyId, areas, items, found, pages: expectedPages };
+      return { profileId, vacancyId, areas, items, found, pages: expectedPages,
+        partial: expectedPages > pageLimit };
     }
   };
 }
