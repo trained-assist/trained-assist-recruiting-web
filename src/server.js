@@ -152,12 +152,14 @@ function validReportAction(value) {
   return isPlainObject(value) && Object.keys(value).sort().join(',') === 'expectedReportRevision' && isReportRevision(value.expectedReportRevision);
 }
 
-export function createRecruitingServer({ resolveTrustedProfileContext = () => null, resolveLegacyOpenTab = null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, candidateSearchJobStore = null, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), scheduleLeaseMs = 5 * 60_000, maxCandidateSearchJobs = 100, publicationAdapter, realProactiveFeed = null, realProactiveActions = null, realProactivePrompt = null, realProactiveSeenImport = null, realProactiveAiScore = null, resolveRealVacancyOwnership = null, resolveRealDefaultVacancy = () => null, privateProactiveOnly = false, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
+export function createRecruitingServer({ resolveTrustedProfileContext = () => null, resolveLegacyOpenTab = null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, candidateSearchJobStore = null, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), scheduleLeaseMs = 5 * 60_000, maxCandidateSearchJobs = 100, publicationAdapter, realProactiveFeed = null, realProactiveActions = null, realProactivePrompt = null, realProactiveSeenImport = null, realProactiveAiScore = null, realProactiveManualCandidate = null, resolveRealVacancyOwnership = null, resolveRealDefaultVacancy = () => null, privateProactiveOnly = false, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
   if (realProactiveFeed !== null && (typeof realProactiveFeed.read !== 'function' || typeof resolveRealVacancyOwnership !== 'function'))
     throw new TypeError('real proactive feed and trusted vacancy ownership ports required');
   if (realProactiveActions !== null && realProactiveFeed === null) throw new TypeError('real actions require real feed mode');
   if (realProactiveAiScore !== null && (realProactiveFeed === null || typeof realProactiveAiScore !== 'function'))
     throw new TypeError('real AI score requires real feed mode');
+  if (realProactiveManualCandidate !== null && (realProactiveFeed === null || typeof realProactiveManualCandidate !== 'function'))
+    throw new TypeError('manual candidate requires real feed mode');
   if (resolveLegacyOpenTab !== null && (!privateProactiveOnly || typeof resolveLegacyOpenTab !== 'function'))
     throw new TypeError('legacy open-tab resolver requires private proactive mode');
   const realProactiveRead = realProactiveFeed === null ? null : createRealProactiveRead({
@@ -329,6 +331,21 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
             } catch (error) {
               status = error.message === 'body_too_large' ? 413 : error instanceof SyntaxError ? 400 : 503;
               body = { error: status === 413 ? 'request_too_large' : status === 400 ? 'invalid_json' : 'assessment_unavailable' };
+            }
+          }
+        } else if (path === '/api/hh/proactive/add-manual' && realProactiveManualCandidate !== null) {
+          if (req.method !== 'POST' || url.search !== '') {
+            status = 405;
+            body = { error: 'method_not_allowed' };
+            res.setHeader('Allow', 'POST');
+          } else {
+            try {
+              const result = await realProactiveManualCandidate(context, await readJsonBody(req));
+              status = result.status;
+              body = result.body;
+            } catch (error) {
+              status = error.message === 'body_too_large' ? 413 : error instanceof SyntaxError ? 400 : 503;
+              body = { error: status === 413 ? 'request_too_large' : status === 400 ? 'invalid_json' : 'manual_candidate_unavailable' };
             }
           }
         } else if (path !== '/hh/proactive' && path !== '/api/hh/proactive/candidates' && realProactiveActions !== null) {

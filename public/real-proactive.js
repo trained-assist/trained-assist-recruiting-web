@@ -96,6 +96,17 @@ if (root) {
     seenStatus.textContent = `Добавлено ${result.imported}; всего просмотренных по вакансии ${result.total}.`;
     seenInput.value = '';
   }));
+  const manualCandidateInput = document.getElementById('manual-candidate-input');
+  const manualCandidateStatus = document.getElementById('manual-candidate-status');
+  document.getElementById('manual-candidate-add')?.addEventListener('click', event => run(event.currentTarget, async () => {
+    const value = manualCandidateInput.value.trim();
+    const id = resumeId(value);
+    const result = await command('/api/hh/proactive/add-manual', { vacancy_id: vacancyId,
+      resume_url_or_id: id });
+    manualCandidateStatus.textContent = result.added ? 'Кандидат добавлен. Обновите страницу.' :
+      'Этот кандидат уже добавлен в вакансию.';
+    manualCandidateInput.value = '';
+  }));
   document.getElementById('schedule-enable').addEventListener('click', event => run(event.currentTarget, async () => {
     const interval = Number(document.getElementById('interval-hours').value);
     if (!Number.isFinite(interval) || interval < 0.5 || interval > 8760) throw new Error('Укажите интервал от 0,5 до 8760 часов.');

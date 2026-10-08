@@ -14,6 +14,7 @@ import { createPrivateWebAuth } from './r03-private-web-auth.js';
 import { createR03PrivatePromptSettings } from './r03-private-prompt-settings.js';
 import { createR03PrivateSeenImport } from './r03-private-seen-import.js';
 import { createR03PrivateAiScore } from './r03-private-ai-score.js';
+import { createR03PrivateManualCandidate } from './r03-private-manual-candidate.js';
 import { createRecruitingServer } from './server.js';
 
 // Constructing the server makes no provider request or public bind. The owner
@@ -59,6 +60,9 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
       evaluate: createHhAssessmentEvaluator({ loadSearchPlan: readAssessmentPlan,
         chat: createFreeLadderChat({ loadToken: () => loadPrivateHostSecret(secretsDirectory, 'ladder_token'), fetchImpl }) }),
       isVacancyOwned: config.isVacancyOwned, clock });
+    const manualCandidate = createR03PrivateManualCandidate({ candidateState: candidates,
+      loadBasePlan: stack.loadBasePlan, credentialBroker: stack.credentialBroker,
+      isVacancyOwned: config.isVacancyOwned, fetchImpl, clock });
     const auth = createPrivateWebAuth({ legacySecret,
       resolveLegacyProfile: config.resolveLegacyProfile,
       isWebProfileMapped: config.isWebProfileMapped, publicOrigin,
@@ -67,6 +71,7 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
       realProactiveActions: actions, realProactivePrompt: prompt,
       realProactiveSeenImport: seenImport,
       realProactiveAiScore: aiScore,
+      realProactiveManualCandidate: manualCandidate,
       resolveTrustedProfileContext: auth,
       resolveLegacyOpenTab: auth.resolveLegacyOpenTab,
       resolveRealVacancyOwnership: (context, vacancyId) => config.isVacancyOwned(context.profileId, vacancyId),
