@@ -96,7 +96,10 @@ try {
       runId: `run-${process.pid}-${runIndex}`, operationId: `op-${process.pid}-${runIndex}`,
       userTaskId: `task-${process.pid}`, profileId: profile, conversationId: `conv-${process.pid}`,
       ownerGeneration: 1, engine: { name: 'fake', adapterVersion: '1' }, cwd,
-      envAllowlist: [], limits: { timeoutMs: 60_000 }, credentialBindings: [
+      // The persisted synthetic sandbox may retain many previous test occurrences.
+      // Keep the MCP evidence below Runner's default 4 KiB log-line cap so it stays
+      // complete and parseable instead of silently testing a truncated response.
+      envAllowlist: [], limits: { timeoutMs: 60_000, maxLogBytes: 1_048_576 }, credentialBindings: [
         { ref: bindingRef, scope: 'recruiting.candidateSearch' }],
     mcp: { servers: [{ serverId, transport: 'stdio', command: process.execPath,
     args: [facade], envAllowlist, bindingRef, allowedTools: capabilities.map(item => item.toolId) }] },
