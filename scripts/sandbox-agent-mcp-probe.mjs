@@ -23,6 +23,11 @@ const capabilityIds = tools;
 const bindingRef = `cred:recruiting-${randomBytes(5).toString('hex')}`;
 const bindingSecret = `synthetic-binding-${randomBytes(16).toString('hex')}`;
 const workDir = mkdtempSync(join(tmpdir(), 'recruiting-agent-mcp-sandbox-'));
+const readMcpEvidence = runRoot => readFileSync(join(runRoot, 'events.jsonl'), 'utf8')
+  .trim().split('\n').map(JSON.parse)
+  .filter(event => event.type === 'log' && event.payload?.stream === 'stdout' &&
+    event.payload.message.startsWith('mcp-evidence: '))
+  .map(event => JSON.parse(event.payload.message.slice('mcp-evidence: '.length)));
 let now = new Date('2026-10-08T00:00:00.000Z');
 const scheduleRequest = async (_profileId, requestedVacancyId) => requestedVacancyId === vacancyId ? ({
   vacancyId, criteriaRevision: 'criteria-search-demo-r1',
@@ -101,8 +106,8 @@ try {
     const outcome = await runner.waitFor(receipt.runId, 30_000);
     const debugEvents = readFileSync(join(workDir, 'runs', receipt.runId, 'events.jsonl'), 'utf8');
     assert.equal(outcome.outcome, 'succeeded', `${JSON.stringify(outcome)}\n${debugEvents}`);
-    const evidenceText = readFileSync(join(cwd, 'mcp-evidence.jsonl'), 'utf8');
-    const evidence = evidenceText.trim().split('\n').map(JSON.parse);
+    const evidence = readMcpEvidence(join(workDir, 'runs', receipt.runId));
+    const evidenceText = JSON.stringify(evidence);
     const listed = evidence.find(item => item.step === 'tools_list');
     const toolCall = evidence.find(item => item.step === 'tool_call');
     const deniedProbe = evidence.find(item => item.step === 'tool_call_denied_probe');
@@ -145,7 +150,7 @@ try {
   assert.ok(feed.candidates.every(item => item.candidateRef && item.title && item.isNew === true));
   const surfaces = agentRuns.flatMap(({ receipt, cwd, evidenceText }) => [
     ...['events.jsonl', 'state.json', 'result.json'].map(name => readFileSync(join(workDir, 'runs', receipt.runId, name), 'utf8')),
-    evidenceText, readFileSync(join(cwd, '.runner/mcp.json'), 'utf8')
+    evidenceText
   ]);
   assert.equal(surfaces.some(value => value.includes(bindingSecret)), false,
     'the synthetic binding secret must not be persisted in Agent Run evidence or MCP config');
