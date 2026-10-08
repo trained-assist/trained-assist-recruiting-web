@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-accepted-report-source.schema.json",
+  "title": "Private report source proposal from an accepted candidate source",
+  "type": "object",
+  "required": ["domainApiVersion", "profileId", "vacancyId", "candidateId", "sourceRevision", "sourceKind", "publication", "clientDraftFields", "internalAssessment"],
+  "properties": {
+    "domainApiVersion": { "const": "v1" },
+    "profileId": { "type": "string", "minLength": 1 },
+    "vacancyId": { "type": "string", "minLength": 1 },
+    "candidateId": { "type": "string", "minLength": 1 },
+    "sourceRevision": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "sourceKind": { "enum": ["accepted_cold_search", "accepted_hh_response"] },
+    "publication": { "const": "disabled" },
+    "clientDraftFields": {
+      "type": "object", "required": ["candidateName", "position", "vacancyTitle", "experience"],
+      "properties": {
+        "candidateName": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "position": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "vacancyTitle": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "education": { "type": "array", "maxItems": 10, "items": { "type": "string", "maxLength": 300 } },
+        "courses": { "type": "array", "maxItems": 20, "items": { "type": "string", "maxLength": 300 } },
+        "skills": { "type": "array", "maxItems": 30, "items": { "type": "string", "maxLength": 100 } },
+        "languages": { "type": "array", "maxItems": 20, "items": { "type": "string", "maxLength": 150 } },
+        "location": { "type": ["string", "null"], "maxLength": 200 },
+        "experience": { "type": "array", "maxItems": 5, "items": {
+          "type": "object", "required": ["role", "company", "period"],
+          "properties": { "role": { "type": "string", "minLength": 1 },
+            "company": { "type": "string", "minLength": 1 }, "period": { "type": "string", "minLength": 1 } },
+          "additionalProperties": false
+        } }
+      }, "additionalProperties": false
+    },
+    "internalAssessment": {
+      "type": "object", "required": ["atsScore", "atsTag", "reviewStatus", "reviewRevision", "criteriaRevision"],
+      "properties": {
+        "atsScore": { "type": "number", "minimum": 0, "maximum": 10 },
+        "atsTag": { "enum": ["PASS", "REVIEW", "WEAK"] },
+        "reviewStatus": { "enum": ["active", "starred"] },
+        "reviewRevision": { "type": "integer", "minimum": 0 },
+        "criteriaRevision": { "type": "string", "minLength": 1 }
+      }, "additionalProperties": false
+    }
+  }, "additionalProperties": false
+}

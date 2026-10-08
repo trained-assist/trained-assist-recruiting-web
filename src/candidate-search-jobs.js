@@ -9,25 +9,43 @@ export async function syntheticColdSearchProvider({ cursor }) {
   return { kind: 'page', sourceRevision: fixture.providerRevision, items: page.items, nextCursor: page.nextCursor, complete: page.complete };
 }
 
-function digest(value) { return createHash('sha256').update(value).digest('hex'); }
-function canonicalRequest({ vacancyId, criteriaRevision, criteria }) {
+export function digest(value) { return createHash('sha256').update(value).digest('hex'); }
+export function canonicalRequest({ vacancyId, criteriaRevision, criteria }) {
   return { vacancyId, criteriaRevision, criteria: { keywords: [...criteria.keywords], regions: [...criteria.regions] } };
 }
 
-function publicJob(job) {
+export function publicJob(job) {
   return {
     domainApiVersion: 'v1', jobId: job.jobId, vacancyId: job.vacancyId,
     criteriaRevision: job.criteriaRevision, sourceRevision: job.sourceRevision ?? 'pending',
-    status: job.status, resultCount: job.items.length,
+    status: job.status === 'dispatching' ? 'running' : job.status, resultCount: job.items.length,
+    ...(job.completedAt ? { completedAt: job.completedAt } : {}),
     canResume: job.status === 'partial' && (job.providerError === null || job.providerError.retryable === true),
     ranking: 'provider_order_unranked', providerError: job.providerError
   };
 }
 
-function normalizeProviderError(code, retryable = false) {
+export function normalizeProviderError(code, retryable = false) {
   const allowed = ['provider_forbidden', 'provider_unavailable', 'provider_invalid_response'];
   const normalizedCode = allowed.includes(code) ? code : 'provider_unavailable';
   return { code: normalizedCode, retryable: normalizedCode === 'provider_forbidden' ? false : Boolean(retryable) };
+}
+
+export function candidateSearchResultPage(job, { limit, cursor }) {
+  const resultRevision = digest(`${job.jobId}|${job.sourceRevision ?? 'none'}|${job.items.map(item => item.candidateRef).join(',')}`).slice(0, 16);
+  let offset = 0;
+  if (cursor !== null) {
+    let parsed;
+    try { parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')); } catch { return { kind: 'invalid_cursor' }; }
+    if (parsed.jobId !== job.jobId || !Number.isSafeInteger(parsed.offset) || parsed.offset < 0) return { kind: 'invalid_cursor' };
+    if (parsed.resultRevision !== resultRevision) return { kind: 'stale_cursor', currentRevision: resultRevision };
+    offset = parsed.offset;
+  }
+  if (offset > job.items.length) return { kind: 'invalid_cursor' };
+  const items = job.items.slice(offset, offset + limit);
+  const nextOffset = offset + items.length;
+  const nextCursor = nextOffset < job.items.length ? Buffer.from(JSON.stringify({ jobId: job.jobId, offset: nextOffset, resultRevision })).toString('base64url') : null;
+  return { domainApiVersion: 'v1', jobId: job.jobId, sourceRevision: job.sourceRevision ?? 'pending', resultRevision, freshness: 'current', items, nextCursor };
 }
 
 export function createCandidateSearchJobs({ provider = syntheticColdSearchProvider, maxJobs = 100, maxResultsPerJob = 200 } = {}) {
@@ -116,20 +134,7 @@ export function createCandidateSearchJobs({ provider = syntheticColdSearchProvid
     results(profileId, jobId, { limit, cursor }) {
       const job = jobs.get(jobId);
       if (!job || job.profileId !== profileId) return null;
-      const resultRevision = digest(`${job.jobId}|${job.sourceRevision ?? 'none'}|${job.items.map(item => item.candidateRef).join(',')}`).slice(0, 16);
-      let offset = 0;
-      if (cursor !== null) {
-        let parsed;
-        try { parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')); } catch { return { kind: 'invalid_cursor' }; }
-        if (parsed.jobId !== job.jobId || !Number.isSafeInteger(parsed.offset) || parsed.offset < 0) return { kind: 'invalid_cursor' };
-        if (parsed.resultRevision !== resultRevision) return { kind: 'stale_cursor', currentRevision: resultRevision };
-        offset = parsed.offset;
-      }
-      if (offset > job.items.length) return { kind: 'invalid_cursor' };
-      const items = job.items.slice(offset, offset + limit);
-      const nextOffset = offset + items.length;
-      const nextCursor = nextOffset < job.items.length ? Buffer.from(JSON.stringify({ jobId, offset: nextOffset, resultRevision })).toString('base64url') : null;
-      return { domainApiVersion: 'v1', jobId, sourceRevision: job.sourceRevision ?? 'pending', resultRevision, freshness: 'current', items, nextCursor };
+      return candidateSearchResultPage(job, { limit, cursor });
     }
   };
 }

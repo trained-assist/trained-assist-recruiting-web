@@ -1,0 +1,11 @@
+[Unit]
+Description=Every-minute synthetic R-03 worker tick
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+AccuracySec=1s
+Persistent=false
+Unit=recruiting-r03-synthetic-worker.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-live-hh-response-conversation.schema.json",
+  "title": "Explicitly opened trusted-profile HH response conversation",
+  "type": "object",
+  "required": ["domainApiVersion", "profileId", "vacancyId", "negotiationId", "chatId", "messages", "hasMore", "pageLimit", "fetchedAt", "freshness", "viewedEffect"],
+  "properties": {
+    "domainApiVersion": { "const": "v1" },
+    "profileId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+    "vacancyId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+    "negotiationId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+    "chatId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+    "messages": { "type": "array", "maxItems": 50, "items": {
+      "type": "object", "required": ["id", "createdAt", "type", "viewedByOpponent"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "type": { "enum": ["SIMPLE", "PARTICIPANT_LEFT", "PARTICIPANT_JOINED"] },
+        "viewedByOpponent": { "type": "boolean" },
+        "text": { "type": "string", "maxLength": 20000 },
+        "attachments": { "type": "array", "maxItems": 10, "items": { "type": "object",
+          "required": ["title", "contentType"], "properties": {
+            "title": { "type": "string", "maxLength": 300 }, "contentType": { "type": "string" }
+          }, "additionalProperties": false } },
+        "movedParticipant": { "type": "object", "required": ["id"],
+          "properties": { "id": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9_-]{1,128}$" } }, "additionalProperties": false }
+      }, "additionalProperties": false
+    } },
+    "hasMore": { "type": "boolean" },
+    "pageLimit": { "const": 50 },
+    "fetchedAt": { "type": "string", "format": "date-time" },
+    "freshness": { "const": "live_at_request" },
+    "viewedEffect": { "const": "may_mark_response_viewed" }
+  },
+  "additionalProperties": false
+}

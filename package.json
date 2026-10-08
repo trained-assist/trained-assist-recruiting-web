@@ -5,9 +5,10 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test test/*.test.js",
+    "test": "node --test --test-concurrency=1 test/*.test.js",
     "test:offline": "node --test test/cold-search-schedule-offline.test.js",
     "test:offline:mcp": "node --test test/offline-mcp-contract.test.js",
+    "test:sandbox-agent-cold-search": "node scripts/sandbox-agent-cold-search-probe.mjs",
     "test:sandbox:agent-mcp": "node scripts/sandbox-agent-mcp-probe.mjs"
   },
   "engines": {
@@ -15,5 +16,8 @@
   },
   "devDependencies": {
     "ajv": "^8.20.0"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.11.1"
   }
 }

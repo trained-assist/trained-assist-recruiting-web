@@ -1,0 +1,33 @@
+name: Recruiting release artifact
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  source-artifact:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Package immutable git source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/recruiting-release"
+          python3 ops/r03-release.py package --source "$GITHUB_WORKSPACE" --source-sha "$GITHUB_SHA" --archive "$RUNNER_TEMP/recruiting-release/source.tar" --manifest "$RUNNER_TEMP/recruiting-release/manifest.json"
+          digest="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["archiveSha256"])' "$RUNNER_TEMP/recruiting-release/manifest.json")"
+          python3 ops/r03-release.py verify --archive "$RUNNER_TEMP/recruiting-release/source.tar" --manifest "$RUNNER_TEMP/recruiting-release/manifest.json" --approved-sha256 "$digest"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: recruiting-source-${{ github.sha }}
+          path: ${{ runner.temp }}/recruiting-release/
+          if-no-files-found: error
+          retention-days: 30

@@ -6,17 +6,65 @@ import { dirname, join } from 'node:path';
 import { getProfile, listProfileVacancies, profileHasScope, readVacancyResponses } from './recruiting-domain.js';
 import { createClientReportPreview, findReportSource, findReportVacancy } from './report-preview.js';
 import { createReportDrafts } from './report-drafts.js';
+import { createAcceptedReportDrafts } from './accepted-report-drafts.js';
+import { createReportPolicyService } from './report-policy.js';
+import { createReportInstructions } from './report-instructions.js';
 import { evaluateSyntheticResponse, getResponseScenario, makeEvaluationId, validEvaluatorOutput } from './response-evaluation.js';
 import { createCandidateSearchJobs } from './candidate-search-jobs.js';
 import { createCandidateState, createMemoryCandidateStateStore } from './candidate-state.js';
 import { createColdSearchScheduleHandler, InMemoryColdSearchScheduleRepository, validSearchContext } from './cold-search-schedules.js';
+import { renderRealProactivePage } from './r03-real-proactive-page.js';
+import { renderPrivateVacancyPicker } from './r03-private-vacancy-picker.js';
+import { renderR03HistoricalPage } from './r03-historical-page.js';
+import { createRealProactiveRead } from './r03-real-proactive-read.js';
+import { ConnectedAppIntrospectionUnavailable } from './connected-app-bff.js';
+import { createHhResponseConversationRead } from './r01-live-response-conversation.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
 const vacancies = JSON.parse(await readFile(join(root, 'data/vacancies.json'), 'utf8'));
 const landingPage = await readFile(join(root, 'public/index.html'), 'utf8');
 const proactivePage = await readFile(join(root, 'public/proactive.html'), 'utf8');
+const clientReportPage = await readFile(join(root, 'public/client-report.html'), 'utf8');
+const clientReportScript = await readFile(join(root, 'public/client-report.js'), 'utf8');
 const proactiveScript = await readFile(join(root, 'public/proactive.js'), 'utf8');
+const realProactiveScript = await readFile(join(root, 'public/real-proactive.js'), 'utf8');
+const assignmentScript = await readFile(join(root, 'public/assignment.js'), 'utf8');
+const escapeResponseHtml = value => String(value ?? '').replace(/[&<>"']/g,
+  char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
+function renderLiveResponsePage(data) {
+  const vacancy = encodeURIComponent(data.vacancyId);
+  const itemHtml = data.items.map(item => `<li><strong>${escapeResponseHtml(item.name || item.title || item.resumeId)}</strong> — ${escapeResponseHtml(item.title)} <small>${escapeResponseHtml(item.receivedAt)}</small> <a href="/hh/response-detail?vacancy_id=${vacancy}&negotiation_id=${encodeURIComponent(item.id)}">Текущий статус</a></li>`).join('');
+  const pageLink = page => `/hh/responses?vacancy_id=${vacancy}&page=${page}`;
+  const previous = data.page > 0 ? `<a href="${pageLink(data.page - 1)}">Назад</a>` : '';
+  const next = data.page + 1 < data.pages ? `<a href="${pageLink(data.page + 1)}">Далее</a>` : '';
+  return `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Отклики HH</title><main><h1>Отклики по вакансии ${escapeResponseHtml(data.vacancyId)}</h1><p><a href="/hh/proactive?vacancy_id=${vacancy}">Холодный поиск</a> · <a href="/hh/assignment?vacancy_id=${vacancy}">Материалы вакансии</a></p><p>Получено от HH: ${escapeResponseHtml(data.fetchedAt)}. Страницы могут измениться между запросами.</p><p>Страница ${data.page + 1} из ${Math.max(1, data.pages)} · Всего ${data.total}</p><ol>${itemHtml}</ol><nav>${previous} ${next}</nav></main></html>`;
+}
+function renderLiveResponseDetailPage(data) {
+  const back = `/hh/responses?vacancy_id=${encodeURIComponent(data.vacancyId)}`;
+  const conversation = `/hh/response-conversation?vacancy_id=${encodeURIComponent(data.vacancyId)}&negotiation_id=${encodeURIComponent(data.negotiationId)}`;
+  return `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Статус отклика HH</title><main><h1>Отклик ${escapeResponseHtml(data.negotiationId)}</h1><p><a href="${back}">К откликам</a></p><p>Текущий статус HH: ${escapeResponseHtml(data.state)}. Получено: ${escapeResponseHtml(data.fetchedAt)}.</p><p>Открытие переписки может отметить отклик просмотренным в HH. Нажмите ссылку ниже, если хотите загрузить историю сообщений.</p><p><a href="${conversation}">Открыть переписку с возможным статусом «просмотрено»</a></p></main></html>`;
+}
+function renderLiveResponseConversationConfirmPage({ vacancyId, negotiationId }) {
+  const loadUrl = `/hh/response-conversation?vacancy_id=${encodeURIComponent(vacancyId)}&negotiation_id=${encodeURIComponent(negotiationId)}`;
+  return `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Открыть переписку HH</title><main><h1>Открыть переписку по отклику ${escapeResponseHtml(negotiationId)}</h1><p>Запрос истории сообщений может отметить отклик просмотренным в HH. История ещё не загружена.</p><p>Нажмите кнопку, чтобы выполнить запрос. Если понадобится отдельное разрешение, вам предложат подтвердить его через Control Plane; затем нужно будет нажать кнопку ещё раз.</p><button id="open-conversation" type="button" data-url="${loadUrl}">Загрузить историю переписки</button><p id="conversation-state" role="status" aria-live="polite"></p><section id="conversation-messages"></section><script src="/hh/response-conversation/app.js" defer></script></main></html>`;
+}
+const liveResponseConversationClient = `const button=document.querySelector('#open-conversation');
+const state=document.querySelector('#conversation-state');const output=document.querySelector('#conversation-messages');
+const params=new URLSearchParams(location.search);const vacancyId=params.get('vacancy_id');const negotiationId=params.get('negotiation_id');
+const validId=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(value);
+const stepUp=()=>{const next=new URL('/auth/connected/start',location.origin);next.searchParams.set('from','conversation');next.searchParams.set('vacancy_id',vacancyId);next.searchParams.set('negotiation_id',negotiationId);location.assign(next.href);};
+function addText(parent,tag,text){const node=document.createElement(tag);node.textContent=text;parent.append(node);return node;}
+button?.addEventListener('click',async()=>{if(!validId(vacancyId)||!validId(negotiationId)){state.textContent='Некорректная ссылка.';return;}button.disabled=true;state.textContent='Проверяю отдельное разрешение на открытие переписки…';try{const session=await fetch('/auth/connected/session',{cache:'no-store',credentials:'same-origin'});if(!session.ok){state.textContent='Сессия недоступна. Войдите в приложение снова.';button.disabled=false;return;}const auth=await session.json();if(!auth.scopes?.includes('recruiting.responses.read')||!auth.scopes?.includes('recruiting.responses.conversation.open')){stepUp();return;}state.textContent='Загружаю одну страницу истории…';const response=await fetch(button.dataset.url,{method:'POST',headers:{'x-csrf-token':auth.csrfToken},credentials:'same-origin',cache:'no-store'});const body=await response.json();if(!response.ok){state.textContent=body.error==='connected_app_introspection_unavailable'?'Проверка профиля временно недоступна; переписка не загружена.':'Не удалось загрузить переписку.';button.disabled=false;return;}state.textContent='HH может отметить отклик просмотренным. Получено: '+body.fetchedAt+'; показано '+body.messages.length+' сообщений из одной страницы максимум 50.';if(body.hasMore)addText(output,'p','История продолжается; более ранние сообщения не загружались.');if(!body.messages.length)addText(output,'p','Сообщений нет.');for(const message of body.messages){const article=addText(output,'article','');article.replaceChildren();addText(article,'p',message.type+' · '+message.createdAt);if(message.text!==undefined)addText(article,'p',message.text);for(const file of message.attachments??[])addText(article,'p',file.title+' ('+file.contentType+')');if(message.movedParticipant)addText(article,'p','Изменился состав участников чата.');}}catch{state.textContent='Связь временно недоступна; история не загружена.';button.disabled=false;}});`;
+function renderAssignmentPage(data) {
+  const items = data.materials.map(item => `<section><h2>${escapeResponseHtml(item.title)}</h2><pre>${escapeResponseHtml(item.material)}</pre><p>SHA-256: ${item.sha256}</p></section>`).join('');
+  const status = data.reviewStatus === 'saved_plan' ? 'Сохранённый сценарий' : 'Черновик переноса: рекрутер должен проверить и сохранить сценарий';
+  const editable = data.reviewStatus === 'legacy_draft_requires_review' && data.draftPlan && data.canReview;
+  const form = editable ? `<section aria-labelledby="review-heading"><h2 id="review-heading">Проверка сценария</h2><p>Проверьте поля и добавьте этапы при необходимости. Исходный дословный материал должен сохраниться хотя бы в одном этапе. После сохранения первая проверенная версия становится неизменяемой.</p><form id="assignment-review" data-vacancy-id="${escapeResponseHtml(data.vacancyId)}" data-source-sha256="${data.sourceSha256}"><div id="assignment-stages" data-plan="${escapeResponseHtml(JSON.stringify(data.draftPlan))}"></div><button type="button" id="assignment-add-stage">Добавить этап</button><p><label><input type="checkbox" name="reviewed" required> Я проверил(а) сценарий и подтверждаю сохранение</label></p><button type="submit">Сохранить проверенный сценарий</button><p id="assignment-save-status" role="status" aria-live="polite"></p></form><script src="/hh/assignment/app.js" defer></script></section>` : data.reviewStatus === 'saved_plan' ? '<p>Сохранённая проверенная версия неизменяема.</p>' : '';
+  const reviewStepUp = data.reviewStatus === 'legacy_draft_requires_review' && data.draftPlan && !data.canReview
+    ? `<p><a href="/auth/connected/start?from=assignment&amp;vacancy_id=${encodeURIComponent(data.vacancyId)}">Подтвердить доступ для проверки и сохранения</a></p>` : '';
+  return `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Материалы вакансии</title><main><h1>Материалы вакансии ${escapeResponseHtml(data.vacancyId)}</h1><p>${status}</p>${data.legacyConflict ? '<p>Прежнее тестовое отличается от сохранённого сценария; требуется ручная сверка.</p>' : ''}${items || '<p>Дословного материала нет.</p>'}${form}${reviewStepUp}<p><a href="/hh/responses?vacancy_id=${encodeURIComponent(data.vacancyId)}">К откликам</a></p></main></html>`;
+}
 const release = {
   version: '0.1.0',
   sourceRevision: process.env.SOURCE_REVISION ?? 'unversioned-local',
@@ -84,6 +132,18 @@ function parseReportPreviewQuery(url) {
   return { candidateId, vacancyId };
 }
 
+function parseClientReportPageQuery(url) {
+  const keys = [...url.searchParams.keys()];
+  const candidateId = url.searchParams.get('candidate_id');
+  const vacancyId = url.searchParams.get('vacancy_id');
+  const sourceKind = url.searchParams.get('source_kind') ?? 'accepted_cold_search';
+  if (![2, 3].includes(keys.length) || new Set(keys).size !== keys.length ||
+      !keys.every(key => ['candidate_id', 'vacancy_id', 'source_kind'].includes(key)) ||
+      !['accepted_cold_search', 'accepted_hh_response'].includes(sourceKind) ||
+      !isRealProactiveVacancy(candidateId) || !isRealProactiveVacancy(vacancyId)) return null;
+  return { candidateId, vacancyId, sourceKind };
+}
+
 function parseEvaluationQuery(url) {
   const fields = ['responseId', 'vacancyId', 'expectedResponseRevision', 'expectedResumeRevision', 'expectedCriteriaRevision'];
   const keys = [...url.searchParams.keys()];
@@ -96,13 +156,17 @@ function parseEvaluationQuery(url) {
   return value;
 }
 
+const parsedJsonBody = Symbol('parsedJsonBody');
 async function readJsonBody(req, maxBytes = 16_384) {
-  let raw = '';
-  for await (const chunk of req) {
-    raw += chunk;
-    if (Buffer.byteLength(raw) > maxBytes) throw new Error('body_too_large');
-  }
-  return JSON.parse(raw);
+  req[parsedJsonBody] ??= (async () => {
+    let raw = '';
+    for await (const chunk of req) {
+      raw += chunk;
+      if (Buffer.byteLength(raw) > maxBytes) throw new Error('body_too_large');
+    }
+    return JSON.parse(raw);
+  })();
+  return req[parsedJsonBody];
 }
 
 function parseSearchResultPage(url) {
@@ -117,12 +181,51 @@ function parseSearchResultPage(url) {
 
 const isPlainObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const isProactiveVacancy = value => typeof value === 'string' && /^vac_demo_[0-9]{3}$/.test(value);
+const isRealProactiveVacancy = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 const isReportRevision = value => typeof value === 'string' && /^report-demo-r[0-9]+$/.test(value);
 
 function validReportDraftStart(value) {
   return isPlainObject(value) && Object.keys(value).sort().join(',') === 'candidateId,expectedSourceRevision,vacancyId' &&
     /^candidate_demo_[0-9]{3}$/.test(value.candidateId ?? '') && /^vac_demo_[0-9]{3}$/.test(value.vacancyId ?? '') &&
     /^synthetic-[a-z0-9-]+-r[0-9]+$/.test(value.expectedSourceRevision ?? '');
+}
+
+function validAcceptedReportDraftStart(value) {
+  return isPlainObject(value) && ['candidateId,expectedSourceRevision,vacancyId',
+      'candidateId,expectedSourceRevision,sourceKind,vacancyId',
+      'candidateId,expectedPolicyRevision,expectedSourceRevision,vacancyId',
+      'candidateId,expectedPolicyRevision,expectedSourceRevision,sourceKind,vacancyId'].includes(Object.keys(value).sort().join(',')) &&
+    isRealProactiveVacancy(value.candidateId) && isRealProactiveVacancy(value.vacancyId) &&
+    (value.sourceKind === undefined || ['accepted_cold_search', 'accepted_hh_response'].includes(value.sourceKind)) &&
+    (value.expectedPolicyRevision === undefined || Number.isSafeInteger(value.expectedPolicyRevision) && value.expectedPolicyRevision >= 0) &&
+    /^[a-f0-9]{64}$/.test(value.expectedSourceRevision ?? '');
+}
+
+function validAcceptedReportRegenerate(value) {
+  return isPlainObject(value) && Object.keys(value).sort().join(',') === 'expectedReportRevision,replaceRecruiterEditedFields' &&
+    /^report-r[1-9][0-9]*$/.test(value.expectedReportRevision ?? '') &&
+    typeof value.replaceRecruiterEditedFields === 'boolean';
+}
+
+function validAcceptedReportExport(value) {
+  return isPlainObject(value) && Object.keys(value).length === 1 &&
+    Object.keys(value)[0] === 'expectedReportRevision' &&
+    /^report-r[1-9][0-9]*$/.test(value.expectedReportRevision ?? '');
+}
+
+function projectAcceptedClientFields(value) {
+  if (!isPlainObject(value) || Object.keys(value).some(key => !['candidateName', 'experience', 'position', 'vacancyTitle', 'education', 'courses', 'skills', 'languages', 'location'].includes(key)) ||
+      !['candidateName', 'position', 'vacancyTitle'].every(key => typeof value[key] === 'string' && value[key].length > 0 && value[key].length <= 300) ||
+      !Array.isArray(value.experience) || value.experience.length > 5 ||
+      !value.experience.every(row => isPlainObject(row) && Object.keys(row).sort().join(',') === 'company,period,role' &&
+        ['company', 'period', 'role'].every(key => typeof row[key] === 'string' && row[key].length > 0 && row[key].length <= 500)) ||
+      ![['education', 10, 300], ['courses', 20, 300], ['skills', 30, 100], ['languages', 20, 150]].every(([key, maxItems, maxLength]) =>
+        value[key] === undefined || Array.isArray(value[key]) && value[key].length <= maxItems && value[key].every(item => typeof item === 'string' && item.trim() && item.length <= maxLength)) ||
+      value.location !== undefined && value.location !== null && (typeof value.location !== 'string' || value.location.length > 200)) return null;
+  return { candidateName: value.candidateName, position: value.position, vacancyTitle: value.vacancyTitle,
+    experience: value.experience.map(row => ({ role: row.role, company: row.company, period: row.period })),
+    education: value.education ?? [], courses: value.courses ?? [], skills: value.skills ?? [],
+    languages: value.languages ?? [], location: value.location ?? null };
 }
 
 function validReportClientPatch(value) {
@@ -144,10 +247,55 @@ function validReportAction(value) {
   return isPlainObject(value) && Object.keys(value).sort().join(',') === 'expectedReportRevision' && isReportRevision(value.expectedReportRevision);
 }
 
-export function createRecruitingServer({ resolveTrustedProfileContext = () => null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), maxCandidateSearchJobs = 100, publicationAdapter, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
-  const candidateSearchJobs = createCandidateSearchJobs({ provider: candidateSearchProvider, maxJobs: maxCandidateSearchJobs });
+export function createRecruitingServer({ resolveTrustedProfileContext = () => null, connectedAppBff = null, resolveLegacyOpenTab = null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, candidateSearchJobStore = null, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), scheduleLeaseMs = 5 * 60_000, maxCandidateSearchJobs = 100, publicationAdapter, realProactiveFeed = null, realProactiveHistoricalRead = null, realProactiveActions = null, realProactivePrompt = null, realProactiveSeenImport = null, realProactiveAiScore = null, realProactiveManualCandidate = null, liveResponseRead = null, liveResponseDetailRead = null, liveResponseConversationRead = null, liveAssignmentRead = null, liveAssignmentSave = null, acceptedReportSourceRead = null, acceptedHhResponseReportSourceRead = null, acceptedReportDraftStore = null, acceptedReportFieldGenerator = null, acceptedReportFieldGeneratorTimeoutMs = 30_000, resolveRealVacancyOwnership = null, resolveRealDefaultVacancy = () => null, listRealVacancies = () => [], privateProactiveOnly = false, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
+  if (realProactiveFeed !== null && (typeof realProactiveFeed.read !== 'function' || typeof resolveRealVacancyOwnership !== 'function'))
+    throw new TypeError('real proactive feed and trusted vacancy ownership ports required');
+  if (realProactiveActions !== null && realProactiveFeed === null) throw new TypeError('real actions require real feed mode');
+  if (realProactiveAiScore !== null && (realProactiveFeed === null || typeof realProactiveAiScore !== 'function'))
+    throw new TypeError('real AI score requires real feed mode');
+  if (realProactiveManualCandidate !== null && (realProactiveFeed === null || typeof realProactiveManualCandidate !== 'function'))
+    throw new TypeError('manual candidate requires real feed mode');
+  if (liveResponseRead !== null && typeof liveResponseRead !== 'function')
+    throw new TypeError('live response read port required');
+  if (liveAssignmentRead !== null && typeof liveAssignmentRead !== 'function')
+    throw new TypeError('live assignment read port required');
+  if (liveAssignmentSave !== null && (typeof liveAssignmentSave !== 'function' || liveAssignmentRead === null || connectedAppBff === null))
+    throw new TypeError('live assignment save requires connected read boundary');
+  if (acceptedReportSourceRead !== null && typeof acceptedReportSourceRead !== 'function')
+    throw new TypeError('report source read port required');
+  if (acceptedHhResponseReportSourceRead !== null && typeof acceptedHhResponseReportSourceRead !== 'function')
+    throw new TypeError('HH response report source read port required');
+  if (acceptedReportDraftStore !== null &&
+      (acceptedReportSourceRead === null && acceptedHhResponseReportSourceRead === null || connectedAppBff === null))
+    throw new TypeError('accepted report drafts require source read and Connected App BFF');
+  if (resolveLegacyOpenTab !== null && (!privateProactiveOnly || typeof resolveLegacyOpenTab !== 'function'))
+    throw new TypeError('legacy open-tab resolver requires private proactive mode');
+  if (connectedAppBff !== null && (privateProactiveOnly && resolveLegacyOpenTab !== null ||
+      typeof connectedAppBff.handle !== 'function' ||
+      typeof connectedAppBff.resolve !== 'function')) throw new TypeError('connected app BFF ports required');
+  const trustedReadResolver = connectedAppBff?.resolve ?? resolveTrustedProfileContext;
+  if (realProactiveHistoricalRead !== null && (realProactiveFeed === null ||
+      typeof realProactiveHistoricalRead.read !== 'function' ||
+      typeof realProactiveHistoricalRead.has !== 'function'))
+    throw new TypeError('historical read requires real feed and trusted reader');
+  const realProactiveRead = realProactiveFeed === null ? null : createRealProactiveRead({
+    feed: realProactiveFeed, resolveVacancyOwnership: resolveRealVacancyOwnership });
+  const candidateSearchJobs = candidateSearchJobStore ?? createCandidateSearchJobs({ provider: candidateSearchProvider, maxJobs: maxCandidateSearchJobs });
   const candidateState = createCandidateState({ store: candidateStateStore, isVacancyOwned: (profileId, vacancyId) => listProfileVacancies(profileId)?.some(item => item.id === vacancyId) ?? false });
   const reportDrafts = createReportDrafts({ publicationAdapter });
+  const reportSourceRead = async (context, request) => {
+    const kind = request?.sourceKind ?? 'accepted_cold_search';
+    const reader = kind === 'accepted_hh_response' ? acceptedHhResponseReportSourceRead : acceptedReportSourceRead;
+    return typeof reader === 'function' ? reader(context, { ...request, sourceKind: kind }) : { status: 404, body: { error: 'not_found' } };
+  };
+  const acceptedReportInstructions = acceptedReportDraftStore === null ? null :
+    createReportInstructions({ sourceRead: reportSourceRead, store: acceptedReportDraftStore });
+  const acceptedReportDrafts = acceptedReportDraftStore === null ? null :
+    createAcceptedReportDrafts({ sourceRead: reportSourceRead, store: acceptedReportDraftStore,
+      readInstructions: acceptedReportInstructions.getApplicable.bind(acceptedReportInstructions),
+      generateFields: acceptedReportFieldGenerator, generateTimeoutMs: acceptedReportFieldGeneratorTimeoutMs });
+  const acceptedReportPolicies = acceptedReportDraftStore === null ? null :
+    createReportPolicyService({ sourceRead: reportSourceRead, store: acceptedReportDraftStore });
   const currentSearchCriteriaRevision = async (context, vacancyId) => {
     try {
       const revision = await resolveCurrentSearchCriteriaRevision(context, vacancyId);
@@ -178,42 +326,353 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
     if (job.status !== 'completed') return { ...job, status: 'failed', providerError: job.providerError ?? { code: 'scheduled_search_incomplete' } };
     const results = candidateSearchJobs.results(profileId, job.jobId, { limit: 200, cursor: null });
     const snapshot = candidateState.recordSearch({ profileId, vacancyId: request.vacancyId, jobId: job.jobId,
-      searchedAt: scheduleClock().toISOString(), criteriaRevision: job.criteriaRevision, sourceRevision: results.sourceRevision,
+      searchedAt: job.completedAt ?? scheduleClock().toISOString(), criteriaRevision: job.criteriaRevision, sourceRevision: results.sourceRevision,
       source, candidates: results.items, totalCollected: results.items.length });
     return { ...job, ...results, searchedAt: snapshot.searchedAt, created: started.created };
   };
   const coldSearchSchedules = createColdSearchScheduleHandler({
     repository: candidateSearchScheduleRepository,
     clock: scheduleClock,
+    leaseMs: scheduleLeaseMs,
     resolveSearchRequest: resolveScheduledSearchRequest,
     executeSearch: executeColdSearch
   });
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const path = url.pathname;
+    if (connectedAppBff && path.startsWith('/auth/connected/')) {
+      try { if (await connectedAppBff.handle(req, res, url)) return; }
+      catch (error) {
+        res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ error: error instanceof ConnectedAppIntrospectionUnavailable
+          ? 'connected_app_introspection_unavailable' : 'connected_app_auth_unavailable' }));
+        return;
+      }
+    }
     const isCandidateSearchPath = path === '/api/v1/ui/candidate-searches' || /^\/api\/v1\/ui\/candidate-searches\/[^/]+(?:\/results|\/resume)?$/.test(path);
-    const isProactivePath = path === '/hh/proactive' || path === '/hh/proactive/app.js' || /^\/api\/hh\/proactive\/(?:candidates|schedule|occurrences|vacancy-state|search)$/.test(path);
+    const isProactivePath = path === '/hh/proactive' || path === '/hh/proactive/app.js' ||
+      realProactiveHistoricalRead !== null && (path === '/hh/proactive/history' || path === '/api/hh/proactive/history') ||
+      /^\/api\/hh\/proactive\/(?:candidates|schedule|occurrences|vacancy-state|search)$/.test(path) ||
+      realProactiveFeed !== null && path.startsWith('/api/hh/proactive/');
     const reportDraftRoot = '/api/v1/ui/report-drafts';
     const isReportDraftPath = path === reportDraftRoot || new RegExp(`^${reportDraftRoot}/report_demo_[a-f0-9]{12}(?:/preview|/review|/publish|/revoke)?$`).test(path);
+    const acceptedReportDraftRoot = '/api/v1/ui/accepted-report-drafts';
+    const isAcceptedReportDraftPath = acceptedReportDrafts !== null &&
+      (path === acceptedReportDraftRoot || new RegExp(`^${acceptedReportDraftRoot}/report_[a-f0-9]{32}(?:/preview|/review|/edit|/regenerate|/export)?$`).test(path));
+    const acceptedReportPolicyPath = acceptedReportPolicies !== null && path === '/api/v1/ui/accepted-report-policy';
+    const acceptedReportInstructionsPath = acceptedReportInstructions !== null && path === '/api/v1/ui/accepted-report-instructions';
+    const acceptedReportPreviousPath = acceptedReportDrafts !== null && path === '/api/v1/ui/accepted-report-previous-approved';
+    const acceptedReportRouteMethodAllowed = isAcceptedReportDraftPath &&
+      (['GET', 'HEAD'].includes(req.method) && path !== acceptedReportDraftRoot ||
+        req.method === 'POST' && (path === acceptedReportDraftRoot || /\/(review|regenerate|export)$/.test(path)) ||
+        req.method === 'PATCH' && /\/edit$/.test(path)) ||
+      acceptedReportPolicyPath && (req.method === 'GET' || req.method === 'PUT') ||
+      acceptedReportInstructionsPath && (req.method === 'GET' || req.method === 'PUT') ||
+      acceptedReportPreviousPath && ['GET', 'HEAD'].includes(req.method);
+    const isAcceptedReportPagePath = acceptedReportDrafts !== null &&
+      (path === '/hh/candidate-report' || path === '/hh/candidate-report/app.js' ||
+        path === '/api/v1/ui/accepted-report-source' || path === '/api/v1/ui/accepted-report-client-source');
     let status = 200;
     let type = mime.json;
     let body;
+    let extraResponseHeaders = {};
 
-    if (req.method !== 'GET' && req.method !== 'HEAD' && !(req.method === 'POST' && (isCandidateSearchPath || isReportDraftPath || path === '/api/hh/proactive/vacancy-state' || path === '/api/hh/proactive/search')) && !(req.method === 'PATCH' && isReportDraftPath)) {
+    if (privateProactiveOnly && !isProactivePath && path !== '/health/ready' &&
+        !(connectedAppBff !== null && (liveResponseRead !== null &&
+          (path === '/hh/responses' || path === '/api/v1/ui/hh-responses') ||
+          liveResponseDetailRead !== null && (path === '/hh/response-detail' || path === '/api/v1/ui/hh-response-detail') ||
+          liveResponseConversationRead !== null && (path === '/hh/response-conversation' || path === '/hh/response-conversation/app.js') ||
+          liveAssignmentRead !== null &&
+          (path === '/hh/assignment' || path === '/hh/assignment/app.js' || path === '/api/v1/ui/vacancy-assignment') ||
+          isAcceptedReportDraftPath || acceptedReportPolicyPath || acceptedReportInstructionsPath ||
+          acceptedReportPreviousPath || isAcceptedReportPagePath))) {
+      status = 404;
+      body = { error: 'not_found' };
+    } else if ((isAcceptedReportDraftPath || acceptedReportPreviousPath) && !acceptedReportRouteMethodAllowed ||
+        req.method !== 'GET' && req.method !== 'HEAD' && !(req.method === 'POST' && (isCandidateSearchPath || isReportDraftPath || isAcceptedReportDraftPath || path === '/api/v1/ui/vacancy-assignment' && liveAssignmentSave !== null || path === '/hh/response-conversation' && liveResponseConversationRead !== null || path === '/api/hh/proactive/vacancy-state' || path === '/api/hh/proactive/search' || realProactiveFeed !== null && path.startsWith('/api/hh/proactive/'))) && !(req.method === 'PATCH' && (isReportDraftPath || isAcceptedReportDraftPath)) && !((acceptedReportPolicyPath || acceptedReportInstructionsPath) && req.method === 'PUT')) {
       status = 405;
       body = { error: 'method_not_allowed' };
-      res.setHeader('Allow', isCandidateSearchPath || isReportDraftPath ? 'GET, HEAD, POST, PATCH' : 'GET, HEAD');
+      res.setHeader('Allow', isAcceptedReportDraftPath ? 'GET, HEAD, POST, PATCH' :
+        acceptedReportPreviousPath ? 'GET, HEAD' :
+        acceptedReportPolicyPath || acceptedReportInstructionsPath ? 'GET, PUT' :
+          isCandidateSearchPath || isReportDraftPath ? 'GET, HEAD, POST, PATCH' :
+            path === '/api/v1/ui/vacancy-assignment' && liveAssignmentSave !== null ? 'GET, HEAD, POST' : 'GET, HEAD');
     } else if (path === '/') {
       type = mime.html;
       body = landingPage;
     } else if (path === '/health/ready') {
-      body = { status: 'ready' };
+      body = privateProactiveOnly ? { status: 'ready', mode: 'private_proactive' } : { status: 'ready' };
     } else if (path === '/api/v1/readiness') {
       body = { serviceId: manifest.serviceId, domainApiVersion: manifest.domainApiVersion, ...readiness };
     } else if (path === '/api/v1/manifest') {
       body = manifest;
     } else if (path === '/api/v1/capabilities') {
       body = { serviceId: manifest.serviceId, domainApiVersion: manifest.domainApiVersion, capabilities };
+    } else if (path === '/hh/candidate-report' && acceptedReportDrafts !== null) {
+      const query = parseClientReportPageQuery(url);
+      if (!query) { status = 400; body = { error: 'invalid_report_page_request' }; }
+      else {
+        let context;
+        try { context = await trustedReadResolver(req, url, res); }
+        catch (error) { status = 503; body = { error: error instanceof ConnectedAppIntrospectionUnavailable
+          ? 'connected_app_introspection_unavailable' : 'trusted_profile_unavailable' }; }
+        if (status === 200 && !context) {
+          const start = new URL('/auth/connected/start', 'http://localhost');
+          start.searchParams.set('from', 'report'); start.searchParams.set('vacancy_id', query.vacancyId);
+          start.searchParams.set('candidate_id', query.candidateId);
+          if (query.sourceKind !== 'accepted_cold_search') start.searchParams.set('source_kind', query.sourceKind);
+          res.writeHead(303, { Location: start.pathname + start.search, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' });
+          res.end(); return;
+        }
+        const required = ['recruiting.reports.read', 'recruiting.reports.create', 'recruiting.reports.edit', 'recruiting.reports.review'];
+        if (status === 200 && required.some(scope => !context.scopes.includes(scope))) {
+          status = 403; body = { error: 'report_scope_required' };
+        } else if (status === 200) { type = mime.html; body = clientReportPage; }
+      }
+    } else if (path === '/hh/candidate-report/app.js' && acceptedReportDrafts !== null) {
+      type = mime.js; body = clientReportScript;
+    } else if (path === '/api/v1/ui/accepted-report-client-source' && acceptedReportDrafts !== null && connectedAppBff !== null) {
+      let context;
+      try { context = await trustedReadResolver(req, url, res); }
+      catch (error) { status = 503; body = { error: error instanceof ConnectedAppIntrospectionUnavailable
+        ? 'connected_app_introspection_unavailable' : 'trusted_profile_unavailable' }; }
+      if (status === 200 && (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes))) {
+        status = 401; body = { error: 'trusted_profile_context_required' };
+      } else if (status === 200 && !context.scopes.includes('recruiting.reports.read')) {
+        status = 403; body = { error: 'report_scope_required' };
+      } else if (status === 200) {
+        const keys = [...url.searchParams.keys()];
+        const vacancyId = url.searchParams.get('vacancyId'); const candidateId = url.searchParams.get('candidateId');
+        const sourceKind = url.searchParams.get('sourceKind') ?? 'accepted_cold_search';
+        if (!['candidateId,vacancyId', 'candidateId,sourceKind,vacancyId'].includes([...new Set(keys)].sort().join(',')) ||
+            !keys.every(key => ['vacancyId', 'candidateId', 'sourceKind'].includes(key)) ||
+            !['accepted_cold_search', 'accepted_hh_response'].includes(sourceKind) ||
+            !isRealProactiveVacancy(vacancyId) || !isRealProactiveVacancy(candidateId)) {
+          status = 400; body = { error: 'invalid_report_source_request' };
+        } else {
+          try {
+            const result = await reportSourceRead(context, { vacancyId, candidateId, sourceKind });
+            status = result.status;
+            const clientDraftFields = projectAcceptedClientFields(result.body?.clientDraftFields);
+            if (result.status === 200 && (!clientDraftFields || result.body?.profileId !== context.profileId ||
+                result.body?.candidateId !== candidateId || result.body?.vacancyId !== vacancyId ||
+                result.body?.sourceKind !== sourceKind || result.body?.publication !== 'disabled' ||
+                !/^[a-f0-9]{64}$/.test(result.body?.sourceRevision ?? ''))) {
+              status = 502; body = { error: 'invalid_report_source' };
+            } else body = result.status === 200 ? {
+              domainApiVersion: result.body.domainApiVersion, profileId: result.body.profileId,
+              vacancyId: result.body.vacancyId, candidateId: result.body.candidateId,
+              sourceRevision: result.body.sourceRevision, sourceKind: result.body.sourceKind,
+              publication: result.body.publication, clientDraftFields,
+            } : result.body;
+          } catch { status = 503; body = { error: 'report_source_unavailable' }; }
+        }
+      }
+    } else if (path === '/api/v1/ui/accepted-report-source' && acceptedReportSourceRead !== null) {
+      let context;
+      try { context = await trustedReadResolver(req, url, res); }
+      catch (error) { status = 503; body = { error: error instanceof ConnectedAppIntrospectionUnavailable
+        ? 'connected_app_introspection_unavailable' : 'trusted_profile_unavailable' }; }
+      if (status === 200 && (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes))) {
+        status = 401; body = { error: 'trusted_profile_context_required' };
+      } else if (status === 200 && !context.scopes.includes('recruiting.reports.read')) {
+        status = 403; body = { error: 'report_scope_required' };
+      } else if (status === 200) {
+        const keys = [...url.searchParams.keys()];
+        const vacancyId = url.searchParams.get('vacancyId');
+        const candidateId = url.searchParams.get('candidateId');
+        if (keys.length !== 2 || new Set(keys).size !== keys.length ||
+            !keys.every(key => ['vacancyId', 'candidateId'].includes(key)) ||
+            !isRealProactiveVacancy(vacancyId) || !isRealProactiveVacancy(candidateId)) {
+          status = 400; body = { error: 'invalid_report_source_request' };
+        } else {
+          try {
+            const result = await acceptedReportSourceRead(context, { vacancyId, candidateId });
+            status = result.status; body = result.body;
+          } catch { status = 503; body = { error: 'report_source_unavailable' }; }
+        }
+      }
+    } else if (path === '/hh/assignment/app.js' && connectedAppBff !== null && liveAssignmentRead !== null) {
+      let context;
+      try { context = await trustedReadResolver(req, url, res); }
+      catch (error) { status = 503; body = { error: error instanceof ConnectedAppIntrospectionUnavailable
+        ? 'connected_app_introspection_unavailable' : 'trusted_profile_unavailable' }; }
+      if (status === 200 && (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes))) {
+        status = 401; body = { error: 'trusted_profile_context_required' };
+      } else if (status === 200 && !context.scopes.some(scope => ['recruiting.responses.read', 'recruiting.assignment.review'].includes(scope))) {
+        status = 403; body = { error: 'assignment_scope_required' };
+      } else if (status === 200 && url.search !== '') {
+        status = 400; body = { error: 'invalid_assignment_asset_request' };
+      } else if (status === 200) {
+        type = mime.js; body = assignmentScript;
+        res.setHeader('Cache-Control', 'no-store');
+      }
+    } else if ((path === '/hh/assignment' || path === '/api/v1/ui/vacancy-assignment') &&
+        liveAssignmentRead !== null && connectedAppBff !== null) {
+      let context;
+      try { context = await trustedReadResolver(req, url, res); }
+      catch (error) { status = 503; body = { error: error instanceof ConnectedAppIntrospectionUnavailable
+        ? 'connected_app_introspection_unavailable' : 'trusted_profile_unavailable' }; }
+      const pageRoute = path === '/hh/assignment';
+      const vacancyId = url.searchParams.get(pageRoute ? 'vacancy_id' : 'vacancyId');
+      if (status === 200 && (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes))) {
+        if (pageRoute && req.method === 'GET' && /^[A-Za-z0-9_-]{1,128}$/.test(vacancyId ?? '') &&
+            [...url.searchParams.keys()].join(',') === 'vacancy_id') {
+          const start = new URL('/auth/connected/start', 'http://localhost');
+          start.searchParams.set('from', 'assignment'); start.searchParams.set('vacancy_id', vacancyId);
+          res.writeHead(303, { Location: start.pathname + start.search, 'Cache-Control': 'no-store',
+            'Referrer-Policy': 'no-referrer' }); res.end(); return;
+        }
+        status = 401; body = { error: 'trusted_profile_context_required' };
+      } else if (status === 200 && !context.scopes.includes(req.method === 'POST' ? 'recruiting.assignment.review' : 'recruiting.responses.read') &&
+          !(req.method === 'GET' && context.scopes.includes('recruiting.assignment.review'))) {
+        status = 403; body = { error: 'response_scope_required' };
+      } else if (status === 200 && ([...url.searchParams.keys()].join(',') !==
+          (pageRoute ? 'vacancy_id' : 'vacancyId') || !/^[A-Za-z0-9_-]{1,128}$/.test(vacancyId ?? ''))) {
+        status = 400; body = { error: 'invalid_assignment_request' };
+      } else if (status === 200) {
+        let result;
+        if (req.method === 'POST') {
+          try { result = await liveAssignmentSave(context, { ...await readJsonBody(req, 256 * 1024), vacancyId }); }
+          catch (error) { result = { status: error.message === 'body_too_large' ? 413 : 400,
+            body: { error: 'invalid_assignment_review' } }; }
+        } else result = await liveAssignmentRead(context, { vacancyId });
+        status = result.status; body = result.body;
+        if (status === 200 && pageRoute) {
+          type = mime.html; body = renderAssignmentPage({ ...body, canReview: context.scopes.includes('recruiting.assignment.review') });
+          res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'");
+          res.setHeader('Referrer-Policy', 'no-referrer');
+        }
+      }
+    } else if ((path === '/hh/response-detail' || path === '/api/v1/ui/hh-response-detail') &&
+        liveResponseDetailRead !== null && connectedAppBff !== null) {
+      let context;
+      try { context = await trustedReadResolver(req, url, res); }
+      catch (error) { status = 503; body = { error: error instanceof ConnectedAppIntrospectionUnavailable
+        ? 'connected_app_introspection_unavailable' : 'trusted_profile_unavailable' }; }
+      const pageRoute = path === '/hh/response-detail';
+      const vacancyId = url.searchParams.get(pageRoute ? 'vacancy_id' : 'vacancyId');
+      const negotiationId = url.searchParams.get(pageRoute ? 'negotiation_id' : 'negotiationId');
+      const fields = pageRoute ? ['vacancy_id', 'negotiation_id'] : ['vacancyId', 'negotiationId'];
+      const keys = [...url.searchParams.keys()];
+      const valid = keys.length === 2 && new Set(keys).size === 2 && keys.every(key => fields.includes(key)) &&
+        /^[A-Za-z0-9_-]{1,128}$/.test(vacancyId ?? '') && /^[A-Za-z0-9_-]{1,128}$/.test(negotiationId ?? '');
+      if (status === 200 && (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes))) {
+        if (pageRoute && valid) {
+          const start = new URL('/auth/connected/start', 'http://localhost');
+          start.searchParams.set('from', 'responses'); start.searchParams.set('vacancy_id', vacancyId);
+          res.writeHead(303, { Location: start.pathname + start.search, 'Cache-Control': 'no-store',
+            'Referrer-Policy': 'no-referrer' }); res.end(); return;
+        }
+        status = 401; body = { error: 'trusted_profile_context_required' };
+      } else if (status === 200 && !context.scopes.includes('recruiting.responses.read')) {
+        status = 403; body = { error: 'response_scope_required' };
+      } else if (status === 200 && !valid) {
+        status = 400; body = { error: 'invalid_response_detail_request' };
+      } else if (status === 200) {
+        try {
+          const result = await liveResponseDetailRead(context, { vacancyId, negotiationId });
+          status = result.status; body = result.body;
+          if (status === 200 && pageRoute) { type = mime.html; body = renderLiveResponseDetailPage(body); }
+        } catch { status = 503; body = { error: 'response_detail_unavailable' }; }
+      }
+    } else if (path === '/hh/response-conversation/app.js' && req.method === 'GET' &&
+        liveResponseConversationRead !== null && connectedAppBff !== null) {
+      type = 'text/javascript; charset=utf-8'; body = liveResponseConversationClient;
+      res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'");
+      res.setHeader('Referrer-Policy', 'no-referrer');
+    } else if (path === '/hh/response-conversation' && liveResponseConversationRead !== null && connectedAppBff !== null) {
+      let context;
+      try { context = await trustedReadResolver(req, url, res); }
+      catch (error) { status = 503; body = { error: error instanceof ConnectedAppIntrospectionUnavailable
+        ? 'connected_app_introspection_unavailable' : 'trusted_profile_unavailable' }; }
+      const keys = [...url.searchParams.keys()];
+      const vacancyId = url.searchParams.get('vacancy_id'); const negotiationId = url.searchParams.get('negotiation_id');
+      const valid = keys.length === 2 && new Set(keys).size === 2 && keys.every(key =>
+        ['vacancy_id', 'negotiation_id'].includes(key)) &&
+        /^[A-Za-z0-9_-]{1,128}$/.test(vacancyId ?? '') && /^[A-Za-z0-9_-]{1,128}$/.test(negotiationId ?? '');
+      if (status === 200 && (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes))) {
+        if (valid && req.method === 'GET') {
+          const start = new URL('/auth/connected/start', 'http://localhost');
+          start.searchParams.set('from', 'conversation'); start.searchParams.set('vacancy_id', vacancyId);
+          start.searchParams.set('negotiation_id', negotiationId);
+          res.writeHead(303, { Location: start.pathname + start.search, 'Cache-Control': 'no-store',
+            'Referrer-Policy': 'no-referrer' }); res.end(); return;
+        }
+        status = 401; body = { error: 'trusted_profile_context_required' };
+      } else if (status === 200 && !valid) {
+        status = 400; body = { error: 'invalid_response_conversation_request' };
+      } else if (status === 200 && !['GET', 'POST'].includes(req.method)) {
+        status = 405; body = { error: 'method_not_allowed' };
+      } else if (status === 200 && req.method === 'POST' &&
+          (!context.scopes.includes('recruiting.responses.read') ||
+            !context.scopes.includes('recruiting.responses.conversation.open'))) {
+        status = 403; body = { error: 'response_conversation_scope_required' };
+      } else if (status === 200) {
+        if (req.method === 'GET') { type = mime.html; body = renderLiveResponseConversationConfirmPage({ vacancyId, negotiationId }); }
+        else {
+          try {
+            const result = await liveResponseConversationRead(context, { vacancyId, negotiationId });
+            status = result.status; body = result.body;
+          } catch { status = 503; body = { error: 'response_conversation_unavailable' }; }
+        }
+      }
+    } else if ((path === '/api/v1/ui/hh-responses' ||
+        path === '/hh/responses' && connectedAppBff !== null) && liveResponseRead !== null) {
+      let context;
+      try { context = await trustedReadResolver(req, url, res); }
+      catch (error) { status = 503; body = { error: error instanceof ConnectedAppIntrospectionUnavailable
+        ? 'connected_app_introspection_unavailable' : 'trusted_profile_unavailable' }; }
+      if (status === 200 && (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes))) {
+        if (path === '/hh/responses' && connectedAppBff !== null && req.method === 'GET' &&
+            [...url.searchParams.keys()].every(key => ['vacancy_id', 'page'].includes(key)) &&
+            url.searchParams.getAll('vacancy_id').length <= 1 &&
+            url.searchParams.getAll('page').length <= 1 &&
+            (!url.searchParams.has('vacancy_id') || /^[A-Za-z0-9_-]{1,128}$/.test(url.searchParams.get('vacancy_id'))) &&
+            (!url.searchParams.has('page') || /^(?:0|[1-9][0-9]{0,2})$/.test(url.searchParams.get('page')))) {
+          const start = new URL('/auth/connected/start', 'http://localhost');
+          start.searchParams.set('from', 'responses');
+          if (url.searchParams.has('vacancy_id')) start.searchParams.set('vacancy_id', url.searchParams.get('vacancy_id'));
+          res.writeHead(303, { Location: start.pathname + start.search, 'Cache-Control': 'no-store',
+            'Referrer-Policy': 'no-referrer' }); res.end(); return;
+        }
+        status = 401; body = { error: 'trusted_profile_context_required' };
+      } else if (status === 200 && !context.scopes.includes('recruiting.responses.read')) {
+        if (path === '/hh/responses' && connectedAppBff !== null && req.method === 'GET' &&
+            [...url.searchParams.keys()].every(key => ['vacancy_id', 'page'].includes(key)) &&
+            url.searchParams.getAll('vacancy_id').length <= 1 &&
+            url.searchParams.getAll('page').length <= 1 &&
+            (!url.searchParams.has('vacancy_id') || /^[A-Za-z0-9_-]{1,128}$/.test(url.searchParams.get('vacancy_id'))) &&
+            (!url.searchParams.has('page') || /^(?:0|[1-9][0-9]{0,2})$/.test(url.searchParams.get('page')))) {
+          const start = new URL('/auth/connected/start', 'http://localhost');
+          start.searchParams.set('from', 'responses');
+          if (url.searchParams.has('vacancy_id')) start.searchParams.set('vacancy_id', url.searchParams.get('vacancy_id'));
+          res.writeHead(303, { Location: start.pathname + start.search, 'Cache-Control': 'no-store',
+            'Referrer-Policy': 'no-referrer' }); res.end(); return;
+        }
+        status = 403; body = { error: 'response_scope_required' };
+      } else if (status === 200) {
+        const keys = [...url.searchParams.keys()];
+        const pageRoute = path === '/hh/responses';
+        const rawPage = url.searchParams.get('page');
+        const vacancyId = url.searchParams.get(pageRoute ? 'vacancy_id' : 'vacancyId');
+        if (pageRoute && keys.length === 0) {
+          type = mime.html;
+          const ids = listRealVacancies(context).filter(id => /^[A-Za-z0-9_-]{1,128}$/.test(id));
+          body = `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="referrer" content="no-referrer"><title>Вакансии HH</title><main><h1>Выберите вакансию</h1><p><a href="/hh/proactive">Холодный поиск</a></p><ul>${ids.map(id => `<li><a href="/hh/responses?vacancy_id=${encodeURIComponent(id)}">${escapeResponseHtml(id)}</a></li>`).join('')}</ul></main></html>`;
+        } else if (keys.some(key => ![pageRoute ? 'vacancy_id' : 'vacancyId', 'page'].includes(key)) ||
+            new Set(keys).size !== keys.length ||
+            typeof vacancyId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(vacancyId) ||
+            rawPage !== null && !/^(?:0|[1-9][0-9]{0,2})$/.test(rawPage)) {
+          status = 400; body = { error: 'invalid_response_request' };
+        } else {
+          try {
+            const result = await liveResponseRead(context, { vacancyId, page: rawPage === null ? 0 : Number(rawPage) });
+            status = result.status; body = result.body;
+            if (status === 200 && pageRoute) { type = mime.html; body = renderLiveResponsePage(body); }
+          } catch { status = 503; body = { error: 'response_read_unavailable' }; }
+        }
+      }
     } else if (path === '/api/v1/vacancies') {
       if (url.search !== '') {
         status = 400;
@@ -222,17 +681,244 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
         body = { apiVersion: 'v1', items: vacancies };
       }
     } else if (isProactivePath) {
+      // Existing tabs still send the old signed JSON shape. Return a visible
+      // migration instruction after checking its identity and explicit vacancy;
+      // never execute a stale write under a freshly minted session cookie.
+      const legacyPostPaths = new Set(['/api/hh/proactive/ai-score', '/api/hh/proactive/search',
+        '/api/hh/proactive/prompt', '/api/hh/proactive/comment', '/api/hh/proactive/vacancy-state',
+        '/api/hh/proactive/set-status', '/api/hh/proactive/import-seen', '/api/hh/proactive/add-manual']);
+      if (resolveLegacyOpenTab && req.method === 'POST' && legacyPostPaths.has(path) && url.search === '') {
+        try {
+          const command = await readJsonBody(req);
+          const legacyContext = resolveLegacyOpenTab(req, command);
+          if (legacyContext) {
+            if (command.vacancy_id !== undefined &&
+                (!isRealProactiveVacancy(command.vacancy_id) ||
+                  !resolveRealVacancyOwnership(legacyContext, command.vacancy_id))) {
+              status = 404;
+              body = { error: 'vacancy_not_found' };
+            } else {
+              status = 409;
+              body = { error: 'Страница обновилась. Перезагрузите её и повторите действие.',
+                code: 'legacy_page_reload_required', reload_url: '/hh/proactive' };
+            }
+          }
+        } catch (error) {
+          status = error.message === 'body_too_large' ? 413 : error instanceof SyntaxError ? 400 : 503;
+          body = { error: status === 413 ? 'request_too_large' : status === 400 ? 'invalid_json' : 'legacy_page_unavailable' };
+        }
+      }
       let context;
-      try { context = await resolveTrustedProfileContext(req); }
-      catch { status = 503; body = { error: 'trusted_profile_unavailable' }; }
+      try { if (status === 200) context = await trustedReadResolver(req, url, res); }
+      catch (error) { status = 503; body = { error: error instanceof ConnectedAppIntrospectionUnavailable
+        ? 'connected_app_introspection_unavailable' : 'trusted_profile_unavailable' }; }
       if (status !== 200) {
         // A failing trusted resolver must not enter a profile-scoped handler.
       } else if (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes)) {
+        if (connectedAppBff !== null && path === '/hh/proactive' && req.method === 'GET' &&
+            [...url.searchParams.keys()].every(key => ['vacancy_id', 'list'].includes(key)) &&
+            url.searchParams.getAll('vacancy_id').length <= 1 &&
+            url.searchParams.getAll('list').length <= 1 &&
+            (!url.searchParams.has('vacancy_id') || isRealProactiveVacancy(url.searchParams.get('vacancy_id'))) &&
+            (!url.searchParams.has('list') || ['active', 'starred', 'archived'].includes(url.searchParams.get('list')))) {
+          const start = new URL('/auth/connected/start', 'http://localhost');
+          start.searchParams.set('from', 'proactive');
+          if (url.searchParams.has('vacancy_id')) start.searchParams.set('vacancy_id', url.searchParams.get('vacancy_id'));
+          res.writeHead(303, { Location: start.pathname + start.search, 'Cache-Control': 'no-store',
+            'Referrer-Policy': 'no-referrer' });
+          res.end();
+          return;
+        }
         status = 401;
         body = { error: 'trusted_profile_context_required' };
       } else if (!context.scopes.includes('recruiting.candidateSearch')) {
+        if (connectedAppBff !== null && path === '/hh/proactive' && req.method === 'GET' &&
+            [...url.searchParams.keys()].every(key => ['vacancy_id', 'list'].includes(key)) &&
+            url.searchParams.getAll('vacancy_id').length <= 1 &&
+            url.searchParams.getAll('list').length <= 1 &&
+            (!url.searchParams.has('vacancy_id') || isRealProactiveVacancy(url.searchParams.get('vacancy_id'))) &&
+            (!url.searchParams.has('list') || ['active', 'starred', 'archived'].includes(url.searchParams.get('list')))) {
+          const start = new URL('/auth/connected/start', 'http://localhost');
+          start.searchParams.set('from', 'proactive');
+          if (url.searchParams.has('vacancy_id')) start.searchParams.set('vacancy_id', url.searchParams.get('vacancy_id'));
+          res.writeHead(303, { Location: start.pathname + start.search, 'Cache-Control': 'no-store',
+            'Referrer-Policy': 'no-referrer' }); res.end(); return;
+        }
         status = 403;
         body = { error: 'search_scope_required' };
+      } else if (realProactiveFeed !== null) {
+        if (path === '/hh/proactive/app.js' && url.search === '' && (req.method === 'GET' || req.method === 'HEAD')) {
+          type = mime.js;
+          body = realProactiveScript;
+        } else if (path === '/api/hh/proactive/prompt' && realProactivePrompt !== null) {
+          let promptResult;
+          try {
+            if (req.method === 'GET' && [...url.searchParams.keys()].every(key => key === 'vacancy_id') &&
+                url.searchParams.getAll('vacancy_id').length === 1)
+              promptResult = await realProactivePrompt.read(context, url.searchParams.get('vacancy_id'));
+            else if (req.method === 'POST' && url.search === '')
+              promptResult = await realProactivePrompt.save(context, await readJsonBody(req));
+          } catch (error) {
+            promptResult = { status: error.message === 'body_too_large' ? 413 : error instanceof SyntaxError ? 400 : 503,
+              body: { error: error.message === 'body_too_large' ? 'request_too_large' :
+                error instanceof SyntaxError ? 'invalid_json' : 'prompt_unavailable' } };
+          }
+          status = promptResult?.status ?? 400;
+          body = promptResult?.body ?? { error: 'invalid_prompt_request' };
+        } else if (path === '/api/hh/proactive/import-seen' && realProactiveSeenImport !== null) {
+          if (req.method !== 'POST' || url.search !== '') {
+            status = 405;
+            body = { error: 'method_not_allowed' };
+            res.setHeader('Allow', 'POST');
+          } else {
+            try {
+              const result = realProactiveSeenImport(context, await readJsonBody(req));
+              status = result.status;
+              body = result.body;
+            } catch (error) {
+              status = error.message === 'body_too_large' ? 413 : error instanceof SyntaxError ? 400 : 503;
+              body = { error: status === 413 ? 'request_too_large' : status === 400 ? 'invalid_json' : 'seen_import_unavailable' };
+            }
+          }
+        } else if (path === '/api/hh/proactive/ai-score' && realProactiveAiScore !== null) {
+          if (req.method !== 'POST' || url.search !== '') {
+            status = 405;
+            body = { error: 'method_not_allowed' };
+            res.setHeader('Allow', 'POST');
+          } else {
+            try {
+              const result = await realProactiveAiScore(context, await readJsonBody(req));
+              status = result.status;
+              body = result.body;
+            } catch (error) {
+              status = error.message === 'body_too_large' ? 413 : error instanceof SyntaxError ? 400 : 503;
+              body = { error: status === 413 ? 'request_too_large' : status === 400 ? 'invalid_json' : 'assessment_unavailable' };
+            }
+          }
+        } else if (path === '/api/hh/proactive/add-manual' && realProactiveManualCandidate !== null) {
+          if (req.method !== 'POST' || url.search !== '') {
+            status = 405;
+            body = { error: 'method_not_allowed' };
+            res.setHeader('Allow', 'POST');
+          } else {
+            try {
+              const result = await realProactiveManualCandidate(context, await readJsonBody(req));
+              status = result.status;
+              body = result.body;
+            } catch (error) {
+              status = error.message === 'body_too_large' ? 413 : error instanceof SyntaxError ? 400 : 503;
+              body = { error: status === 413 ? 'request_too_large' : status === 400 ? 'invalid_json' : 'manual_candidate_unavailable' };
+            }
+          }
+        } else if (realProactiveHistoricalRead === null &&
+            (path === '/hh/proactive/history' || path === '/api/hh/proactive/history')) {
+          status = 404; body = { error: 'not_found' };
+        } else if (realProactiveHistoricalRead !== null &&
+            (path === '/hh/proactive/history' || path === '/api/hh/proactive/history')) {
+          if (req.method !== 'GET' && req.method !== 'HEAD') {
+            status = 405; body = { error: 'method_not_allowed' }; res.setHeader('Allow', 'GET, HEAD');
+          } else if (url.searchParams.getAll('vacancy_id').length !== 1 ||
+              [...url.searchParams.keys()].some(key => key !== 'vacancy_id') ||
+              !isRealProactiveVacancy(url.searchParams.get('vacancy_id'))) {
+            status = 400; body = { error: 'vacancy_id_required' };
+          } else {
+            const outcome = realProactiveHistoricalRead.read(context, url.searchParams.get('vacancy_id'));
+            if (outcome.kind === 'found') {
+              body = path === '/hh/proactive/history' ?
+                renderR03HistoricalPage({ vacancyId: outcome.value.vacancyId, result: outcome.value }) : outcome.value;
+              if (path === '/hh/proactive/history') {
+                type = mime.html;
+                res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'");
+                res.setHeader('Referrer-Policy', 'no-referrer');
+              }
+              res.setHeader('Cache-Control', 'no-store');
+            } else { status = outcome.kind === 'invalid' ? 400 : outcome.kind === 'denied' ? 403 : 404;
+              body = { error: status === 400 ? 'vacancy_id_required' : status === 403 ? 'search_scope_required' : 'vacancy_not_found' }; }
+          }
+        } else if (path !== '/hh/proactive' && path !== '/api/hh/proactive/candidates' && realProactiveActions !== null) {
+          let actionResult = null;
+          const queryVacancy = url.searchParams.get('vacancy_id');
+          const validQuery = [...url.searchParams.keys()].every(key => key === 'vacancy_id') &&
+            url.searchParams.getAll('vacancy_id').length === 1 && isRealProactiveVacancy(queryVacancy);
+          try {
+            if (req.method === 'GET' && path === '/api/hh/proactive/schedule' && validQuery)
+              actionResult = realProactiveActions.scheduleStatus(context, queryVacancy);
+            else if (req.method === 'GET' && path === '/api/hh/proactive/occurrences' && validQuery)
+              actionResult = realProactiveActions.occurrences(context, queryVacancy);
+            else if (req.method === 'GET' && /^\/api\/hh\/proactive\/manual-runs\/[A-Za-z0-9_-]{1,128}$/.test(path) && url.search === '')
+              actionResult = realProactiveActions.manualGet(context, path.split('/').at(-1));
+            else if (req.method === 'POST' && ['/api/hh/proactive/vacancy-state', '/api/hh/proactive/search',
+              '/api/hh/proactive/set-status', '/api/hh/proactive/comment'].includes(path)) {
+              const command = await readJsonBody(req);
+              if (path === '/api/hh/proactive/vacancy-state') actionResult = await realProactiveActions.updateSchedule(context, command);
+              else if (path === '/api/hh/proactive/search') actionResult = await realProactiveActions.manualStart(context, command, req.headers['idempotency-key']);
+              else if (command && typeof command === 'object' && !Array.isArray(command) &&
+                  isRealProactiveVacancy(command.vacancy_id) && isRealProactiveVacancy(command.candidate_id)) {
+                const allowed = path.endsWith('/comment')
+                  ? ['vacancy_id', 'candidate_id', 'expected_revision', 'comment', 'exclude_from_search']
+                  : ['vacancy_id', 'candidate_id', 'expected_revision', 'status'];
+                if (Object.keys(command).every(key => allowed.includes(key))) actionResult = realProactiveActions.updateCandidate(
+                  context, command.vacancy_id, command.candidate_id, {
+                    expected_revision: command.expected_revision,
+                    ...(path.endsWith('/comment') ? { comment: command.comment, exclude_from_search: command.exclude_from_search } : { status: command.status })
+                  });
+              }
+              actionResult ??= { status: 400, body: { error: 'invalid_candidate_action' } };
+            }
+          } catch (error) {
+            actionResult = { status: error.message === 'body_too_large' ? 413 : error instanceof SyntaxError ? 400 : 503,
+              body: { error: error.message === 'body_too_large' ? 'request_too_large' : error instanceof SyntaxError ? 'invalid_json' : 'real_action_unavailable' } };
+          }
+          status = actionResult?.status ?? 501;
+          body = actionResult?.body ?? { error: 'real_proactive_route_unavailable' };
+        } else if ((path !== '/hh/proactive' && path !== '/api/hh/proactive/candidates') || (req.method !== 'GET' && req.method !== 'HEAD')) {
+          status = 501;
+          body = { error: 'real_proactive_route_unavailable' };
+        } else if (connectedAppBff !== null && (url.searchParams.has('username') || url.searchParams.has('token')) ||
+            [...url.searchParams.keys()].some(key => !(['vacancy_id', 'username', 'token', 'list'].includes(key) &&
+            (path === '/hh/proactive' || key === 'vacancy_id'))) ||
+            url.searchParams.getAll('vacancy_id').length > 1 ||
+            url.searchParams.getAll('list').length > 1 ||
+            url.searchParams.has('list') && !['active', 'starred', 'archived'].includes(url.searchParams.get('list')) ||
+            url.searchParams.has('vacancy_id') && !isRealProactiveVacancy(url.searchParams.get('vacancy_id')) ||
+            !url.searchParams.has('vacancy_id') && path !== '/hh/proactive') {
+          status = 400;
+          body = { error: 'vacancy_id_required' };
+        } else {
+          const realVacancyId = url.searchParams.get('vacancy_id') ?? resolveRealDefaultVacancy(context);
+          if (!isRealProactiveVacancy(realVacancyId)) {
+            if (connectedAppBff !== null && path === '/hh/proactive' && !url.searchParams.has('vacancy_id')) {
+              try {
+                const owned = listRealVacancies(context);
+                if (!Array.isArray(owned) || owned.length === 0) {
+                  status = 404; body = { error: 'vacancy_not_found' };
+                } else {
+                  type = mime.html;
+                  body = renderPrivateVacancyPicker(owned);
+                  res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+                  res.setHeader('Referrer-Policy', 'no-referrer');
+                }
+              } catch { status = 503; body = { error: 'vacancy_picker_unavailable' }; }
+            } else { status = 400; body = { error: 'vacancy_id_required' }; }
+          }
+          else {
+          const result = await realProactiveRead(context, realVacancyId);
+          if (result.kind === 'not_found') { status = 404; body = { error: 'vacancy_not_found' }; }
+          else if (result.kind !== 'found') { status = 503; body = { error: 'candidate_feed_unavailable' }; }
+          else {
+            if (path === '/hh/proactive') {
+              type = mime.html;
+              body = renderRealProactivePage({ profileId: context.profileId, vacancyId: realVacancyId, feed: result.feed,
+                listView: url.searchParams.get('list') ?? 'active',
+                historicalAvailable: realProactiveHistoricalRead?.has(context, realVacancyId) ?? false,
+                responsesAvailable: connectedAppBff !== null && liveResponseRead !== null,
+                reportsAvailable: connectedAppBff !== null && acceptedReportDrafts !== null });
+              res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'");
+              res.setHeader('Referrer-Policy', 'no-referrer');
+            } else body = result.value;
+          }
+          }
+        }
       } else if (path === '/hh/proactive/app.js' && url.search === '' && (req.method === 'GET' || req.method === 'HEAD')) {
         type = mime.js;
         body = proactiveScript;
@@ -348,6 +1034,300 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
           body = { error: 'method_not_allowed' };
           res.setHeader('Allow', path === '/api/hh/proactive/vacancy-state' || path === '/api/hh/proactive/search' ? 'POST' : 'GET, HEAD');
         }
+      }
+    } else if (acceptedReportInstructionsPath) {
+      let context;
+      try { context = await trustedReadResolver(req, url, res); }
+      catch (error) { status = 503; body = { error: error instanceof ConnectedAppIntrospectionUnavailable
+        ? 'connected_app_introspection_unavailable' : 'trusted_profile_unavailable' }; }
+      if (status === 200 && (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes))) {
+        status = 401; body = { error: 'trusted_profile_context_required' };
+      } else if (status === 200 && !context.scopes.includes(req.method === 'GET'
+        ? 'recruiting.reports.read' : 'recruiting.reports.edit')) {
+        status = 403; body = { error: 'report_scope_required' };
+      } else if (status === 200 && req.method === 'GET') {
+        const keys = [...url.searchParams.keys()];
+        const candidateId = url.searchParams.get('candidateId');
+        const vacancyId = url.searchParams.get('vacancyId');
+        const sourceKind = url.searchParams.get('sourceKind') ?? 'accepted_cold_search';
+        const reportRef = url.searchParams.get('reportRef') ?? undefined;
+        const reportRevision = url.searchParams.get('reportRevision') ?? undefined;
+        const allowedKeySets = ['candidateId,vacancyId', 'candidateId,sourceKind,vacancyId',
+          'candidateId,reportRef,reportRevision,vacancyId',
+          'candidateId,reportRef,reportRevision,sourceKind,vacancyId'];
+        if (!allowedKeySets.includes([...new Set(keys)].sort().join(',')) || keys.length !== new Set(keys).size ||
+            keys.some(key => !['candidateId', 'vacancyId', 'sourceKind', 'reportRef', 'reportRevision'].includes(key)) ||
+            !isRealProactiveVacancy(candidateId) || !isRealProactiveVacancy(vacancyId) ||
+            !['accepted_cold_search', 'accepted_hh_response'].includes(sourceKind) ||
+            (reportRef === undefined) !== (reportRevision === undefined) ||
+            reportRef !== undefined && !/^report_[a-f0-9]{32}$/.test(reportRef) ||
+            reportRevision !== undefined && !/^report-r[1-9][0-9]*$/.test(reportRevision)) {
+          status = 400; body = { error: 'invalid_report_instructions_request' };
+        } else {
+          const result = await acceptedReportInstructions.getApplicable(context,
+            { candidateId, vacancyId, sourceKind, ...(reportRef ? { reportRef, reportRevision } : {}) });
+          if (result.kind === 'found') body = result.body;
+          else if (result.kind === 'not_found' || result.kind === 'source_not_found') { status = 404; body = { error: 'not_found' }; }
+          else if (result.kind === 'stale_source') { status = 409; body = { error: 'stale_report_source' }; }
+          else if (result.kind === 'stale_report') { status = 409; body = { error: 'stale_report_revision' }; }
+          else if (result.kind === 'invalid_request') { status = 400; body = { error: 'invalid_report_instructions_request' }; }
+          else { status = 503; body = { error: 'report_instructions_unavailable' }; }
+        }
+      } else if (status === 200 && req.method === 'PUT') {
+        if (url.search !== '') { status = 400; body = { error: 'unexpected_query_parameters' }; }
+        else {
+          let request;
+          try { request = await readJsonBody(req); } catch (error) {
+            status = error.message === 'body_too_large' ? 413 : 400;
+            body = { error: error.message === 'body_too_large' ? 'request_too_large' : 'invalid_json' };
+          }
+          const allowedShapes = ['candidateId,expectedRevision,instructions,scopeType,sourceKind,vacancyId',
+            'candidateId,expectedRevision,instructions,reportRef,reportRevision,scopeType,sourceKind,vacancyId'];
+          if (status === 200 && (!isPlainObject(request) || !allowedShapes.includes(Object.keys(request).sort().join(',')) ||
+              !isRealProactiveVacancy(request.candidateId) || !isRealProactiveVacancy(request.vacancyId) ||
+              !['accepted_cold_search', 'accepted_hh_response'].includes(request.sourceKind) ||
+              !['profile', 'vacancy', 'candidate', 'report_version'].includes(request.scopeType) ||
+              request.reportRef !== undefined && !/^report_[a-f0-9]{32}$/.test(request.reportRef) ||
+              (request.reportRef === undefined) !== (request.reportRevision === undefined) ||
+              request.reportRevision !== undefined && !/^report-r[1-9][0-9]*$/.test(request.reportRevision) ||
+              (request.scopeType === 'report_version') !== (request.reportRef !== undefined) ||
+              !Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 0)) {
+            status = 400; body = { error: 'invalid_report_instructions_request' };
+          } else if (status === 200) {
+            const result = await acceptedReportInstructions.update(context, request, request.scopeType,
+              request.expectedRevision, request.instructions);
+            if (result.kind === 'updated' || result.kind === 'existing') body = result.scope;
+            else if (result.kind === 'stale_instructions') { status = 409; body = { error: 'stale_report_instructions', revision: result.revision }; }
+            else if (result.kind === 'not_found' || result.kind === 'source_not_found') { status = 404; body = { error: 'not_found' }; }
+            else if (result.kind === 'stale_source') { status = 409; body = { error: 'stale_report_source' }; }
+            else if (result.kind === 'stale_report') { status = 409; body = { error: 'stale_report_revision' }; }
+            else if (result.kind === 'not_editable') { status = 409; body = { error: 'report_version_instructions_locked' }; }
+            else if (result.kind === 'invalid_request') { status = 400; body = { error: 'invalid_report_instructions_request' }; }
+            else { status = 503; body = { error: 'report_instructions_unavailable' }; }
+          }
+        }
+      }
+    } else if (acceptedReportPolicyPath) {
+      let context;
+      try { context = await trustedReadResolver(req, url, res); }
+      catch (error) { status = 503; body = { error: error instanceof ConnectedAppIntrospectionUnavailable
+        ? 'connected_app_introspection_unavailable' : 'trusted_profile_unavailable' }; }
+      if (status === 200 && (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes))) {
+        status = 401; body = { error: 'trusted_profile_context_required' };
+      } else if (status === 200 && !context.scopes.includes(req.method === 'GET'
+        ? 'recruiting.reports.read' : 'recruiting.reports.edit')) {
+        status = 403; body = { error: 'report_scope_required' };
+      } else if (status === 200 && req.method === 'GET') {
+        const keys = [...url.searchParams.keys()];
+        const candidateId = url.searchParams.get('candidateId');
+        const vacancyId = url.searchParams.get('vacancyId');
+        const sourceKind = url.searchParams.get('sourceKind') ?? 'accepted_cold_search';
+        if (!['candidateId,vacancyId', 'candidateId,sourceKind,vacancyId'].includes([...new Set(keys)].sort().join(',')) ||
+            keys.some(key => !['candidateId', 'vacancyId', 'sourceKind'].includes(key)) ||
+            !isRealProactiveVacancy(candidateId) || !isRealProactiveVacancy(vacancyId) ||
+            !['accepted_cold_search', 'accepted_hh_response'].includes(sourceKind)) {
+          status = 400; body = { error: 'invalid_report_policy_request' };
+        } else {
+          const result = await acceptedReportPolicies.get(context, { candidateId, vacancyId, sourceKind });
+          if (result.kind === 'found') body = result.policy;
+          else if (result.kind === 'policy_unavailable') { status = 503; body = { error: 'report_policy_unavailable' }; }
+          else if (result.kind === 'source_not_found') { status = 404; body = { error: 'not_found' }; }
+          else if (result.kind === 'stale_source') { status = 409; body = { error: 'stale_report_source' }; }
+          else if (result.kind === 'invalid_request') { status = 400; body = { error: 'invalid_report_policy_request' }; }
+          else { status = 503; body = { error: 'report_source_unavailable' }; }
+        }
+      } else if (status === 200 && req.method === 'PUT') {
+        if (url.search !== '') { status = 400; body = { error: 'unexpected_query_parameters' }; }
+        else {
+          let request;
+          try { request = await readJsonBody(req); } catch (error) {
+            status = error.message === 'body_too_large' ? 413 : 400;
+            body = { error: error.message === 'body_too_large' ? 'request_too_large' : 'invalid_json' };
+          }
+          if (status === 200 && (!isPlainObject(request) ||
+              Object.keys(request).sort().join(',') !== 'candidateId,expectedPolicyRevision,policy,sourceKind,vacancyId' ||
+              !isRealProactiveVacancy(request.candidateId) || !isRealProactiveVacancy(request.vacancyId) ||
+              !['accepted_cold_search', 'accepted_hh_response'].includes(request.sourceKind) ||
+              !Number.isSafeInteger(request.expectedPolicyRevision) || request.expectedPolicyRevision < 0 ||
+              !isPlainObject(request.policy) || Object.keys(request.policy).join(',') !== 'forbiddenPhrases' ||
+              !Array.isArray(request.policy.forbiddenPhrases) || request.policy.forbiddenPhrases.length > 50 ||
+              !request.policy.forbiddenPhrases.every(value => typeof value === 'string' && value.trim() && value.length <= 200))) {
+            status = 400; body = { error: 'invalid_report_policy' };
+          } else if (status === 200) {
+            const result = await acceptedReportPolicies.update(context, request, request.expectedPolicyRevision, request.policy);
+            if (result.kind === 'updated' || result.kind === 'existing') body = result.policy;
+            else if (result.kind === 'policy_unavailable') { status = 503; body = { error: 'report_policy_unavailable' }; }
+            else if (result.kind === 'stale_policy') { status = 409; body = { error: 'stale_report_policy', policyRevision: `policy-r${result.policyRevision}` }; }
+            else if (result.kind === 'source_not_found') { status = 404; body = { error: 'not_found' }; }
+            else if (result.kind === 'stale_source') { status = 409; body = { error: 'stale_report_source' }; }
+            else if (result.kind === 'invalid_request') { status = 400; body = { error: 'invalid_report_policy' }; }
+            else { status = 503; body = { error: 'report_source_unavailable' }; }
+          }
+        }
+      }
+    } else if (acceptedReportPreviousPath) {
+      let context;
+      try { context = await trustedReadResolver(req, url, res); }
+      catch (error) { status = 503; body = { error: error instanceof ConnectedAppIntrospectionUnavailable
+        ? 'connected_app_introspection_unavailable' : 'trusted_profile_unavailable' }; }
+      if (status === 200 && (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes))) {
+        status = 401; body = { error: 'trusted_profile_context_required' };
+      }
+      else if (status === 200 && !context.scopes.includes('recruiting.reports.read')) { status = 403; body = { error: 'report_scope_required' }; }
+      else if (status === 200 && ([...url.searchParams.keys()].some(key => !['candidateId', 'vacancyId', 'excludeReportRef'].includes(key)) ||
+          url.searchParams.getAll('candidateId').length !== 1 || url.searchParams.getAll('vacancyId').length !== 1 ||
+          url.searchParams.getAll('excludeReportRef').length > 1)) {
+        status = 400; body = { error: 'invalid_previous_report_query' };
+      } else if (status === 200) {
+        const result = await acceptedReportDrafts.previousApproved(context,
+          url.searchParams.get('candidateId'), url.searchParams.get('vacancyId'), url.searchParams.get('excludeReportRef'));
+        if (result.kind === 'found') body = { domainApiVersion: 'v1', report: result.report };
+        else if (result.kind === 'invalid_request') { status = 400; body = { error: 'invalid_previous_report_query' }; }
+        else { status = 503; body = { error: 'report_store_unavailable' }; }
+      }
+    } else if (isAcceptedReportDraftPath) {
+      let context;
+      try { context = await trustedReadResolver(req, url, res); }
+      catch (error) { status = 503; body = { error: error instanceof ConnectedAppIntrospectionUnavailable
+        ? 'connected_app_introspection_unavailable' : 'trusted_profile_unavailable' }; }
+      if (status === 200 && (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes))) {
+        status = 401; body = { error: 'trusted_profile_context_required' };
+      } else if (status === 200) {
+        const rootRequest = path === acceptedReportDraftRoot && req.method === 'POST';
+        const match = path.match(/^\/api\/v1\/ui\/accepted-report-drafts\/(report_[a-f0-9]{32})(?:\/(preview|review|edit|regenerate|export))?$/);
+        const ref = match?.[1]; const action = match?.[2] ?? '';
+        const requiredScope = rootRequest ? 'recruiting.reports.create' : action === 'review'
+          ? 'recruiting.reports.review' : ['edit', 'regenerate'].includes(action) ? 'recruiting.reports.edit' : 'recruiting.reports.read';
+        if (!context.scopes.includes(requiredScope)) { status = 403; body = { error: 'report_scope_required' }; }
+        else if (url.search !== '') { status = 400; body = { error: 'unexpected_query_parameters' }; }
+        else if (rootRequest) {
+          let request;
+          try { request = await readJsonBody(req); } catch (error) {
+            status = error.message === 'body_too_large' ? 413 : 400;
+            body = { error: error.message === 'body_too_large' ? 'request_too_large' : 'invalid_json' };
+          }
+          const key = req.headers['idempotency-key'];
+          if (status === 200 && (!validAcceptedReportDraftStart(request) || typeof key !== 'string' || !/^[A-Za-z0-9._:-]{8,128}$/.test(key))) {
+            status = 400; body = { error: 'invalid_report_draft_start' };
+          } else if (status === 200) {
+            const result = await acceptedReportDrafts.create(context, key, request);
+            if (result.kind === 'created' || result.kind === 'existing') {
+              status = result.kind === 'created' ? 201 : 200; body = result.report;
+            } else if (result.kind === 'stale_source') { status = 409; body = { error: 'stale_report_source' }; }
+            else if (result.kind === 'stale_policy') { status = 409; body = { error: 'stale_report_policy', policyRevision: `policy-r${result.policyRevision}` }; }
+            else if (result.kind === 'policy_violation') { status = 422; body = { error: 'report_policy_violation', policyRevision: `policy-r${result.policyRevision}`, violations: result.violations }; }
+            else if (result.kind === 'source_not_found') { status = 404; body = { error: 'not_found' }; }
+            else if (result.kind === 'idempotency_conflict') { status = 409; body = { error: 'idempotency_key_reused' }; }
+            else { status = 503; body = { error: 'report_source_unavailable' }; }
+          }
+        } else if (ref && !action && req.method === 'GET') {
+          const result = await acceptedReportDrafts.get(context, ref);
+          if (result.kind === 'found') body = result.report;
+          else if (result.kind === 'stale_source') { status = 409; body = { error: 'stale_report_source' }; }
+          else if (result.kind === 'stale_policy') { status = 409; body = { error: 'stale_report_policy', policyRevision: `policy-r${result.policyRevision}` }; }
+          else if (result.kind === 'policy_violation') { status = 422; body = { error: 'report_policy_violation', policyRevision: `policy-r${result.policyRevision}`, violations: result.violations }; }
+          else if (result.kind === 'source_not_found') { status = 404; body = { error: 'not_found' }; }
+          else if (result.kind === 'not_found') { status = 404; body = { error: 'not_found' }; }
+          else { status = 503; body = { error: 'report_source_unavailable' }; }
+        } else if (ref && action === 'export' && req.method === 'POST') {
+          let request;
+          try { request = await readJsonBody(req); } catch (error) {
+            status = error.message === 'body_too_large' ? 413 : 400; body = { error: 'invalid_report_export' };
+          }
+          if (status === 200 && !validAcceptedReportExport(request)) {
+            status = 400; body = { error: 'invalid_report_export' };
+          } else if (status === 200) {
+            const result = await acceptedReportDrafts.exportApproved(context, ref, request.expectedReportRevision);
+            if (result.kind === 'exported') {
+              type = 'text/html; charset=utf-8'; body = result.html;
+              extraResponseHeaders = {
+                'Cache-Control': 'private, no-store',
+                'Content-Disposition': `attachment; filename="candidate-report-${ref}.html"`,
+                'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+                'Content-Length': String(Buffer.byteLength(result.html)),
+                'Cross-Origin-Resource-Policy': 'same-origin',
+              };
+            } else if (result.kind === 'stale_report') { status = 409; body = { error: 'stale_report_revision' }; }
+            else if (result.kind === 'not_approved') { status = 409; body = { error: 'report_approval_required' }; }
+            else if (result.kind === 'stale_source') { status = 409; body = { error: 'stale_report_source' }; }
+            else if (result.kind === 'stale_policy') { status = 409; body = { error: 'stale_report_policy' }; }
+            else if (result.kind === 'source_not_found' || result.kind === 'not_found') { status = 404; body = { error: 'not_found' }; }
+            else if (result.kind === 'invalid_request') { status = 400; body = { error: 'invalid_report_export' }; }
+            else { status = 503; body = { error: 'report_source_unavailable' }; }
+          }
+        } else if (ref && action === 'preview' && req.method === 'GET') {
+          const result = await acceptedReportDrafts.preview(context, ref);
+          if (result.kind === 'preview') body = result.body;
+          else if (result.kind === 'stale_source') { status = 409; body = { error: 'stale_report_source' }; }
+          else if (result.kind === 'stale_policy') { status = 409; body = { error: 'stale_report_policy', policyRevision: `policy-r${result.policyRevision}` }; }
+          else if (result.kind === 'policy_violation') { status = 422; body = { error: 'report_policy_violation', policyRevision: `policy-r${result.policyRevision}`, violations: result.violations }; }
+          else if (result.kind === 'source_not_found') { status = 404; body = { error: 'not_found' }; }
+          else if (result.kind === 'not_found') { status = 404; body = { error: 'not_found' }; }
+          else { status = 503; body = { error: 'report_source_unavailable' }; }
+        } else if (ref && action === 'review' && req.method === 'POST') {
+          let request;
+          try { request = await readJsonBody(req); } catch (error) {
+            status = error.message === 'body_too_large' ? 413 : 400; body = { error: 'invalid_json' };
+          }
+          if (status === 200 && (!isPlainObject(request) || Object.keys(request).sort().join(',') !== 'decision,expectedReportRevision' ||
+              !/^report-r[1-9][0-9]*$/.test(request.expectedReportRevision ?? '') ||
+              !['approved', 'changes_requested'].includes(request.decision))) {
+            status = 400; body = { error: 'invalid_report_review' };
+          } else if (status === 200) {
+            const result = await acceptedReportDrafts.review(context, ref, request.expectedReportRevision, request.decision);
+            if (result.kind === 'reviewed') body = result.report;
+            else if (result.kind === 'stale_report') { status = 409; body = { error: 'stale_report_revision', report: result.report }; }
+            else if (result.kind === 'stale_source') { status = 409; body = { error: 'stale_report_source' }; }
+            else if (result.kind === 'stale_policy') { status = 409; body = { error: 'stale_report_policy', policyRevision: `policy-r${result.policyRevision}` }; }
+            else if (result.kind === 'policy_violation') { status = 422; body = { error: 'report_policy_violation', policyRevision: `policy-r${result.policyRevision}`, violations: result.violations }; }
+            else if (result.kind === 'source_not_found') { status = 404; body = { error: 'not_found' }; }
+            else if (result.kind === 'not_found') { status = 404; body = { error: 'not_found' }; }
+            else { status = 503; body = { error: 'report_source_unavailable' }; }
+          }
+        } else if (ref && action === 'edit' && req.method === 'PATCH') {
+          let request;
+          try { request = await readJsonBody(req); } catch (error) {
+            status = error.message === 'body_too_large' ? 413 : 400; body = { error: 'invalid_json' };
+          }
+          if (status === 200 && (!isPlainObject(request) || Object.keys(request).sort().join(',') !== 'clientFields,expectedReportRevision' ||
+              !/^report-r[1-9][0-9]*$/.test(request.expectedReportRevision ?? '') || !isPlainObject(request.clientFields))) {
+            status = 400; body = { error: 'invalid_report_edit' };
+          } else if (status === 200) {
+            const result = await acceptedReportDrafts.edit(context, ref, request.expectedReportRevision, request.clientFields);
+            if (result.kind === 'edited') body = result.report;
+            else if (result.kind === 'stale_report') { status = 409; body = { error: 'stale_report_revision', report: result.report }; }
+            else if (result.kind === 'not_editable') { status = 409; body = { error: 'report_not_editable' }; }
+            else if (result.kind === 'stale_source') { status = 409; body = { error: 'stale_report_source' }; }
+            else if (result.kind === 'stale_policy') { status = 409; body = { error: 'stale_report_policy', policyRevision: `policy-r${result.policyRevision}` }; }
+            else if (result.kind === 'policy_violation') { status = 422; body = { error: 'report_policy_violation', policyRevision: `policy-r${result.policyRevision}`, violations: result.violations }; }
+            else if (result.kind === 'source_not_found' || result.kind === 'not_found') { status = 404; body = { error: 'not_found' }; }
+            else if (result.kind === 'invalid_request') { status = 400; body = { error: 'invalid_report_edit' }; }
+            else { status = 503; body = { error: 'report_source_unavailable' }; }
+          }
+        } else if (ref && action === 'regenerate' && req.method === 'POST') {
+          let request;
+          try { request = await readJsonBody(req); } catch (error) {
+            status = error.message === 'body_too_large' ? 413 : 400; body = { error: 'invalid_json' };
+          }
+          if (status === 200 && !validAcceptedReportRegenerate(request)) {
+            status = 400; body = { error: 'invalid_report_regeneration' };
+          } else if (status === 200) {
+            const result = await acceptedReportDrafts.regenerate(context, ref, request.expectedReportRevision, {
+              replaceRecruiterEditedFields: request.replaceRecruiterEditedFields });
+            if (result.kind === 'regenerated') body = result.report;
+            else if (result.kind === 'stale_report') { status = 409; body = { error: 'stale_report_revision', report: result.report }; }
+            else if (result.kind === 'stale_source') { status = 409; body = { error: 'stale_report_source' }; }
+            else if (result.kind === 'stale_policy') { status = 409; body = { error: 'stale_report_policy', policyRevision: `policy-r${result.policyRevision}` }; }
+            else if (result.kind === 'stale_instructions') { status = 409; body = { error: 'stale_report_instructions' }; }
+            else if (result.kind === 'policy_violation') { status = 422; body = { error: 'report_policy_violation', policyRevision: `policy-r${result.policyRevision}`, violations: result.violations }; }
+            else if (result.kind === 'generation_invalid') { status = 502; body = { error: 'report_generation_invalid' }; }
+            else if (result.kind === 'not_editable') { status = 409; body = { error: 'report_not_editable' }; }
+            else if (result.kind === 'no_fields_to_regenerate') { status = 409; body = { error: 'report_has_no_fields_to_regenerate' }; }
+            else if (result.kind === 'source_not_found' || result.kind === 'not_found') { status = 404; body = { error: 'not_found' }; }
+            else if (result.kind === 'invalid_request') { status = 400; body = { error: 'invalid_report_regeneration' }; }
+            else { status = 503; body = { error: result.kind === 'generation_unavailable' ? 'report_generator_unavailable' : 'report_source_unavailable' }; }
+          }
+        } else { status = 404; body = { error: 'not_found' }; }
       }
     } else if (isReportDraftPath) {
       const context = await resolveTrustedProfileContext(req);
@@ -736,7 +1716,10 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
       }
     }
 
-    res.writeHead(status, { 'Content-Type': type, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+    const responseHeaders = { 'Content-Type': type, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', ...extraResponseHeaders };
+    if (status === 200 && path === '/hh/candidate-report') responseHeaders['Content-Security-Policy'] =
+      "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+    res.writeHead(status, responseHeaders);
     if (req.method === 'HEAD') return res.end();
     res.end(typeof body === 'string' ? body : JSON.stringify(body));
   });

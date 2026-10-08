@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-real-hh-manual-run.schema.json",
+  "title": "Offline durable real-HH manual run status",
+  "type": "object", "additionalProperties": false,
+  "required": ["domainApiVersion", "runId", "vacancyId", "resultJobId", "status", "search", "atsRefresh", "automaticRetryAllowed", "startedAt", "updatedAt"],
+  "properties": {
+    "domainApiVersion": { "const": "v1" },
+    "runId": { "$ref": "#/$defs/id" }, "vacancyId": { "$ref": "#/$defs/id" },
+    "resultJobId": { "$ref": "#/$defs/id" },
+    "status": { "enum": ["running", "completed", "rejected", "outcome_unknown"] },
+    "search": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "phase", "pagesCompleted", "totalPages", "resultCount", "sourceRevision"],
+      "properties": {
+        "status": { "enum": ["running", "completed", "rejected", "outcome_unknown"] },
+        "phase": { "enum": ["search", "completed", "pre_dispatch", "outcome_unknown"] },
+        "pagesCompleted": { "type": "integer", "minimum": 0 },
+        "totalPages": { "type": "integer", "minimum": 1, "maximum": 15 },
+        "resultCount": { "type": "integer", "minimum": 0 },
+        "sourceRevision": { "type": ["string", "null"] },
+        "error": { "type": "object", "additionalProperties": false, "required": ["code"],
+          "properties": { "code": { "enum": ["search_plan_unavailable", "search_outcome_unknown"] } } }
+      }
+    },
+    "atsRefresh": { "type": "object", "additionalProperties": false,
+      "required": ["status", "completed", "total"],
+      "properties": { "status": { "enum": ["not_started", "pending"] },
+        "completed": { "const": 0 }, "total": { "type": ["integer", "null"], "minimum": 0 } } },
+    "automaticRetryAllowed": { "const": false },
+    "startedAt": { "type": "string" }, "updatedAt": { "type": "string" },
+    "finishedAt": { "type": "string" }
+  },
+  "$defs": { "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" } }
+}
