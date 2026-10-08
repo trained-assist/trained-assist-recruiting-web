@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHmac, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { chmodSync, lstatSync, realpathSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import Database from 'better-sqlite3';
@@ -54,8 +54,26 @@ export class SqliteAcceptedReportDraftStore {
       sealed_record TEXT NOT NULL,
       UNIQUE(owner_hash, report_ref, revision)
     )`);
+    this.db.exec(`CREATE TABLE IF NOT EXISTS accepted_report_export_audit (
+      event_id TEXT PRIMARY KEY,
+      owner_hash TEXT NOT NULL,
+      report_ref TEXT NOT NULL,
+      report_revision INTEGER NOT NULL CHECK(report_revision > 0),
+      source_revision TEXT NOT NULL,
+      policy_revision INTEGER NOT NULL CHECK(policy_revision >= 0),
+      outcome TEXT NOT NULL CHECK(outcome = 'served'),
+      occurred_at TEXT NOT NULL
+    )`);
     this.listApproved = this.db.prepare(`SELECT * FROM accepted_report_approved_version
       WHERE owner_hash=? AND scope_hash=? ORDER BY approved_at DESC, revision DESC LIMIT ?`);
+    this.findApprovedVersion = this.db.prepare(`SELECT * FROM accepted_report_approved_version
+      WHERE version_key=? AND owner_hash=?`);
+    this.insertExportAudit = this.db.prepare(`INSERT INTO accepted_report_export_audit
+      (event_id,owner_hash,report_ref,report_revision,source_revision,policy_revision,outcome,occurred_at)
+      VALUES (?,?,?,?,?,?,?,?)`);
+    this.listExportAuditRows = this.db.prepare(`SELECT report_ref,report_revision,source_revision,
+      policy_revision,outcome,occurred_at FROM accepted_report_export_audit
+      WHERE owner_hash=? AND report_ref=? ORDER BY occurred_at,event_id`);
     this.findByKey = this.db.prepare('SELECT * FROM accepted_report_draft WHERE owner_hash=? AND idempotency_hash=?');
     this.findByRef = this.db.prepare('SELECT * FROM accepted_report_draft WHERE report_ref=? AND owner_hash=?');
     this.insert = this.db.prepare(`INSERT INTO accepted_report_draft
@@ -95,6 +113,14 @@ export class SqliteAcceptedReportDraftStore {
     const ownerHash = this.ownerHash(profileId);
     const rows = this.listApproved.all(ownerHash, this.reportScopeHash(profileId, candidateId, vacancyId), limit);
     return rows.map(row => this.open(row));
+  }
+
+  listExportAudit(profileId, reportRef) {
+    return this.listExportAuditRows.all(this.ownerHash(profileId), reportRef).map(row => ({
+      reportRef: row.report_ref, reportRevision: row.report_revision,
+      sourceRevision: row.source_revision, policyRevision: row.policy_revision,
+      outcome: row.outcome, occurredAt: row.occurred_at,
+    }));
   }
 
   getReportInstructions(profileId, scopeType, scopeId) {
@@ -230,6 +256,34 @@ export class SqliteAcceptedReportDraftStore {
             reportRef, next.revision, next.updatedAt, this.seal(reportRef, ownerHash, next));
       }
       return { kind: 'updated', record: structuredClone(next) };
+    }).immediate();
+  }
+
+  finalizeApprovedExport({ profileId, reportRef, expectedRevision, occurredAt }) {
+    const ownerHash = this.ownerHash(profileId);
+    return this.db.transaction(() => {
+      const row = this.findByRef.get(reportRef, ownerHash);
+      if (!row) return { kind: 'not_found' };
+      const current = this.open(row);
+      if (current.revision !== expectedRevision)
+        return { kind: 'stale_report', record: current };
+      if (current.status !== 'draft' || current.reviewState !== 'approved')
+        return { kind: 'not_approved', record: current };
+      const policyRow = this.findPolicy.get(this.policyKey(profileId, current.candidateId,
+        current.vacancyId), ownerHash);
+      if ((policyRow?.revision ?? 0) !== current.policyRevision)
+        return { kind: 'stale_policy', policyRevision: policyRow?.revision ?? 0 };
+      const approvedRow = this.findApprovedVersion.get(`${reportRef}:r${expectedRevision}`, ownerHash);
+      if (!approvedRow) return { kind: 'not_approved', record: current };
+      const approved = this.open(approvedRow);
+      if (approved.profileId !== profileId || approved.reportRef !== reportRef ||
+          approved.revision !== expectedRevision || approved.reviewState !== 'approved' ||
+          approved.sourceRevision !== current.sourceRevision || approved.policyRevision !== current.policyRevision ||
+          approved.candidateId !== current.candidateId || approved.vacancyId !== current.vacancyId)
+        return { kind: 'not_approved', record: current };
+      this.insertExportAudit.run(randomUUID(), ownerHash, reportRef, expectedRevision,
+        current.sourceRevision, current.policyRevision, 'served', occurredAt);
+      return { kind: 'exported', record: approved };
     }).immediate();
   }
 }

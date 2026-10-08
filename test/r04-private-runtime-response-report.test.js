@@ -144,6 +144,7 @@ test('private runtime composes accepted HH response source, encrypted draft, BFF
     { headers: { cookie: proactiveCookie } });
   assert.equal(morningPageResponse.status, 200);
   const morningPage = await morningPageResponse.text();
+  assert.match(morningPage, /data-reports-available="true"/);
   const reportEntryPath = `/auth/connected/start?from=report&amp;vacancy_id=${vacancyId}&amp;candidate_id=${resumeId}`;
   assert.ok(morningPage.includes(reportEntryPath));
   assert.match(morningPage, /Подготовить отчёт клиенту/);

@@ -25,7 +25,7 @@ export function renderRealProactivePage({ profileId = '', vacancyId, feed, listV
   const counts = { active: 0, starred: 0, archived: 0 };
   for (const item of feed.items) counts[item.review?.status ?? 'active']++;
   const cards = feed.items.filter(item => (item.review?.status ?? 'active') === listView)
-    .map(item => `<article data-candidate-id="${escapeHtml(item.id)}" data-job-id="${escapeHtml(item.jobId ?? '')}" data-review-revision="${escapeHtml(item.review?.revision ?? 0)}"><h2>${escapeHtml(item.title)}</h2>
+    .map(item => `<article data-candidate-id="${escapeHtml(item.id)}" data-job-id="${escapeHtml(item.jobId ?? '')}" data-review-revision="${escapeHtml(item.review?.revision ?? 0)}" data-review-status="${escapeHtml(item.review?.status ?? 'active')}"><h2>${escapeHtml(item.title)}</h2>
     <p>${escapeHtml(item.firstName)} ${escapeHtml(item.lastName)} · ${escapeHtml(item.area)}</p>
     <p>ATS: ${item.atsScore === null ? 'ожидает оценки' : escapeHtml(item.atsScore)} · ${escapeHtml(item.review.status)}</p>
     ${item.jobId ? '<button type="button" class="score-now">Оценить ATS сейчас</button><span class="score-result" role="status"></span>' : ''}
@@ -46,7 +46,7 @@ article{background:white;border:1px solid #d9e2ec;border-radius:10px;padding:1re
 .notice{padding:1rem;border-radius:8px;background:#fff4ce}.comment{white-space:pre-wrap}
 .controls{display:grid;gap:.5rem;margin-top:1rem;max-width:28rem}textarea{display:block;width:100%;min-height:4rem}
 nav a{margin-right:1rem}button{cursor:pointer}#action-status{min-height:1.5rem}
-</style><script src="/hh/proactive/app.js" defer></script></head><body><main data-profile-id="${escapeHtml(profileId)}" data-vacancy-id="${escapeHtml(vacancyId)}"><h1>Кандидаты по вакансии ${escapeHtml(vacancyId)}</h1>
+</style><script src="/hh/proactive/app.js" defer></script></head><body><main data-profile-id="${escapeHtml(profileId)}" data-vacancy-id="${escapeHtml(vacancyId)}" data-reports-available="${reportsAvailable ? 'true' : 'false'}"><h1>Кандидаты по вакансии ${escapeHtml(vacancyId)}</h1>
 <p class="notice">${escapeHtml(freshness)}</p>${assessmentNotice ? `<p class="notice" data-assessment-status="assessment_pending">${escapeHtml(assessmentNotice)}</p>` : ''}${assessmentAttention ? `<p class="notice" data-assessment-status="assessment_attention">${escapeHtml(assessmentAttention)}</p>` : ''}<p id="action-status" role="status" aria-live="polite"></p>
 <section><h2>Поиск</h2><p id="schedule-status">Загрузка расписания…</p>
 <label>Интервал, часы <input id="interval-hours" type="number" min="0.5" max="8760" step="0.5" value="24"></label>
