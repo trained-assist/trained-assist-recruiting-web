@@ -3,11 +3,12 @@
   "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-accepted-report-draft.schema.json",
   "title": "Private report draft from an accepted profile-owned candidate source",
   "type": "object",
-  "required": ["domainApiVersion", "reportRef", "candidateId", "vacancyId", "sourceRevision", "reportRevision", "status", "reviewState", "clientFields", "createdAt", "updatedAt"],
+  "required": ["domainApiVersion", "reportRef", "candidateId", "sourceKind", "vacancyId", "sourceRevision", "reportRevision", "status", "reviewState", "clientFields", "createdAt", "updatedAt"],
   "properties": {
     "domainApiVersion": { "const": "v1" },
     "reportRef": { "type": "string", "pattern": "^report_[a-f0-9]{32}$" },
     "candidateId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+    "sourceKind": { "enum": ["accepted_cold_search", "accepted_hh_response"] },
     "vacancyId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
     "sourceRevision": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
     "reportRevision": { "type": "string", "pattern": "^report-r[1-9][0-9]*$" },

@@ -121,10 +121,12 @@ function parseClientReportPageQuery(url) {
   const keys = [...url.searchParams.keys()];
   const candidateId = url.searchParams.get('candidate_id');
   const vacancyId = url.searchParams.get('vacancy_id');
-  if (keys.length !== 2 || new Set(keys).size !== 2 ||
-      !keys.every(key => ['candidate_id', 'vacancy_id'].includes(key)) ||
+  const sourceKind = url.searchParams.get('source_kind') ?? 'accepted_cold_search';
+  if (![2, 3].includes(keys.length) || new Set(keys).size !== keys.length ||
+      !keys.every(key => ['candidate_id', 'vacancy_id', 'source_kind'].includes(key)) ||
+      !['accepted_cold_search', 'accepted_hh_response'].includes(sourceKind) ||
       !isRealProactiveVacancy(candidateId) || !isRealProactiveVacancy(vacancyId)) return null;
-  return { candidateId, vacancyId };
+  return { candidateId, vacancyId, sourceKind };
 }
 
 function parseEvaluationQuery(url) {
@@ -174,8 +176,10 @@ function validReportDraftStart(value) {
 }
 
 function validAcceptedReportDraftStart(value) {
-  return isPlainObject(value) && Object.keys(value).sort().join(',') === 'candidateId,expectedSourceRevision,vacancyId' &&
+  return isPlainObject(value) && ['candidateId,expectedSourceRevision,vacancyId',
+      'candidateId,expectedSourceRevision,sourceKind,vacancyId'].includes(Object.keys(value).sort().join(',')) &&
     isRealProactiveVacancy(value.candidateId) && isRealProactiveVacancy(value.vacancyId) &&
+    (value.sourceKind === undefined || ['accepted_cold_search', 'accepted_hh_response'].includes(value.sourceKind)) &&
     /^[a-f0-9]{64}$/.test(value.expectedSourceRevision ?? '');
 }
 
@@ -208,7 +212,7 @@ function validReportAction(value) {
   return isPlainObject(value) && Object.keys(value).sort().join(',') === 'expectedReportRevision' && isReportRevision(value.expectedReportRevision);
 }
 
-export function createRecruitingServer({ resolveTrustedProfileContext = () => null, connectedAppBff = null, resolveLegacyOpenTab = null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, candidateSearchJobStore = null, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), scheduleLeaseMs = 5 * 60_000, maxCandidateSearchJobs = 100, publicationAdapter, realProactiveFeed = null, realProactiveHistoricalRead = null, realProactiveActions = null, realProactivePrompt = null, realProactiveSeenImport = null, realProactiveAiScore = null, realProactiveManualCandidate = null, liveResponseRead = null, liveResponseDetailRead = null, liveAssignmentRead = null, liveAssignmentSave = null, acceptedReportSourceRead = null, acceptedReportDraftStore = null, resolveRealVacancyOwnership = null, resolveRealDefaultVacancy = () => null, listRealVacancies = () => [], privateProactiveOnly = false, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
+export function createRecruitingServer({ resolveTrustedProfileContext = () => null, connectedAppBff = null, resolveLegacyOpenTab = null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, candidateSearchJobStore = null, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), scheduleLeaseMs = 5 * 60_000, maxCandidateSearchJobs = 100, publicationAdapter, realProactiveFeed = null, realProactiveHistoricalRead = null, realProactiveActions = null, realProactivePrompt = null, realProactiveSeenImport = null, realProactiveAiScore = null, realProactiveManualCandidate = null, liveResponseRead = null, liveResponseDetailRead = null, liveAssignmentRead = null, liveAssignmentSave = null, acceptedReportSourceRead = null, acceptedHhResponseReportSourceRead = null, acceptedReportDraftStore = null, resolveRealVacancyOwnership = null, resolveRealDefaultVacancy = () => null, listRealVacancies = () => [], privateProactiveOnly = false, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
   if (realProactiveFeed !== null && (typeof realProactiveFeed.read !== 'function' || typeof resolveRealVacancyOwnership !== 'function'))
     throw new TypeError('real proactive feed and trusted vacancy ownership ports required');
   if (realProactiveActions !== null && realProactiveFeed === null) throw new TypeError('real actions require real feed mode');
@@ -224,7 +228,10 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
     throw new TypeError('live assignment save requires connected read boundary');
   if (acceptedReportSourceRead !== null && typeof acceptedReportSourceRead !== 'function')
     throw new TypeError('report source read port required');
-  if (acceptedReportDraftStore !== null && (acceptedReportSourceRead === null || connectedAppBff === null))
+  if (acceptedHhResponseReportSourceRead !== null && typeof acceptedHhResponseReportSourceRead !== 'function')
+    throw new TypeError('HH response report source read port required');
+  if (acceptedReportDraftStore !== null &&
+      (acceptedReportSourceRead === null && acceptedHhResponseReportSourceRead === null || connectedAppBff === null))
     throw new TypeError('accepted report drafts require source read and Connected App BFF');
   if (resolveLegacyOpenTab !== null && (!privateProactiveOnly || typeof resolveLegacyOpenTab !== 'function'))
     throw new TypeError('legacy open-tab resolver requires private proactive mode');
@@ -241,8 +248,13 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
   const candidateSearchJobs = candidateSearchJobStore ?? createCandidateSearchJobs({ provider: candidateSearchProvider, maxJobs: maxCandidateSearchJobs });
   const candidateState = createCandidateState({ store: candidateStateStore, isVacancyOwned: (profileId, vacancyId) => listProfileVacancies(profileId)?.some(item => item.id === vacancyId) ?? false });
   const reportDrafts = createReportDrafts({ publicationAdapter });
+  const reportSourceRead = async (context, request) => {
+    const kind = request?.sourceKind ?? 'accepted_cold_search';
+    const reader = kind === 'accepted_hh_response' ? acceptedHhResponseReportSourceRead : acceptedReportSourceRead;
+    return typeof reader === 'function' ? reader(context, { ...request, sourceKind: kind }) : { status: 404, body: { error: 'not_found' } };
+  };
   const acceptedReportDrafts = acceptedReportDraftStore === null ? null :
-    createAcceptedReportDrafts({ sourceRead: acceptedReportSourceRead, store: acceptedReportDraftStore });
+    createAcceptedReportDrafts({ sourceRead: reportSourceRead, store: acceptedReportDraftStore });
   const currentSearchCriteriaRevision = async (context, vacancyId) => {
     try {
       const revision = await resolveCurrentSearchCriteriaRevision(context, vacancyId);
@@ -353,6 +365,7 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
           const start = new URL('/auth/connected/start', 'http://localhost');
           start.searchParams.set('from', 'report'); start.searchParams.set('vacancy_id', query.vacancyId);
           start.searchParams.set('candidate_id', query.candidateId);
+          if (query.sourceKind !== 'accepted_cold_search') start.searchParams.set('source_kind', query.sourceKind);
           res.writeHead(303, { Location: start.pathname + start.search, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' });
           res.end(); return;
         }
@@ -375,18 +388,20 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
       } else if (status === 200) {
         const keys = [...url.searchParams.keys()];
         const vacancyId = url.searchParams.get('vacancyId'); const candidateId = url.searchParams.get('candidateId');
-        if (keys.length !== 2 || new Set(keys).size !== 2 ||
-            !keys.every(key => ['vacancyId', 'candidateId'].includes(key)) ||
+        const sourceKind = url.searchParams.get('sourceKind') ?? 'accepted_cold_search';
+        if (!['candidateId,vacancyId', 'candidateId,sourceKind,vacancyId'].includes([...new Set(keys)].sort().join(',')) ||
+            !keys.every(key => ['vacancyId', 'candidateId', 'sourceKind'].includes(key)) ||
+            !['accepted_cold_search', 'accepted_hh_response'].includes(sourceKind) ||
             !isRealProactiveVacancy(vacancyId) || !isRealProactiveVacancy(candidateId)) {
           status = 400; body = { error: 'invalid_report_source_request' };
         } else {
           try {
-            const result = await acceptedReportSourceRead(context, { vacancyId, candidateId });
+            const result = await reportSourceRead(context, { vacancyId, candidateId, sourceKind });
             status = result.status;
             const clientDraftFields = projectAcceptedClientFields(result.body?.clientDraftFields);
             if (result.status === 200 && (!clientDraftFields || result.body?.profileId !== context.profileId ||
                 result.body?.candidateId !== candidateId || result.body?.vacancyId !== vacancyId ||
-                result.body?.sourceKind !== 'accepted_cold_search' || result.body?.publication !== 'disabled' ||
+                result.body?.sourceKind !== sourceKind || result.body?.publication !== 'disabled' ||
                 !/^[a-f0-9]{64}$/.test(result.body?.sourceRevision ?? ''))) {
               status = 502; body = { error: 'invalid_report_source' };
             } else body = result.status === 200 ? {

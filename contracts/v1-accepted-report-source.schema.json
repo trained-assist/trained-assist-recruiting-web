@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-accepted-report-source.schema.json",
-  "title": "Private report source proposal from accepted cold search",
+  "title": "Private report source proposal from an accepted candidate source",
   "type": "object",
   "required": ["domainApiVersion", "profileId", "vacancyId", "candidateId", "sourceRevision", "sourceKind", "publication", "clientDraftFields", "internalAssessment"],
   "properties": {
@@ -10,7 +10,7 @@
     "vacancyId": { "type": "string", "minLength": 1 },
     "candidateId": { "type": "string", "minLength": 1 },
     "sourceRevision": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-    "sourceKind": { "const": "accepted_cold_search" },
+    "sourceKind": { "enum": ["accepted_cold_search", "accepted_hh_response"] },
     "publication": { "const": "disabled" },
     "clientDraftFields": {
       "type": "object", "required": ["candidateName", "position", "vacancyTitle", "experience"],
