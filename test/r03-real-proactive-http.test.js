@@ -45,6 +45,8 @@ test('opt-in real page and API use one trusted profile/vacancy feed; HTML escape
   const api = await (await fetch(base + path, { headers })).json();
   assert.equal(api.ok, true);
   assert.equal(api.freshness, 'latest_run_incomplete');
+  assert.equal(api.assessmentStatus, 'assessed');
+  assert.equal(api.assessmentPendingCount, 0);
   assert.deepEqual(api.candidates, result.items);
   const pageResponse = await fetch(base + `/hh/proactive?vacancy_id=${vacancyId}&list=starred`, { headers });
   const page = await pageResponse.text();
@@ -60,6 +62,20 @@ test('opt-in real page and API use one trusted profile/vacancy feed; HTML escape
     'real mode cannot fall through to the synthetic search writer');
   assert.equal((await fetch(base + '/api/hh/proactive/status', { headers })).status, 501,
     'unimplemented legacy namespace paths cannot fall through to synthetic routes');
+});
+
+test('completed discovery exposes pending ATS backlog in the same page and API', async t => {
+  const pending = { ...result, freshness: 'latest_completed', items: [{ ...candidate, atsScore: null }] };
+  const base = await started(t, { realProactiveFeed: { read: () => pending },
+    resolveTrustedProfileContext: () => ({ profileId, scopes: ['recruiting.candidateSearch'] }),
+    resolveRealVacancyOwnership: () => true });
+  const api = await (await fetch(base + `/api/hh/proactive/candidates?vacancy_id=${vacancyId}`)).json();
+  assert.equal(api.freshness, 'latest_completed');
+  assert.equal(api.assessmentStatus, 'assessment_pending');
+  assert.equal(api.assessmentPendingCount, 1);
+  const page = await (await fetch(base + `/hh/proactive?vacancy_id=${vacancyId}`)).text();
+  assert.match(page, /Ожидают оценки ATS: 1/);
+  assert.match(page, /data-assessment-status="assessment_pending"/);
 });
 
 test('default server keeps the existing synthetic page and API behavior', async t => {

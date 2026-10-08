@@ -11,8 +11,10 @@ import { createCandidateSearchJobs } from './candidate-search-jobs.js';
 import { createCandidateState, createMemoryCandidateStateStore } from './candidate-state.js';
 import { createColdSearchScheduleHandler, InMemoryColdSearchScheduleRepository, validSearchContext } from './cold-search-schedules.js';
 import { renderRealProactivePage } from './r03-real-proactive-page.js';
+import { renderPrivateVacancyPicker } from './r03-private-vacancy-picker.js';
 import { renderR03HistoricalPage } from './r03-historical-page.js';
 import { createRealProactiveRead } from './r03-real-proactive-read.js';
+import { ConnectedAppIntrospectionUnavailable } from './connected-app-bff.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
@@ -21,6 +23,30 @@ const landingPage = await readFile(join(root, 'public/index.html'), 'utf8');
 const proactivePage = await readFile(join(root, 'public/proactive.html'), 'utf8');
 const proactiveScript = await readFile(join(root, 'public/proactive.js'), 'utf8');
 const realProactiveScript = await readFile(join(root, 'public/real-proactive.js'), 'utf8');
+const assignmentScript = await readFile(join(root, 'public/assignment.js'), 'utf8');
+const escapeResponseHtml = value => String(value ?? '').replace(/[&<>"']/g,
+  char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
+function renderLiveResponsePage(data) {
+  const vacancy = encodeURIComponent(data.vacancyId);
+  const itemHtml = data.items.map(item => `<li><strong>${escapeResponseHtml(item.name || item.title || item.resumeId)}</strong> — ${escapeResponseHtml(item.title)} <small>${escapeResponseHtml(item.receivedAt)}</small> <a href="/hh/response-detail?vacancy_id=${vacancy}&negotiation_id=${encodeURIComponent(item.id)}">Текущий статус</a></li>`).join('');
+  const pageLink = page => `/hh/responses?vacancy_id=${vacancy}&page=${page}`;
+  const previous = data.page > 0 ? `<a href="${pageLink(data.page - 1)}">Назад</a>` : '';
+  const next = data.page + 1 < data.pages ? `<a href="${pageLink(data.page + 1)}">Далее</a>` : '';
+  return `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Отклики HH</title><main><h1>Отклики по вакансии ${escapeResponseHtml(data.vacancyId)}</h1><p><a href="/hh/proactive?vacancy_id=${vacancy}">Холодный поиск</a> · <a href="/hh/assignment?vacancy_id=${vacancy}">Материалы вакансии</a></p><p>Получено от HH: ${escapeResponseHtml(data.fetchedAt)}. Страницы могут измениться между запросами.</p><p>Страница ${data.page + 1} из ${Math.max(1, data.pages)} · Всего ${data.total}</p><ol>${itemHtml}</ol><nav>${previous} ${next}</nav></main></html>`;
+}
+function renderLiveResponseDetailPage(data) {
+  const back = `/hh/responses?vacancy_id=${encodeURIComponent(data.vacancyId)}`;
+  return `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Статус отклика HH</title><main><h1>Отклик ${escapeResponseHtml(data.negotiationId)}</h1><p><a href="${back}">К откликам</a></p><p>Текущий статус HH: ${escapeResponseHtml(data.state)}. Получено: ${escapeResponseHtml(data.fetchedAt)}.</p><p>Переписка здесь не открывается: HH может отметить отклик прочитанным при запросе сообщений.</p></main></html>`;
+}
+function renderAssignmentPage(data) {
+  const items = data.materials.map(item => `<section><h2>${escapeResponseHtml(item.title)}</h2><pre>${escapeResponseHtml(item.material)}</pre><p>SHA-256: ${item.sha256}</p></section>`).join('');
+  const status = data.reviewStatus === 'saved_plan' ? 'Сохранённый сценарий' : 'Черновик переноса: рекрутер должен проверить и сохранить сценарий';
+  const editable = data.reviewStatus === 'legacy_draft_requires_review' && data.draftPlan && data.canReview;
+  const form = editable ? `<section aria-labelledby="review-heading"><h2 id="review-heading">Проверка сценария</h2><p>Проверьте поля и добавьте этапы при необходимости. Исходный дословный материал должен сохраниться хотя бы в одном этапе. После сохранения первая проверенная версия становится неизменяемой.</p><form id="assignment-review" data-vacancy-id="${escapeResponseHtml(data.vacancyId)}" data-source-sha256="${data.sourceSha256}"><div id="assignment-stages" data-plan="${escapeResponseHtml(JSON.stringify(data.draftPlan))}"></div><button type="button" id="assignment-add-stage">Добавить этап</button><p><label><input type="checkbox" name="reviewed" required> Я проверил(а) сценарий и подтверждаю сохранение</label></p><button type="submit">Сохранить проверенный сценарий</button><p id="assignment-save-status" role="status" aria-live="polite"></p></form><script src="/hh/assignment/app.js" defer></script></section>` : data.reviewStatus === 'saved_plan' ? '<p>Сохранённая проверенная версия неизменяема.</p>' : '';
+  const reviewStepUp = data.reviewStatus === 'legacy_draft_requires_review' && data.draftPlan && !data.canReview
+    ? `<p><a href="/auth/connected/start?from=assignment&amp;vacancy_id=${encodeURIComponent(data.vacancyId)}">Подтвердить доступ для проверки и сохранения</a></p>` : '';
+  return `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Материалы вакансии</title><main><h1>Материалы вакансии ${escapeResponseHtml(data.vacancyId)}</h1><p>${status}</p>${data.legacyConflict ? '<p>Прежнее тестовое отличается от сохранённого сценария; требуется ручная сверка.</p>' : ''}${items || '<p>Дословного материала нет.</p>'}${form}${reviewStepUp}<p><a href="/hh/responses?vacancy_id=${encodeURIComponent(data.vacancyId)}">К откликам</a></p></main></html>`;
+}
 const release = {
   version: '0.1.0',
   sourceRevision: process.env.SOURCE_REVISION ?? 'unversioned-local',
@@ -153,7 +179,7 @@ function validReportAction(value) {
   return isPlainObject(value) && Object.keys(value).sort().join(',') === 'expectedReportRevision' && isReportRevision(value.expectedReportRevision);
 }
 
-export function createRecruitingServer({ resolveTrustedProfileContext = () => null, resolveLegacyOpenTab = null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, candidateSearchJobStore = null, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), scheduleLeaseMs = 5 * 60_000, maxCandidateSearchJobs = 100, publicationAdapter, realProactiveFeed = null, realProactiveHistoricalRead = null, realProactiveActions = null, realProactivePrompt = null, realProactiveSeenImport = null, realProactiveAiScore = null, realProactiveManualCandidate = null, liveResponseRead = null, acceptedReportSourceRead = null, resolveRealVacancyOwnership = null, resolveRealDefaultVacancy = () => null, privateProactiveOnly = false, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
+export function createRecruitingServer({ resolveTrustedProfileContext = () => null, connectedAppBff = null, resolveLegacyOpenTab = null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, candidateSearchJobStore = null, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), scheduleLeaseMs = 5 * 60_000, maxCandidateSearchJobs = 100, publicationAdapter, realProactiveFeed = null, realProactiveHistoricalRead = null, realProactiveActions = null, realProactivePrompt = null, realProactiveSeenImport = null, realProactiveAiScore = null, realProactiveManualCandidate = null, liveResponseRead = null, liveResponseDetailRead = null, liveAssignmentRead = null, liveAssignmentSave = null, acceptedReportSourceRead = null, resolveRealVacancyOwnership = null, resolveRealDefaultVacancy = () => null, listRealVacancies = () => [], privateProactiveOnly = false, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
   if (realProactiveFeed !== null && (typeof realProactiveFeed.read !== 'function' || typeof resolveRealVacancyOwnership !== 'function'))
     throw new TypeError('real proactive feed and trusted vacancy ownership ports required');
   if (realProactiveActions !== null && realProactiveFeed === null) throw new TypeError('real actions require real feed mode');
@@ -163,10 +189,18 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
     throw new TypeError('manual candidate requires real feed mode');
   if (liveResponseRead !== null && typeof liveResponseRead !== 'function')
     throw new TypeError('live response read port required');
+  if (liveAssignmentRead !== null && typeof liveAssignmentRead !== 'function')
+    throw new TypeError('live assignment read port required');
+  if (liveAssignmentSave !== null && (typeof liveAssignmentSave !== 'function' || liveAssignmentRead === null || connectedAppBff === null))
+    throw new TypeError('live assignment save requires connected read boundary');
   if (acceptedReportSourceRead !== null && typeof acceptedReportSourceRead !== 'function')
     throw new TypeError('report source read port required');
   if (resolveLegacyOpenTab !== null && (!privateProactiveOnly || typeof resolveLegacyOpenTab !== 'function'))
     throw new TypeError('legacy open-tab resolver requires private proactive mode');
+  if (connectedAppBff !== null && (privateProactiveOnly && resolveLegacyOpenTab !== null ||
+      typeof connectedAppBff.handle !== 'function' ||
+      typeof connectedAppBff.resolve !== 'function')) throw new TypeError('connected app BFF ports required');
+  const trustedReadResolver = connectedAppBff?.resolve ?? resolveTrustedProfileContext;
   if (realProactiveHistoricalRead !== null && (realProactiveFeed === null ||
       typeof realProactiveHistoricalRead.read !== 'function' ||
       typeof realProactiveHistoricalRead.has !== 'function'))
@@ -220,6 +254,15 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const path = url.pathname;
+    if (connectedAppBff && path.startsWith('/auth/connected/')) {
+      try { if (await connectedAppBff.handle(req, res, url)) return; }
+      catch (error) {
+        res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ error: error instanceof ConnectedAppIntrospectionUnavailable
+          ? 'connected_app_introspection_unavailable' : 'connected_app_auth_unavailable' }));
+        return;
+      }
+    }
     const isCandidateSearchPath = path === '/api/v1/ui/candidate-searches' || /^\/api\/v1\/ui\/candidate-searches\/[^/]+(?:\/results|\/resume)?$/.test(path);
     const isProactivePath = path === '/hh/proactive' || path === '/hh/proactive/app.js' ||
       realProactiveHistoricalRead !== null && (path === '/hh/proactive/history' || path === '/api/hh/proactive/history') ||
@@ -231,13 +274,18 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
     let type = mime.json;
     let body;
 
-    if (privateProactiveOnly && !isProactivePath && path !== '/health/ready') {
+    if (privateProactiveOnly && !isProactivePath && path !== '/health/ready' &&
+        !(connectedAppBff !== null && (liveResponseRead !== null &&
+          (path === '/hh/responses' || path === '/api/v1/ui/hh-responses') ||
+          liveResponseDetailRead !== null && (path === '/hh/response-detail' || path === '/api/v1/ui/hh-response-detail') ||
+          liveAssignmentRead !== null &&
+          (path === '/hh/assignment' || path === '/hh/assignment/app.js' || path === '/api/v1/ui/vacancy-assignment')))) {
       status = 404;
       body = { error: 'not_found' };
-    } else if (req.method !== 'GET' && req.method !== 'HEAD' && !(req.method === 'POST' && (isCandidateSearchPath || isReportDraftPath || path === '/api/hh/proactive/vacancy-state' || path === '/api/hh/proactive/search' || realProactiveFeed !== null && path.startsWith('/api/hh/proactive/'))) && !(req.method === 'PATCH' && isReportDraftPath)) {
+    } else if (req.method !== 'GET' && req.method !== 'HEAD' && !(req.method === 'POST' && (isCandidateSearchPath || isReportDraftPath || path === '/api/v1/ui/vacancy-assignment' && liveAssignmentSave !== null || path === '/api/hh/proactive/vacancy-state' || path === '/api/hh/proactive/search' || realProactiveFeed !== null && path.startsWith('/api/hh/proactive/'))) && !(req.method === 'PATCH' && isReportDraftPath)) {
       status = 405;
       body = { error: 'method_not_allowed' };
-      res.setHeader('Allow', isCandidateSearchPath || isReportDraftPath ? 'GET, HEAD, POST, PATCH' : 'GET, HEAD');
+      res.setHeader('Allow', isCandidateSearchPath || isReportDraftPath ? 'GET, HEAD, POST, PATCH' : path === '/api/v1/ui/vacancy-assignment' && liveAssignmentSave !== null ? 'GET, HEAD, POST' : 'GET, HEAD');
     } else if (path === '/') {
       type = mime.html;
       body = landingPage;
@@ -251,8 +299,9 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
       body = { serviceId: manifest.serviceId, domainApiVersion: manifest.domainApiVersion, capabilities };
     } else if (path === '/api/v1/ui/accepted-report-source' && acceptedReportSourceRead !== null) {
       let context;
-      try { context = await resolveTrustedProfileContext(req, url, res); }
-      catch { status = 503; body = { error: 'trusted_profile_unavailable' }; }
+      try { context = await trustedReadResolver(req, url, res); }
+      catch (error) { status = 503; body = { error: error instanceof ConnectedAppIntrospectionUnavailable
+        ? 'connected_app_introspection_unavailable' : 'trusted_profile_unavailable' }; }
       if (status === 200 && (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes))) {
         status = 401; body = { error: 'trusted_profile_context_required' };
       } else if (status === 200 && !context.scopes.includes('recruiting.reports.read')) {
@@ -272,19 +321,135 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
           } catch { status = 503; body = { error: 'report_source_unavailable' }; }
         }
       }
-    } else if (path === '/api/v1/ui/hh-responses' && liveResponseRead !== null) {
+    } else if (path === '/hh/assignment/app.js' && connectedAppBff !== null && liveAssignmentRead !== null) {
       let context;
-      try { context = await resolveTrustedProfileContext(req, url, res); }
-      catch { status = 503; body = { error: 'trusted_profile_unavailable' }; }
+      try { context = await trustedReadResolver(req, url, res); }
+      catch (error) { status = 503; body = { error: error instanceof ConnectedAppIntrospectionUnavailable
+        ? 'connected_app_introspection_unavailable' : 'trusted_profile_unavailable' }; }
       if (status === 200 && (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes))) {
+        status = 401; body = { error: 'trusted_profile_context_required' };
+      } else if (status === 200 && !context.scopes.some(scope => ['recruiting.responses.read', 'recruiting.assignment.review'].includes(scope))) {
+        status = 403; body = { error: 'assignment_scope_required' };
+      } else if (status === 200 && url.search !== '') {
+        status = 400; body = { error: 'invalid_assignment_asset_request' };
+      } else if (status === 200) {
+        type = mime.js; body = assignmentScript;
+        res.setHeader('Cache-Control', 'no-store');
+      }
+    } else if ((path === '/hh/assignment' || path === '/api/v1/ui/vacancy-assignment') &&
+        liveAssignmentRead !== null && connectedAppBff !== null) {
+      let context;
+      try { context = await trustedReadResolver(req, url, res); }
+      catch (error) { status = 503; body = { error: error instanceof ConnectedAppIntrospectionUnavailable
+        ? 'connected_app_introspection_unavailable' : 'trusted_profile_unavailable' }; }
+      const pageRoute = path === '/hh/assignment';
+      const vacancyId = url.searchParams.get(pageRoute ? 'vacancy_id' : 'vacancyId');
+      if (status === 200 && (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes))) {
+        if (pageRoute && req.method === 'GET' && /^[A-Za-z0-9_-]{1,128}$/.test(vacancyId ?? '') &&
+            [...url.searchParams.keys()].join(',') === 'vacancy_id') {
+          const start = new URL('/auth/connected/start', 'http://localhost');
+          start.searchParams.set('from', 'assignment'); start.searchParams.set('vacancy_id', vacancyId);
+          res.writeHead(303, { Location: start.pathname + start.search, 'Cache-Control': 'no-store',
+            'Referrer-Policy': 'no-referrer' }); res.end(); return;
+        }
+        status = 401; body = { error: 'trusted_profile_context_required' };
+      } else if (status === 200 && !context.scopes.includes(req.method === 'POST' ? 'recruiting.assignment.review' : 'recruiting.responses.read') &&
+          !(req.method === 'GET' && context.scopes.includes('recruiting.assignment.review'))) {
+        status = 403; body = { error: 'response_scope_required' };
+      } else if (status === 200 && ([...url.searchParams.keys()].join(',') !==
+          (pageRoute ? 'vacancy_id' : 'vacancyId') || !/^[A-Za-z0-9_-]{1,128}$/.test(vacancyId ?? ''))) {
+        status = 400; body = { error: 'invalid_assignment_request' };
+      } else if (status === 200) {
+        let result;
+        if (req.method === 'POST') {
+          try { result = await liveAssignmentSave(context, { ...await readJsonBody(req, 256 * 1024), vacancyId }); }
+          catch (error) { result = { status: error.message === 'body_too_large' ? 413 : 400,
+            body: { error: 'invalid_assignment_review' } }; }
+        } else result = await liveAssignmentRead(context, { vacancyId });
+        status = result.status; body = result.body;
+        if (status === 200 && pageRoute) {
+          type = mime.html; body = renderAssignmentPage({ ...body, canReview: context.scopes.includes('recruiting.assignment.review') });
+          res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'");
+          res.setHeader('Referrer-Policy', 'no-referrer');
+        }
+      }
+    } else if ((path === '/hh/response-detail' || path === '/api/v1/ui/hh-response-detail') &&
+        liveResponseDetailRead !== null && connectedAppBff !== null) {
+      let context;
+      try { context = await trustedReadResolver(req, url, res); }
+      catch (error) { status = 503; body = { error: error instanceof ConnectedAppIntrospectionUnavailable
+        ? 'connected_app_introspection_unavailable' : 'trusted_profile_unavailable' }; }
+      const pageRoute = path === '/hh/response-detail';
+      const vacancyId = url.searchParams.get(pageRoute ? 'vacancy_id' : 'vacancyId');
+      const negotiationId = url.searchParams.get(pageRoute ? 'negotiation_id' : 'negotiationId');
+      const fields = pageRoute ? ['vacancy_id', 'negotiation_id'] : ['vacancyId', 'negotiationId'];
+      const keys = [...url.searchParams.keys()];
+      const valid = keys.length === 2 && new Set(keys).size === 2 && keys.every(key => fields.includes(key)) &&
+        /^[A-Za-z0-9_-]{1,128}$/.test(vacancyId ?? '') && /^[A-Za-z0-9_-]{1,128}$/.test(negotiationId ?? '');
+      if (status === 200 && (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes))) {
+        if (pageRoute && valid) {
+          const start = new URL('/auth/connected/start', 'http://localhost');
+          start.searchParams.set('from', 'responses'); start.searchParams.set('vacancy_id', vacancyId);
+          res.writeHead(303, { Location: start.pathname + start.search, 'Cache-Control': 'no-store',
+            'Referrer-Policy': 'no-referrer' }); res.end(); return;
+        }
         status = 401; body = { error: 'trusted_profile_context_required' };
       } else if (status === 200 && !context.scopes.includes('recruiting.responses.read')) {
         status = 403; body = { error: 'response_scope_required' };
+      } else if (status === 200 && !valid) {
+        status = 400; body = { error: 'invalid_response_detail_request' };
+      } else if (status === 200) {
+        try {
+          const result = await liveResponseDetailRead(context, { vacancyId, negotiationId });
+          status = result.status; body = result.body;
+          if (status === 200 && pageRoute) { type = mime.html; body = renderLiveResponseDetailPage(body); }
+        } catch { status = 503; body = { error: 'response_detail_unavailable' }; }
+      }
+    } else if ((path === '/api/v1/ui/hh-responses' ||
+        path === '/hh/responses' && connectedAppBff !== null) && liveResponseRead !== null) {
+      let context;
+      try { context = await trustedReadResolver(req, url, res); }
+      catch (error) { status = 503; body = { error: error instanceof ConnectedAppIntrospectionUnavailable
+        ? 'connected_app_introspection_unavailable' : 'trusted_profile_unavailable' }; }
+      if (status === 200 && (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes))) {
+        if (path === '/hh/responses' && connectedAppBff !== null && req.method === 'GET' &&
+            [...url.searchParams.keys()].every(key => ['vacancy_id', 'page'].includes(key)) &&
+            url.searchParams.getAll('vacancy_id').length <= 1 &&
+            url.searchParams.getAll('page').length <= 1 &&
+            (!url.searchParams.has('vacancy_id') || /^[A-Za-z0-9_-]{1,128}$/.test(url.searchParams.get('vacancy_id'))) &&
+            (!url.searchParams.has('page') || /^(?:0|[1-9][0-9]{0,2})$/.test(url.searchParams.get('page')))) {
+          const start = new URL('/auth/connected/start', 'http://localhost');
+          start.searchParams.set('from', 'responses');
+          if (url.searchParams.has('vacancy_id')) start.searchParams.set('vacancy_id', url.searchParams.get('vacancy_id'));
+          res.writeHead(303, { Location: start.pathname + start.search, 'Cache-Control': 'no-store',
+            'Referrer-Policy': 'no-referrer' }); res.end(); return;
+        }
+        status = 401; body = { error: 'trusted_profile_context_required' };
+      } else if (status === 200 && !context.scopes.includes('recruiting.responses.read')) {
+        if (path === '/hh/responses' && connectedAppBff !== null && req.method === 'GET' &&
+            [...url.searchParams.keys()].every(key => ['vacancy_id', 'page'].includes(key)) &&
+            url.searchParams.getAll('vacancy_id').length <= 1 &&
+            url.searchParams.getAll('page').length <= 1 &&
+            (!url.searchParams.has('vacancy_id') || /^[A-Za-z0-9_-]{1,128}$/.test(url.searchParams.get('vacancy_id'))) &&
+            (!url.searchParams.has('page') || /^(?:0|[1-9][0-9]{0,2})$/.test(url.searchParams.get('page')))) {
+          const start = new URL('/auth/connected/start', 'http://localhost');
+          start.searchParams.set('from', 'responses');
+          if (url.searchParams.has('vacancy_id')) start.searchParams.set('vacancy_id', url.searchParams.get('vacancy_id'));
+          res.writeHead(303, { Location: start.pathname + start.search, 'Cache-Control': 'no-store',
+            'Referrer-Policy': 'no-referrer' }); res.end(); return;
+        }
+        status = 403; body = { error: 'response_scope_required' };
       } else if (status === 200) {
         const keys = [...url.searchParams.keys()];
+        const pageRoute = path === '/hh/responses';
         const rawPage = url.searchParams.get('page');
-        const vacancyId = url.searchParams.get('vacancyId');
-        if (keys.some(key => !['vacancyId', 'page'].includes(key)) || new Set(keys).size !== keys.length ||
+        const vacancyId = url.searchParams.get(pageRoute ? 'vacancy_id' : 'vacancyId');
+        if (pageRoute && keys.length === 0) {
+          type = mime.html;
+          const ids = listRealVacancies(context).filter(id => /^[A-Za-z0-9_-]{1,128}$/.test(id));
+          body = `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="referrer" content="no-referrer"><title>Вакансии HH</title><main><h1>Выберите вакансию</h1><p><a href="/hh/proactive">Холодный поиск</a></p><ul>${ids.map(id => `<li><a href="/hh/responses?vacancy_id=${encodeURIComponent(id)}">${escapeResponseHtml(id)}</a></li>`).join('')}</ul></main></html>`;
+        } else if (keys.some(key => ![pageRoute ? 'vacancy_id' : 'vacancyId', 'page'].includes(key)) ||
+            new Set(keys).size !== keys.length ||
             typeof vacancyId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(vacancyId) ||
             rawPage !== null && !/^(?:0|[1-9][0-9]{0,2})$/.test(rawPage)) {
           status = 400; body = { error: 'invalid_response_request' };
@@ -292,6 +457,7 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
           try {
             const result = await liveResponseRead(context, { vacancyId, page: rawPage === null ? 0 : Number(rawPage) });
             status = result.status; body = result.body;
+            if (status === 200 && pageRoute) { type = mime.html; body = renderLiveResponsePage(body); }
           } catch { status = 503; body = { error: 'response_read_unavailable' }; }
         }
       }
@@ -331,14 +497,41 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
         }
       }
       let context;
-      try { if (status === 200) context = await resolveTrustedProfileContext(req, url, res); }
-      catch { status = 503; body = { error: 'trusted_profile_unavailable' }; }
+      try { if (status === 200) context = await trustedReadResolver(req, url, res); }
+      catch (error) { status = 503; body = { error: error instanceof ConnectedAppIntrospectionUnavailable
+        ? 'connected_app_introspection_unavailable' : 'trusted_profile_unavailable' }; }
       if (status !== 200) {
         // A failing trusted resolver must not enter a profile-scoped handler.
       } else if (!context || typeof context.profileId !== 'string' || !Array.isArray(context.scopes)) {
+        if (connectedAppBff !== null && path === '/hh/proactive' && req.method === 'GET' &&
+            [...url.searchParams.keys()].every(key => ['vacancy_id', 'list'].includes(key)) &&
+            url.searchParams.getAll('vacancy_id').length <= 1 &&
+            url.searchParams.getAll('list').length <= 1 &&
+            (!url.searchParams.has('vacancy_id') || isRealProactiveVacancy(url.searchParams.get('vacancy_id'))) &&
+            (!url.searchParams.has('list') || ['active', 'starred', 'archived'].includes(url.searchParams.get('list')))) {
+          const start = new URL('/auth/connected/start', 'http://localhost');
+          start.searchParams.set('from', 'proactive');
+          if (url.searchParams.has('vacancy_id')) start.searchParams.set('vacancy_id', url.searchParams.get('vacancy_id'));
+          res.writeHead(303, { Location: start.pathname + start.search, 'Cache-Control': 'no-store',
+            'Referrer-Policy': 'no-referrer' });
+          res.end();
+          return;
+        }
         status = 401;
         body = { error: 'trusted_profile_context_required' };
       } else if (!context.scopes.includes('recruiting.candidateSearch')) {
+        if (connectedAppBff !== null && path === '/hh/proactive' && req.method === 'GET' &&
+            [...url.searchParams.keys()].every(key => ['vacancy_id', 'list'].includes(key)) &&
+            url.searchParams.getAll('vacancy_id').length <= 1 &&
+            url.searchParams.getAll('list').length <= 1 &&
+            (!url.searchParams.has('vacancy_id') || isRealProactiveVacancy(url.searchParams.get('vacancy_id'))) &&
+            (!url.searchParams.has('list') || ['active', 'starred', 'archived'].includes(url.searchParams.get('list')))) {
+          const start = new URL('/auth/connected/start', 'http://localhost');
+          start.searchParams.set('from', 'proactive');
+          if (url.searchParams.has('vacancy_id')) start.searchParams.set('vacancy_id', url.searchParams.get('vacancy_id'));
+          res.writeHead(303, { Location: start.pathname + start.search, 'Cache-Control': 'no-store',
+            'Referrer-Policy': 'no-referrer' }); res.end(); return;
+        }
         status = 403;
         body = { error: 'search_scope_required' };
       } else if (realProactiveFeed !== null) {
@@ -469,7 +662,8 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
         } else if ((path !== '/hh/proactive' && path !== '/api/hh/proactive/candidates') || (req.method !== 'GET' && req.method !== 'HEAD')) {
           status = 501;
           body = { error: 'real_proactive_route_unavailable' };
-        } else if ([...url.searchParams.keys()].some(key => !(['vacancy_id', 'username', 'token', 'list'].includes(key) &&
+        } else if (connectedAppBff !== null && (url.searchParams.has('username') || url.searchParams.has('token')) ||
+            [...url.searchParams.keys()].some(key => !(['vacancy_id', 'username', 'token', 'list'].includes(key) &&
             (path === '/hh/proactive' || key === 'vacancy_id'))) ||
             url.searchParams.getAll('vacancy_id').length > 1 ||
             url.searchParams.getAll('list').length > 1 ||
@@ -480,7 +674,21 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
           body = { error: 'vacancy_id_required' };
         } else {
           const realVacancyId = url.searchParams.get('vacancy_id') ?? resolveRealDefaultVacancy(context);
-          if (!isRealProactiveVacancy(realVacancyId)) { status = 400; body = { error: 'vacancy_id_required' }; }
+          if (!isRealProactiveVacancy(realVacancyId)) {
+            if (connectedAppBff !== null && path === '/hh/proactive' && !url.searchParams.has('vacancy_id')) {
+              try {
+                const owned = listRealVacancies(context);
+                if (!Array.isArray(owned) || owned.length === 0) {
+                  status = 404; body = { error: 'vacancy_not_found' };
+                } else {
+                  type = mime.html;
+                  body = renderPrivateVacancyPicker(owned);
+                  res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+                  res.setHeader('Referrer-Policy', 'no-referrer');
+                }
+              } catch { status = 503; body = { error: 'vacancy_picker_unavailable' }; }
+            } else { status = 400; body = { error: 'vacancy_id_required' }; }
+          }
           else {
           const result = await realProactiveRead(context, realVacancyId);
           if (result.kind === 'not_found') { status = 404; body = { error: 'vacancy_not_found' }; }
@@ -490,7 +698,8 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
               type = mime.html;
               body = renderRealProactivePage({ profileId: context.profileId, vacancyId: realVacancyId, feed: result.feed,
                 listView: url.searchParams.get('list') ?? 'active',
-                historicalAvailable: realProactiveHistoricalRead?.has(context, realVacancyId) ?? false });
+                historicalAvailable: realProactiveHistoricalRead?.has(context, realVacancyId) ?? false,
+                responsesAvailable: connectedAppBff !== null && liveResponseRead !== null });
               res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'");
               res.setHeader('Referrer-Policy', 'no-referrer');
             } else body = result.value;
