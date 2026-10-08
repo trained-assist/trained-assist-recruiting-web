@@ -145,3 +145,33 @@ export function createPrivateVacancyAssignmentSave({ resolveProfileBinding, isVa
     }
   };
 }
+
+// Pure material binder for a future send workflow. It does not accept
+// candidate/chat/agreement fields and cannot itself authorize or send anything.
+// A future handler must freshly prove agreement and add those bindings only
+// after this exact source-bound material has been read.
+export function createPrivateVacancyAssignmentMaterialBinding({ resolveProfileBinding, isVacancyOwned } = {}) {
+  if (typeof resolveProfileBinding !== 'function' || typeof isVacancyOwned !== 'function')
+    throw new TypeError('private_assignment_binding_required');
+  return async (context, { vacancyId, negotiationId, chatId, agreementMessageId } = {}) => {
+    const { profileId } = context ?? {};
+    if (!safeId(profileId) || !safeId(vacancyId))
+      return { status: 400, body: { error: 'invalid_assignment_material_binding' } };
+    if (!isVacancyOwned(profileId, vacancyId)) return { status: 404, body: { error: 'vacancy_not_found' } };
+    try {
+      const binding = await resolveProfileBinding(profileId);
+      const { config, sourceSha256 } = privateSource(binding, profileId, vacancyId);
+      const saved = savedSidecar(binding, profileId, vacancyId, sourceSha256);
+      if (!saved) return { status: 409, body: { error: 'saved_assignment_plan_required' } };
+      const matches = saved.plan.stages.filter(stage => stage.material_mode === 'verbatim' && stage.material.trim());
+      if (matches.length !== 1) return { status: 409, body: { error: 'assignment_material_selection_required' } };
+      const material = matches[0].material;
+      return { status: 200, body: { domainApiVersion: 'v1', profileId, vacancyId,
+        sourceSha256, savedPlanRevisionSha256: saved.revisionSha256,
+        materialSha256: digest(material), message: material } };
+    } catch (error) {
+      return { status: error?.code === 'ENOENT' ? 404 : 503,
+        body: { error: error?.code === 'ENOENT' ? 'assignment_not_found' : 'assignment_unavailable' } };
+    }
+  };
+}
