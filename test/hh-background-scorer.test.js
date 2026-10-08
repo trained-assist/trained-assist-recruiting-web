@@ -48,8 +48,10 @@ test('five-minute pass scores invented latest candidates, keeps source snapshot 
   const options = { state, profileId, vacancyId, evaluate: async () => { calls++; return assessment; }, currentCriteriaRevision: async () => criteriaRevision,
     now: () => new Date('2026-10-06T06:05:00.000Z') };
   assert.deepEqual(await runHhBackgroundScoringTick(options), { pending: 2, written: 2, stale: 0, alreadyScored: 0, failed: 0 });
-  assert.equal(state.assessmentForLatest({ profileId, vacancyId, jobId: 'job_synthetic_1',
-    candidateId: candidate(1).id }).kind, 'scored');
+  const accepted = state.assessmentForLatest({ profileId, vacancyId, jobId: 'job_synthetic_1',
+    candidateId: candidate(1).id });
+  assert.equal(accepted.kind, 'scored');
+  assert.deepEqual(accepted.candidate, original.items[0], 'scored receipt exposes the exact immutable source projection it evaluated');
   assert.equal(calls, 2);
   assert.deepEqual(state.resultPage({ profileId, vacancyId, jobId: 'job_synthetic_1' }), original);
   assert.deepEqual(state.assessedResultPage({ profileId, vacancyId, jobId: 'job_synthetic_1' }).items.map(item => item.atsScore), [8, 8]);
@@ -57,6 +59,8 @@ test('five-minute pass scores invented latest candidates, keeps source snapshot 
   const reopened = open();
   assert.equal(reopened.unassessedLatest({ profileId, vacancyId }).length, 0);
   assert.equal(reopened.assessedResultPage({ profileId, vacancyId, jobId: 'job_synthetic_1' }).items[0].atsTag, 'PASS');
+  assert.deepEqual(reopened.assessmentForLatest({ profileId, vacancyId, jobId: 'job_synthetic_1',
+    candidateId: candidate(1).id }).candidate, original.items[0], 'accepted projection is available after process restart');
   assert.equal((await runHhBackgroundScoringTick({ ...options, state: reopened })).pending, 0);
   assert.equal(calls, 2);
   reopened.recordCompletedSearch(search('job_synthetic_2', [candidate(1), { ...candidate(2), title: 'Вымышленный старший инженер' }]));
