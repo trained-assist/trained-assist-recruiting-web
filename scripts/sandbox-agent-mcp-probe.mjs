@@ -2,7 +2,7 @@
 // Exercises Agent Runner -> per-run MCP stdio -> host capability handlers ->
 // Recruiting's HTTP handlers/page with synthetic profile and provider data.
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -37,6 +37,7 @@ const server = createRecruitingServer({
   candidateSearchProvider: syntheticColdSearchProvider
 });
 let runner;
+let pendingCapabilityGate = null;
 try {
   await new Promise(resolveListen => server.listen(0, '127.0.0.1', resolveListen));
   const site = `http://127.0.0.1:${server.address().port}`;
@@ -52,6 +53,12 @@ try {
     requiredScopes: ['recruiting.candidateSearch'], requiredArguments: [], effect,
     description: 'Recruiting cold-search operation over the actual HTTP handler',
     async invoke(invocation, context) {
+      const gate = pendingCapabilityGate;
+      if (gate) {
+        pendingCapabilityGate = null;
+        gate.started();
+        await gate.releasePromise;
+      }
       if (invocation.caller.profileId !== profileId || context.bindingValue !== bindingSecret)
         return { kind: 'blocked', reason: 'synthetic trusted-profile binding mismatch' };
       const { action, vacancyId: requestedVacancy = vacancyId, interval_hours } = invocation.arguments;
@@ -83,7 +90,7 @@ try {
     host: { region: 'sandbox-eu', environment: 'sandbox' }, cancelGraceMs: 500,
     capabilities: registry, bindingResolver: ref => ref === bindingRef ? bindingSecret : null });
   const agentRuns = [];
-  const invokeAgent = async (call, callerProfileId = profileId, denied = []) => {
+  const invokeAgent = async (call, callerProfileId = profileId, denied = [], { inspectMcpConfig = false } = {}) => {
     const cwd = join(workDir, `agent-workspace-${agentRuns.length + 1}`);
     const rawSpec = { contractVersion: 1, jobId: `job-${randomBytes(4).toString('hex')}`,
       runId: `run-${randomBytes(6).toString('hex')}`, operationId: `op-${randomBytes(6).toString('hex')}`,
@@ -97,22 +104,57 @@ try {
       input: { inlinePrompt: JSON.stringify({ calls: call ? [call] : [], denied }) } };
     const validated = validateRunSpec(rawSpec);
     assert.equal(validated.ok, true, validated.errors?.join('; '));
+    let mcpConfigText = '';
+    let capabilityReached;
+    let releaseCapability;
+    let capabilityTimeout;
+    let capabilityGate;
+    if (inspectMcpConfig) {
+      capabilityReached = new Promise(resolveReached => {
+        capabilityGate = {
+          started: resolveReached,
+          releasePromise: new Promise(resolveRelease => { releaseCapability = resolveRelease; })
+        };
+        pendingCapabilityGate = capabilityGate;
+      });
+    }
     const receipt = runner.start(validated.value);
+    if (inspectMcpConfig) {
+      try {
+        await Promise.race([capabilityReached, new Promise((_, reject) => {
+          capabilityTimeout = setTimeout(() => reject(new Error('Agent Runner did not reach the Recruiting capability in time')), 30_000);
+        })]);
+        const configPath = join(cwd, '.runner/mcp.json');
+        assert.equal(existsSync(configPath), true, 'Runner writes the scoped MCP config before invoking a capability');
+        assert.equal(statSync(configPath).mode & 0o077, 0, 'run-scoped MCP config must be private');
+        mcpConfigText = readFileSync(configPath, 'utf8');
+        assert.equal(mcpConfigText.includes(bindingSecret), false,
+          'host-resolved credential bindings must not be copied into the engine MCP config');
+      } finally {
+        clearTimeout(capabilityTimeout);
+        if (pendingCapabilityGate === capabilityGate) pendingCapabilityGate = null;
+        releaseCapability?.();
+      }
+    }
     const outcome = await runner.waitFor(receipt.runId, 30_000);
     const debugEvents = readFileSync(join(workDir, 'runs', receipt.runId, 'events.jsonl'), 'utf8');
     assert.equal(outcome.outcome, 'succeeded', `${JSON.stringify(outcome)}\n${debugEvents}`);
-    const evidenceText = readFileSync(join(cwd, 'mcp-evidence.jsonl'), 'utf8');
-    const evidence = evidenceText.trim().split('\n').map(JSON.parse);
+    assert.equal(existsSync(cwd), false, 'Agent Runner must sweep its temporary MCP workspace after completion');
+    const evidence = debugEvents.trim().split('\n').map(JSON.parse)
+      .filter(event => event.type === 'log' && event.payload?.stream === 'stdout' &&
+        event.payload.message.startsWith('mcp-evidence: '))
+      .map(event => JSON.parse(event.payload.message.slice('mcp-evidence: '.length)));
     const listed = evidence.find(item => item.step === 'tools_list');
     const toolCall = evidence.find(item => item.step === 'tool_call');
     const deniedProbe = evidence.find(item => item.step === 'tool_call_denied_probe');
     assert.ok(tools.every(name => listed?.tools.some(tool => tool.name === name)));
     if (call) assert.equal(toolCall?.ok, true, JSON.stringify(toolCall));
     if (denied.length) assert.equal(deniedProbe?.ok, true, JSON.stringify(deniedProbe));
-    agentRuns.push({ receipt, cwd, evidenceText });
+    agentRuns.push({ receipt, evidenceText: evidence.map(item => JSON.stringify(item)).join('\n'), mcpConfigText });
     return toolCall?.result ?? deniedProbe;
   };
-  const enabled = await invokeAgent({ tool: tools[0], arguments: { action: 'enable', vacancyId, interval_hours: 6 } });
+  const enabled = await invokeAgent({ tool: tools[0], arguments: { action: 'enable', vacancyId, interval_hours: 6 } },
+    profileId, [], { inspectMcpConfig: true });
   assert.equal(enabled.schedule.enabled, true);
   assert.equal(enabled.schedule.profileId, profileId);
   const scheduled = await (await fetch(`${site}/api/hh/proactive/schedule?vacancy_id=${vacancyId}`, { headers: auth })).json();
@@ -143,12 +185,12 @@ try {
   assert.ok(feed.total > 0);
   assert.equal(feed.source, 'scheduled');
   assert.ok(feed.candidates.every(item => item.candidateRef && item.title && item.isNew === true));
-  const surfaces = agentRuns.flatMap(({ receipt, cwd, evidenceText }) => [
+  const surfaces = agentRuns.flatMap(({ receipt, evidenceText, mcpConfigText }) => [
     ...['events.jsonl', 'state.json', 'result.json'].map(name => readFileSync(join(workDir, 'runs', receipt.runId, name), 'utf8')),
-    evidenceText, readFileSync(join(cwd, '.runner/mcp.json'), 'utf8')
+    evidenceText, mcpConfigText
   ]);
   assert.equal(surfaces.some(value => value.includes(bindingSecret)), false,
-    'the synthetic binding secret must not be persisted in Agent Run evidence or MCP config');
+    'the synthetic binding secret must not be persisted in retained Agent Run or MCP evidence');
   process.stdout.write(`${JSON.stringify({ outcome: 'pass', runner: 'FakeEngine over Agent Runner MCP bridge',
     siteTransport: 'local Recruiting HTTP server', profileId, tools, schedule: scheduled.schedules[0].enabled,
     page: pageResponse.status, browserRenderContract: 'candidate title/NEW/region rendered from candidate feed',
