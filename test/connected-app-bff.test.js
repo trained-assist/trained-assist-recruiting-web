@@ -120,6 +120,23 @@ test('callback rejects state and issuer mismatch before token exchange', async t
   assert.equal(f.exchangeCalls, 0);
 });
 
+test('conversation step-up uses an exact return path and a separate effect scope', async t => {
+  const f = await fixture(t);
+  const startResponse = await fetch(`${f.base}/auth/connected/start?from=conversation&vacancy_id=vacancy_A&negotiation_id=negotiation_A`,
+    { redirect: 'manual' });
+  assert.equal(startResponse.status, 303);
+  const authorize = new URL(startResponse.headers.get('location'));
+  assert.equal(authorize.searchParams.get('scope'), 'recruiting.responses.read recruiting.responses.conversation.open');
+  const pendingCookie = getCookie(startResponse, '__Host-recruiting-oauth-pending');
+  f.setClaims({ ...claims, scopes: ['recruiting.responses.read', 'recruiting.responses.conversation.open'] });
+  const response = await callback(f.base, authorize.searchParams.get('state'), pendingCookie);
+  assert.equal(response.status, 303);
+  assert.equal(response.headers.get('location'), `${publicOrigin}/hh/response-conversation?vacancy_id=vacancy_A&negotiation_id=negotiation_A`);
+  const cookie = getCookie(response, '__Host-recruiting-app-session');
+  const session = await (await fetch(`${f.base}/auth/connected/session`, { headers: { cookie } })).json();
+  assert.deepEqual(session.scopes, ['recruiting.responses.read', 'recruiting.responses.conversation.open']);
+});
+
 test('BFF contains no token/code logging path', async () => {
   const source = await readFile(new URL('../src/connected-app-bff.js', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /\bconsole\./);

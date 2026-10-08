@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-accepted-report-regenerate.schema.json",
+  "title": "Explicit private report regeneration request",
+  "type": "object",
+  "required": ["expectedReportRevision", "replaceRecruiterEditedFields"],
+  "properties": {
+    "expectedReportRevision": { "type": "string", "pattern": "^report-r[1-9][0-9]*$" },
+    "replaceRecruiterEditedFields": { "type": "boolean" }
+  },
+  "additionalProperties": false
+}

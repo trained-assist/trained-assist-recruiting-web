@@ -9,6 +9,41 @@ const GENERIC_WORDS = new Set([
 ]);
 const safeId = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(value);
 const text = value => typeof value === 'string' ? value : '';
+const displayText = (value, max = 300) => typeof value === 'string' && value.trim().length <= max
+  ? value.trim().replace(/\s+/g, ' ') : '';
+
+function displayList(values, maxItems, project) {
+  if (!Array.isArray(values)) return [];
+  const output = [];
+  for (const value of values.slice(0, maxItems)) {
+    const item = project(value);
+    if (item && !output.includes(item)) output.push(item);
+  }
+  return output;
+}
+
+// Explicit client-safe subset of the HH resume. Contacts, age, salary, photo,
+// provider links, and internal ATS material intentionally stay outside reports.
+export function mapHhResumeClientSections(raw) {
+  const education = raw?.education && typeof raw.education === 'object' ? raw.education : {};
+  const school = item => {
+    if (!item || typeof item !== 'object') return '';
+    const year = Number.isSafeInteger(item.year) ? String(item.year) : item.year;
+    return [item.name, item.organization, year].map(value => displayText(value, 160)).filter(Boolean).join(', ');
+  };
+  const language = item => {
+    if (!item || typeof item !== 'object') return '';
+    const name = displayText(item.name, 100), level = displayText(item.level?.name, 100);
+    return name ? `${name}${level ? ` — ${level}` : ''}` : '';
+  };
+  return {
+    education: displayList(education.primary, 10, school),
+    courses: displayList(education.additional, 20, school),
+    skills: displayList(raw?.skill_set, 30, item => displayText(item?.name, 100)),
+    languages: displayList(raw?.language, 20, language),
+    location: displayText(raw?.area?.name, 200) || null,
+  };
+}
 
 function keywords(value) {
   return text(value).toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/)

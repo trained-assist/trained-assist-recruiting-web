@@ -16,7 +16,12 @@ function clientFields(resume, vacancyTitle) {
     experience.push({ role: item.position, company: item.company,
       period: item.end ? `${item.start} — ${item.end}` : `${item.start} — настоящее время` });
   }
-  return { candidateName, position: resume.title, vacancyTitle, experience };
+  const safeList = (value, maxItems, maxLength) => Array.isArray(value)
+    ? value.slice(0, maxItems).filter(item => text(item, maxLength) && item.trim()).map(item => item.trim()) : [];
+  return { candidateName, position: resume.title, vacancyTitle, experience,
+    education: safeList(resume.education, 10, 300), courses: safeList(resume.courses, 20, 300),
+    skills: safeList(resume.skills, 30, 100), languages: safeList(resume.languages, 20, 150),
+    location: text(resume.location, 200) ? resume.location.trim() : null };
 }
 
 /**
@@ -46,7 +51,9 @@ export function createHhResponseReportSourceRead({ readResponseDetail, readResum
           detail?.status === 409 ? 'candidate_source_stale' : 'candidate_not_found');
       const resume = await readResume(context, { vacancyId, resumeId: detail.body.resumeId });
       if (resume?.status !== 200 || resume.body?.profileId !== profileId || resume.body?.vacancyId !== vacancyId ||
-          resume.body?.resumeId !== detail.body.resumeId || !SHA.test(resume.body?.sourceRevision ?? ''))
+          resume.body?.resumeId !== detail.body.resumeId || !SHA.test(resume.body?.sourceRevision ?? '') ||
+          resume.body?.candidateProjection?.id !== detail.body.resumeId ||
+          resume.body?.candidateProjection?.vacancyId !== vacancyId)
         return fail(resume?.status === 409 ? 409 : resume?.status === 404 ? 404 : 503,
           resume?.status === 409 ? 'candidate_source_stale' : 'report_source_unavailable');
 
@@ -55,7 +62,8 @@ export function createHhResponseReportSourceRead({ readResponseDetail, readResum
           typeof plan.criteriaRevision !== 'string' || !plan.criteriaRevision ||
           !text(plan.atsConfig?.vacancy_title, 300)) return fail(409, 'candidate_criteria_stale');
       const assessment = await loadAcceptedAssessment(profileId, vacancyId, detail.body.resumeId,
-        { negotiationId: candidateId, criteriaRevision: plan.criteriaRevision });
+        { negotiationId: candidateId, criteriaRevision: plan.criteriaRevision,
+          resumeRevision: resume.body.sourceRevision, candidateProjection: resume.body.candidateProjection });
       if (!assessment || assessment.profileId !== profileId || assessment.vacancyId !== vacancyId ||
           assessment.resumeId !== detail.body.resumeId || assessment.criteriaRevision !== plan.criteriaRevision ||
           assessment.resumeRevision !== resume.body.sourceRevision ||
@@ -75,12 +83,14 @@ export function createHhResponseReportSourceRead({ readResponseDetail, readResum
         readResume(context, { vacancyId, resumeId: detail.body.resumeId }),
         loadBasePlan(profileId, vacancyId, { allowGeneration: false }),
         loadAcceptedAssessment(profileId, vacancyId, detail.body.resumeId,
-          { negotiationId: candidateId, criteriaRevision: plan.criteriaRevision }),
+          { negotiationId: candidateId, criteriaRevision: plan.criteriaRevision,
+            resumeRevision: resume.body.sourceRevision, candidateProjection: resume.body.candidateProjection }),
       ]);
       if (detailAfter?.status !== 200 || detailAfter.body?.profileId !== profileId ||
           detailAfter.body?.vacancyId !== vacancyId || detailAfter.body?.negotiationId !== candidateId ||
           detailAfter.body?.resumeId !== detail.body.resumeId || detailAfter.body?.state !== 'response' ||
           resumeAfter?.status !== 200 || resumeAfter.body?.sourceRevision !== resume.body.sourceRevision ||
+          JSON.stringify(resumeAfter.body?.candidateProjection) !== JSON.stringify(resume.body.candidateProjection) ||
           planAfter?.profileId !== profileId || planAfter?.vacancyId !== vacancyId ||
           planAfter?.criteriaRevision !== plan.criteriaRevision ||
           assessmentAfter?.profileId !== profileId || assessmentAfter?.vacancyId !== vacancyId ||
