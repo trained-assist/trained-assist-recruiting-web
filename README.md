@@ -24,6 +24,8 @@ It binds only to `127.0.0.1` (default port `3000`, optionally selected with `POR
 | GET | `/api/v1/profiles/{profileId}/vacancies` | **Local UI fixture-only** synthetic profile vacancies; not advertised in the C14 manifest/capability registry |
 | GET | `/api/v1/profiles/{profileId}/vacancies/{vacancyId}/responses` | **Local UI fixture-only** paginated synthetic response summaries; not advertised in the C14 manifest/capability registry |
 | GET | `/api/v1/ui/report-previews?candidateId=…&vacancyId=…` | **Local UI fixture-only** synthetic client report preview; no save, publish, or share operation |
+| GET | `/hh/candidate-report?vacancy_id=…&candidate_id=…` | **Opt-in R-04** accepted-source report preview and human review; requires connected BFF and encrypted draft store; no publish/send route |
+| POST/GET | `/api/v1/ui/accepted-report-drafts` and `/api/v1/ui/accepted-report-drafts/{reportRef}[/preview|/review]` | **Opt-in R-04** profile-owned accepted candidate draft, source revision and private review state |
 | POST | `/api/v1/ui/report-drafts` | **Local UI fixture-only** profile-scoped synthetic draft creation; requires source revision and idempotency key |
 | GET/PATCH | `/api/v1/ui/report-drafts/{reportRef}` | **Local UI fixture-only** private draft state and allowlisted client-field edit |
 | GET | `/api/v1/ui/report-drafts/{reportRef}/preview` | **Local UI fixture-only** escaped private client-audience preview |
@@ -47,7 +49,7 @@ This is an **R-01 foundation**, not completion of the production scenario. Actua
 
 An additional [R-01 live HH response read slice](docs/R-01-LIVE-RESPONSE-READ.md) binds one HH `response` page to the opt-in private Connected App BFF runtime through its profile credential broker and owned vacancy map. The queryless Connected App entry offers a static feature chooser; its `/hh/responses` page and `/api/v1/ui/hh-responses` API request `recruiting.responses.read` only through an explicit step-up. They are absent from the demo, public route and C14 capability registry; page-level revision and best-effort pagination state their limits explicitly.
 
-The [R-04 accepted report source slice](docs/R-04-ACCEPTED-SOURCE.md) projects a currently assessed candidate from the accepted cold-search feed into separate client draft and internal fields. It requires an injected trusted report reader; publication stays disabled.
+The [R-04 accepted report source slice](docs/R-04-ACCEPTED-SOURCE.md) projects a currently assessed candidate from the accepted cold-search feed into separate client draft and internal fields. An additional [accepted-source draft and private review slice](docs/R-04-ACCEPTED-DRAFT.md) connects that projection to encrypted SQLite draft state and a BFF-protected preview/review page. It requires explicit source, BFF and encrypted store injection; default server construction and the private R-03 host do not mount it. Publication and sending remain unavailable.
 
 The opt-in [R-01/R-04 Connected App BFF boundary](docs/R-01-R-04-CONNECTED-BFF.md) handles a Control Plane authorization code with PKCE, keeps the access token server side and rechecks profile scope on each read. It is an unmounted synthetic integration until the platform login authority, durable BFF store and live issuer are accepted.
 

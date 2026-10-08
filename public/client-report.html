@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Черновик отчёта кандидата</title>
+  <style>
+    body{font:16px/1.5 system-ui,sans-serif;max-width:64rem;margin:2rem auto;padding:0 1rem;color:#17212b}
+    header,section{margin:1.5rem 0}small{color:#596675;overflow-wrap:anywhere}
+    iframe{width:100%;min-height:34rem;border:1px solid #ccd5db;border-radius:.5rem;background:white}
+    button{font:inherit;padding:.65rem 1rem}button:disabled{opacity:.55}
+    #status{padding:.75rem;background:#f1f4f7;white-space:pre-wrap}label{display:block;margin:1rem 0}
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Черновик отчёта кандидата</h1>
+      <p>Проверьте профиль кандидата и вакансию. Черновик останется внутри приложения. Отправка и публикация здесь недоступны.</p>
+    </header>
+    <section aria-labelledby="source-title">
+      <h2 id="source-title">Источник</h2>
+      <p id="source-summary">Загружаю подтверждённый источник…</p>
+      <small id="source-revision"></small>
+    </section>
+    <section aria-labelledby="preview-title">
+      <h2 id="preview-title">Клиентский вид</h2>
+      <iframe id="preview" title="Предпросмотр черновика" sandbox=""></iframe>
+    </section>
+    <section>
+      <label><input id="approval" type="checkbox"> Я проверил отображаемые сведения и подтверждаю этот черновик для внутреннего использования.</label>
+      <button id="approve" type="button" disabled>Подтвердить проверку</button>
+      <p id="status" role="status" aria-live="polite">Подключаю профиль и загружаю данные…</p>
+    </section>
+  </main>
+  <script src="/hh/candidate-report/app.js" defer></script>
+</body>
+</html>

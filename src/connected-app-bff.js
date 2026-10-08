@@ -79,10 +79,12 @@ export function createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins, 
       redirectUri !== `${publicOrigin}/auth/connected/callback` ||
       !store || !['putPending', 'takePending', 'putSession', 'getSession', 'deleteSession'].every(method => typeof store[method] === 'function') ||
       typeof exchangeCode !== 'function' || typeof introspectToken !== 'function' || typeof clock !== 'function' ||
-      !Array.isArray(scopes) || scopes.length < 1 || scopes.some(scope => !['recruiting.responses.read', 'recruiting.reports.read', 'recruiting.candidateSearch', 'recruiting.assignment.review'].includes(scope)))
+      !Array.isArray(scopes) || scopes.length < 1 || scopes.some(scope => !['recruiting.responses.read', 'recruiting.reports.read', 'recruiting.reports.create', 'recruiting.reports.review', 'recruiting.candidateSearch', 'recruiting.assignment.review'].includes(scope)))
     throw new TypeError('connected_app_bff_ports_required');
 
-  const allowedScopes = new Set([...scopes, 'recruiting.candidateSearch', 'recruiting.responses.read', 'recruiting.assignment.review']);
+  const allowedScopes = new Set([...scopes, 'recruiting.candidateSearch', 'recruiting.responses.read',
+    'recruiting.reports.read', 'recruiting.reports.create', 'recruiting.reports.review',
+    'recruiting.assignment.review']);
   const inspect = async token => {
     let claims;
     try { claims = await introspectToken(token); }
@@ -127,22 +129,30 @@ export function createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins, 
           res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',
             'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer',
             'content-security-policy': "default-src 'none'; base-uri 'none'; frame-ancestors 'none'" });
-          res.end('<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="referrer" content="no-referrer"><title>Рекрутинг</title><main><h1>Выберите раздел</h1><ul><li><a href="/auth/connected/start?from=proactive">Холодный поиск</a></li><li><a href="/auth/connected/start?from=responses">Отклики HH</a></li><li><a href="/auth/connected/start?from=assignment">Проверка материалов вакансии</a></li></ul></main></html>');
+          res.end('<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="referrer" content="no-referrer"><title>Рекрутинг</title><main><h1>Выберите раздел</h1><ul><li><a href="/auth/connected/start?from=proactive">Холодный поиск</a></li><li><a href="/auth/connected/start?from=responses">Отклики HH</a></li><li><a href="/auth/connected/start?from=assignment">Проверка материалов вакансии</a></li><li><a href="/auth/connected/start?from=report">Отчёт клиенту</a></li></ul></main></html>');
           return true;
         }
         const from = url.searchParams.get('from');
         const fromProactive = from === 'proactive';
         const fromResponses = from === 'responses';
+        const fromReport = from === 'report';
         const fromAssignment = from === 'assignment';
         const vacancyId = url.searchParams.get('vacancy_id');
+        const candidateId = url.searchParams.get('candidate_id');
+        const allowedEntries = fromReport ? ['from', 'vacancy_id', 'candidate_id'] : ['from', 'vacancy_id'];
         if (new Set(entries).size !== entries.length ||
-            (entries.length !== 0 && (!(fromProactive || fromResponses || fromAssignment) ||
-              entries.some(key => !['from', 'vacancy_id'].includes(key)) ||
-              vacancyId !== null && !safeId(vacancyId)))) {
+            !(fromProactive || fromResponses || fromAssignment || fromReport) ||
+            entries.some(key => !allowedEntries.includes(key)) ||
+            vacancyId !== null && !safeId(vacancyId) ||
+            fromReport && (!safeId(vacancyId) || !safeId(candidateId)) ||
+            !fromReport && candidateId !== null) {
           respond(res, 400, { error: 'invalid_auth_request' }); return true;
         }
-        const returnPath = `${fromAssignment ? '/hh/assignment' : fromResponses ? '/hh/responses' : '/hh/proactive'}${vacancyId ? `?vacancy_id=${encodeURIComponent(vacancyId)}` : ''}`;
-        const requestedScopes = fromAssignment ? ['recruiting.assignment.review'] : fromResponses ? ['recruiting.responses.read'] : ['recruiting.candidateSearch'];
+        const returnPath = fromReport
+          ? `/hh/candidate-report?vacancy_id=${encodeURIComponent(vacancyId)}&candidate_id=${encodeURIComponent(candidateId)}`
+          : `${fromAssignment ? '/hh/assignment' : fromResponses ? '/hh/responses' : '/hh/proactive'}${vacancyId ? `?vacancy_id=${encodeURIComponent(vacancyId)}` : ''}`;
+        const requestedScopes = fromReport ? ['recruiting.reports.read', 'recruiting.reports.create', 'recruiting.reports.review']
+          : fromAssignment ? ['recruiting.assignment.review'] : fromResponses ? ['recruiting.responses.read'] : ['recruiting.candidateSearch'];
         const pendingHandle = random(); const state = random(); const verifier = random();
         await store.putPending(hash(pendingHandle), { state, verifier, returnPath, requestedScopes, createdAt: clock() });
         const auth = new URL(`${issuer}/v1/connected-app-sessions/authorize`);
@@ -163,7 +173,7 @@ export function createRecruitingConnectedAppBff({ issuer, allowedIssuerOrigins, 
         const code = url.searchParams.get('code'); const state = url.searchParams.get('state');
         const returnPath = transaction?.returnPath ?? '/hh/proactive';
         if (!transaction || clock() < transaction.createdAt || clock() - transaction.createdAt > 300_000 ||
-            !/^\/hh\/(?:proactive|responses|assignment)(?:\?vacancy_id=[A-Za-z0-9_-]{1,128})?$/.test(returnPath) ||
+            !/^\/hh\/(?:(?:proactive|responses|assignment)(?:\?vacancy_id=[A-Za-z0-9_-]{1,128})?|candidate-report\?vacancy_id=[A-Za-z0-9_-]{1,128}&candidate_id=[A-Za-z0-9_-]{1,128})$/.test(returnPath) ||
             !Array.isArray(transaction?.requestedScopes) || transaction.requestedScopes.length < 1 ||
             transaction.requestedScopes.some(scope => !allowedScopes.has(scope)) ||
             entries.length !== 3 || new Set(entries).size !== 3 || !entries.every(key => ['code', 'state', 'iss'].includes(key)) ||
