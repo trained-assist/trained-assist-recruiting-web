@@ -63,6 +63,8 @@ test('feed accumulates accepted scheduled and manual candidates across two vacan
     loadAcceptedManualReceipts: f.loadAcceptedManualReceipts });
   const items = feed.read(context(profileA), vacancyA).items;
   assert.equal(items.length, 3);
+  assert.equal(feed.read(context(profileA), vacancyA).assessmentStatus, 'assessment_pending');
+  assert.equal(feed.read(context(profileA), vacancyA).assessmentPendingCount, 2);
   assert.equal(items[0].id, toScore.candidate.id, 'assessed candidates rank ahead of pending ATS evaluations');
   assert.equal(items.find(item => item.id === toScore.candidate.id).atsScore, 9);
   assert.equal(items.find(item => item.id === candidate(2, vacancyA).id).title, 'Вымышленный старший инженер');

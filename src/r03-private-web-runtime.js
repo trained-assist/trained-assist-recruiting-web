@@ -3,6 +3,7 @@ import { loadPrivateHostConfig, loadPrivateHostSecret } from './r03-private-host
 import { SqliteColdSearchScheduleRepository } from './sqlite-cold-search-schedule-repository.js';
 import { SqliteRealHhCandidateState } from './sqlite-real-hh-candidate-state.js';
 import { SqliteRealHhManualRuns } from './sqlite-real-hh-manual-runs.js';
+import { createAcceptedAssessmentStatusReader } from './sqlite-accepted-assessment-queue.js';
 import { createServiceLadderChat } from './r03-service-ladder-chat.js';
 import { createHhQueryGenerator } from './r03-hh-query-generator.js';
 import { createPrivateHhSearchStack } from './r03-private-hh-search-stack.js';
@@ -42,7 +43,8 @@ export function createPrivateWebRuntime({ configFile, secretsDirectory, fetchImp
       isVacancyOwned: config.isVacancyOwned, loadSearchPlan: stack.loadSearchPlan,
       search: stack.search, candidateState: candidates, clock });
     const feed = createR03AccumulatedRealFeedFromStores({ scheduleRepository: schedules,
-      candidateState: candidates, manualRuns });
+      candidateState: candidates, manualRuns,
+      assessmentQueue: createAcceptedAssessmentStatusReader(candidates) });
     const actions = createR03RealProactiveActions({ scheduleRepository: schedules,
       manualRuns, feed, loadSearchPlan: stack.loadSearchPlan,
       isVacancyOwned: config.isVacancyOwned, vacancyFlags: schedules, clock });
