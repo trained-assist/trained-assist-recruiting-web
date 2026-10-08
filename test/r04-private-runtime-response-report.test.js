@@ -5,6 +5,7 @@ import { chmodSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, 
 import { once } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { SqliteColdSearchScheduleRepository } from '../src/sqlite-cold-search-schedule-repository.js';
 import { REAL_HH_RESULT_VERSION, SqliteRealHhCandidateState } from '../src/sqlite-real-hh-candidate-state.js';
 import { intervalPlan } from '../src/cold-search-schedules.js';
@@ -25,6 +26,9 @@ const atsConfig = { vacancy_id: vacancyId, vacancy_title: 'Synthetic Platform En
   required: [], preferred: [], knockout: [] };
 const rawResume = { id: resumeId, title: 'Synthetic Platform Engineer', first_name: 'Синтетический',
   last_name: 'Кандидат', total_experience: { months: 60 }, area: { name: 'Тестовый регион' }, salary: null,
+  education: { primary: [{ name: 'Synthetic university', organization: 'Synthetic Institute', year: 2019 }],
+    additional: [{ name: 'Synthetic course', organization: 'Synthetic Academy', year: 2022 }] },
+  skill_set: [{ name: 'TypeScript' }], language: [{ name: 'English', level: { name: 'C1' } }],
   email: 'private@example.test', alternate_url: 'https://hh.ru/resume/' + resumeId,
   experience: [{ position: 'Platform Engineer', company: 'Synthetic Company', start: '2021', end: null }] };
 
@@ -59,18 +63,28 @@ test('private runtime composes accepted HH response source, encrypted draft, BFF
 
   let currentResume = structuredClone(rawResume);
   let messageCalls = 0; let responseReads = 0; let resumeReads = 0;
+  let activeScopes = [...scopes];
   const claims = { active: true, iss: issuer, aud: 'recruiting-web', sub: 'synthetic_actor',
-    profileId, sessionId: 'synthetic_session', nbf: now / 1000 - 10, exp: now / 1000 + 600, scopes };
+    profileId, sessionId: 'synthetic_session', nbf: now / 1000 - 10, exp: now / 1000 + 600 };
   const fetchImpl = async url => {
     if (url === issuer + '/v1/connected-app-sessions/exchange') return response({ token, expiresAt: now / 1000 + 600 });
-    if (url === issuer + '/v1/connected-app-sessions/introspect') return response(claims);
+    if (url === issuer + '/v1/connected-app-sessions/introspect') return response({ ...claims, scopes: activeScopes });
     if (url === 'https://api.hh.ru/negotiations/' + negotiationId) {
       responseReads++;
       return response({ id: negotiationId, vacancy: { id: vacancyId }, resume: { id: resumeId },
-        state: { id: 'response' }, updated_at: '2026-10-06T08:00:00Z' });
+        chat_id: 'chatSynthetic001', state: { id: 'response' }, updated_at: '2026-10-06T08:00:00Z' });
     }
     if (url === 'https://api.hh.ru/resumes/' + resumeId) { resumeReads++; return response(currentResume); }
-    if (/\/messages(?:\?|$)/.test(url)) { messageCalls++; throw new Error('message_reads_forbidden'); }
+    if (new URL(String(url)).pathname === '/common/chats/chatSynthetic001/messages') {
+      const chatUrl = new URL(String(url));
+      assert.equal(chatUrl.searchParams.get('order'), 'prev');
+      assert.equal(chatUrl.searchParams.get('limit'), '50');
+      messageCalls++;
+      return response({ id: 'chatSynthetic001', vacancy_id: vacancyId, has_more: false,
+        messages: [{ id: 'messageSynthetic001', creation_time: '2026-10-06T08:30:00Z', type: 'SIMPLE',
+          payload: { text: 'synthetic private conversation' }, viewed_by_opponent: false }] });
+    }
+    if (/\/messages(?:\?|$)/.test(url)) { messageCalls++; throw new Error('unexpected_message_endpoint'); }
     throw new Error('unexpected_provider_url:' + new URL(url).pathname);
   };
   const runtimeOptions = { configFile, secretsDirectory: secrets, fetchImpl, clock: () => new Date(now),
@@ -111,6 +125,35 @@ test('private runtime composes accepted HH response source, encrypted draft, BFF
 
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const base = 'http://127.0.0.1:' + server.address().port;
+  activeScopes = ['recruiting.candidateSearch'];
+  const proactiveEntry = await fetch(base + '/hh/proactive?vacancy_id=' + vacancyId, { redirect: 'manual' });
+  assert.equal(proactiveEntry.status, 303);
+  const proactiveStart = await fetch(base + proactiveEntry.headers.get('location'), { redirect: 'manual' });
+  assert.equal(proactiveStart.status, 303);
+  assert.equal(new URL(proactiveStart.headers.get('location')).searchParams.get('scope'), 'recruiting.candidateSearch');
+  const proactivePending = cookie(proactiveStart, '__Host-recruiting-oauth-pending');
+  const proactiveAuthorize = new URL(proactiveStart.headers.get('location'));
+  const proactiveCallbackUrl = new URL('/auth/connected/callback', base);
+  proactiveCallbackUrl.searchParams.set('code', 'd'.repeat(64));
+  proactiveCallbackUrl.searchParams.set('state', proactiveAuthorize.searchParams.get('state'));
+  proactiveCallbackUrl.searchParams.set('iss', issuer);
+  const proactiveCallback = await fetch(proactiveCallbackUrl, { redirect: 'manual', headers: { cookie: proactivePending } });
+  assert.equal(proactiveCallback.status, 303);
+  const proactiveCookie = cookie(proactiveCallback, '__Host-recruiting-app-session');
+  const morningPageResponse = await fetch(base + '/hh/proactive?vacancy_id=' + vacancyId,
+    { headers: { cookie: proactiveCookie } });
+  assert.equal(morningPageResponse.status, 200);
+  const morningPage = await morningPageResponse.text();
+  assert.match(morningPage, /data-reports-available="true"/);
+  const reportEntryPath = `/auth/connected/start?from=report&amp;vacancy_id=${vacancyId}&amp;candidate_id=${resumeId}`;
+  assert.ok(morningPage.includes(reportEntryPath));
+  assert.match(morningPage, /Подготовить отчёт клиенту/);
+  const reportStepUp = await fetch(base + reportEntryPath.replaceAll('&amp;', '&'), { redirect: 'manual' });
+  assert.equal(reportStepUp.status, 303);
+  assert.equal(new URL(reportStepUp.headers.get('location')).searchParams.get('scope'),
+    'recruiting.reports.read recruiting.reports.create recruiting.reports.edit recruiting.reports.review');
+
+  activeScopes = [...scopes];
   const entry = await fetch(base + '/hh/candidate-report?vacancy_id=' + vacancyId +
     '&candidate_id=' + negotiationId + '&source_kind=accepted_hh_response', { redirect: 'manual' });
   assert.equal(entry.status, 303);
@@ -129,6 +172,34 @@ test('private runtime composes accepted HH response source, encrypted draft, BFF
   const sessionCookie = cookie(callback, '__Host-recruiting-app-session');
   const session = await (await fetch(base + '/auth/connected/session', { headers: { cookie: sessionCookie } })).json();
 
+  const coldSourceUrl = new URL('/api/v1/ui/accepted-report-client-source', base);
+  coldSourceUrl.searchParams.set('candidateId', resumeId);
+  coldSourceUrl.searchParams.set('vacancyId', vacancyId);
+  coldSourceUrl.searchParams.set('sourceKind', 'accepted_cold_search');
+  const coldSourceResponse = await fetch(coldSourceUrl, { headers: { cookie: sessionCookie } });
+  assert.equal(coldSourceResponse.status, 200);
+  const coldSource = await coldSourceResponse.json();
+  assert.equal(coldSource.sourceKind, 'accepted_cold_search');
+  assert.equal(coldSource.clientDraftFields.candidateName, 'Синтетический Кандидат');
+  assert.deepEqual(coldSource.clientDraftFields.education, ['Synthetic university, Synthetic Institute, 2019']);
+  assert.deepEqual(coldSource.clientDraftFields.courses, ['Synthetic course, Synthetic Academy, 2022']);
+  assert.deepEqual(coldSource.clientDraftFields.skills, ['TypeScript']);
+  assert.deepEqual(coldSource.clientDraftFields.languages, ['English — C1']);
+  assert.equal(coldSource.clientDraftFields.location, 'Тестовый регион');
+  assert.equal(JSON.stringify(coldSource).includes('private@example.test'), false);
+  assert.equal(JSON.stringify(coldSource).includes('hh.ru/resume'), false);
+  const coldCreate = await fetch(base + '/api/v1/ui/accepted-report-drafts', { method: 'POST',
+    headers: { cookie: sessionCookie, origin, 'x-csrf-token': session.csrfToken,
+      'content-type': 'application/json', 'Idempotency-Key': 'runtime-cold-search-report-001' },
+    body: JSON.stringify({ candidateId: resumeId, vacancyId, sourceKind: 'accepted_cold_search',
+      expectedSourceRevision: coldSource.sourceRevision, expectedPolicyRevision: 0 }) });
+  assert.equal(coldCreate.status, 201);
+  const coldDraft = await coldCreate.json();
+  const coldPreview = await fetch(base + '/api/v1/ui/accepted-report-drafts/' + coldDraft.reportRef + '/preview',
+    { headers: { cookie: sessionCookie } });
+  assert.equal(coldPreview.status, 200);
+  assert.match((await coldPreview.json()).html, /Синтетический Кандидат/);
+
   const sourceUrl = new URL('/api/v1/ui/accepted-report-client-source', base);
   sourceUrl.searchParams.set('candidateId', negotiationId);
   sourceUrl.searchParams.set('vacancyId', vacancyId);
@@ -138,14 +209,55 @@ test('private runtime composes accepted HH response source, encrypted draft, BFF
   const source = await sourceResponse.json();
   assert.equal(source.sourceKind, 'accepted_hh_response');
   assert.equal(source.clientDraftFields.candidateName, 'Синтетический Кандидат');
+  assert.deepEqual(source.clientDraftFields.skills, ['TypeScript']);
   assert.equal(JSON.stringify(source).includes('private@example.test'), false);
   assert.equal(JSON.stringify(source).includes('internalAssessment'), false);
+
+  const policyUrl = new URL('/api/v1/ui/accepted-report-policy', base);
+  policyUrl.searchParams.set('candidateId', negotiationId);
+  policyUrl.searchParams.set('vacancyId', vacancyId);
+  policyUrl.searchParams.set('sourceKind', 'accepted_hh_response');
+  const emptyPolicyResponse = await fetch(policyUrl, { headers: { cookie: sessionCookie } });
+  assert.equal(emptyPolicyResponse.status, 200);
+  const emptyPolicy = await emptyPolicyResponse.json();
+  assert.equal(emptyPolicy.policyRevision, 'policy-r0');
+  const forbiddenPhrase = 'synthetic platform engineer';
+  const policyWithoutCsrf = await fetch(base + '/api/v1/ui/accepted-report-policy', { method: 'PUT', headers: {
+    cookie: sessionCookie, origin, 'content-type': 'application/json' },
+    body: JSON.stringify({ candidateId: negotiationId, vacancyId, sourceKind: 'accepted_hh_response',
+      expectedPolicyRevision: 0, policy: { forbiddenPhrases: [forbiddenPhrase] } }) });
+  assert.equal(policyWithoutCsrf.status, 401);
+  const setPolicy = await fetch(base + '/api/v1/ui/accepted-report-policy', { method: 'PUT', headers: {
+    cookie: sessionCookie, origin, 'x-csrf-token': session.csrfToken, 'content-type': 'application/json' },
+    body: JSON.stringify({ candidateId: negotiationId, vacancyId, sourceKind: 'accepted_hh_response',
+      expectedPolicyRevision: 0, policy: { forbiddenPhrases: [forbiddenPhrase] } }) });
+  assert.equal(setPolicy.status, 200);
+  assert.equal((await setPolicy.json()).policyRevision, 'policy-r1');
+  const blockedCreate = await fetch(base + '/api/v1/ui/accepted-report-drafts', { method: 'POST',
+    headers: { cookie: sessionCookie, origin, 'x-csrf-token': session.csrfToken,
+      'content-type': 'application/json', 'Idempotency-Key': 'runtime-policy-block-001' },
+    body: JSON.stringify({ candidateId: negotiationId, vacancyId, sourceKind: 'accepted_hh_response',
+      expectedSourceRevision: source.sourceRevision, expectedPolicyRevision: 1 }) });
+  assert.equal(blockedCreate.status, 422);
+  const blockedBody = await blockedCreate.json();
+  assert.equal(blockedBody.error, 'report_policy_violation');
+  assert.deepEqual(blockedBody.violations, [
+    { fieldPath: 'position', rule: 'forbidden', ruleIndex: 0 },
+    { fieldPath: 'vacancyTitle', rule: 'forbidden', ruleIndex: 0 },
+  ]);
+  assert.equal(JSON.stringify(blockedBody).includes(forbiddenPhrase), false);
+  const clearPolicy = await fetch(base + '/api/v1/ui/accepted-report-policy', { method: 'PUT', headers: {
+    cookie: sessionCookie, origin, 'x-csrf-token': session.csrfToken, 'content-type': 'application/json' },
+    body: JSON.stringify({ candidateId: negotiationId, vacancyId, sourceKind: 'accepted_hh_response',
+      expectedPolicyRevision: 1, policy: { forbiddenPhrases: [] } }) });
+  assert.equal(clearPolicy.status, 200);
+  assert.equal((await clearPolicy.json()).policyRevision, 'policy-r2');
 
   const create = await fetch(base + '/api/v1/ui/accepted-report-drafts', { method: 'POST',
     headers: { cookie: sessionCookie, origin, 'x-csrf-token': session.csrfToken,
       'content-type': 'application/json', 'Idempotency-Key': 'runtime-hh-response-report-001' },
     body: JSON.stringify({ candidateId: negotiationId, vacancyId, sourceKind: 'accepted_hh_response',
-      expectedSourceRevision: source.sourceRevision }) });
+      expectedSourceRevision: source.sourceRevision, expectedPolicyRevision: 2 }) });
   assert.equal(create.status, 201);
   const draft = await create.json();
   const preview = await fetch(base + '/api/v1/ui/accepted-report-drafts/' + draft.reportRef + '/preview',
@@ -153,9 +265,47 @@ test('private runtime composes accepted HH response source, encrypted draft, BFF
   assert.equal(preview.status, 200);
   assert.match((await preview.json()).html, /Синтетический Кандидат/);
   assert.equal(statSync(reportDb).mode & 0o777, 0o600);
-  assert.equal(messageCalls, 0);
+  assert.equal(messageCalls, 0, 'cold-search and response report creation/preview do not read the conversation');
   assert.ok(responseReads >= 2 && resumeReads >= 2);
 
+  const conversationStart = await fetch(base + '/auth/connected/start?from=conversation&vacancy_id=' +
+    vacancyId + '&negotiation_id=' + negotiationId, { redirect: 'manual' });
+  assert.equal(conversationStart.status, 303);
+  const conversationAuthorize = new URL(conversationStart.headers.get('location'));
+  assert.equal(conversationAuthorize.searchParams.get('scope'),
+    'recruiting.responses.read recruiting.responses.conversation.open');
+  activeScopes = conversationAuthorize.searchParams.get('scope').split(' ');
+  const conversationPending = cookie(conversationStart, '__Host-recruiting-oauth-pending');
+  const conversationCallbackUrl = new URL('/auth/connected/callback', base);
+  conversationCallbackUrl.searchParams.set('code', 'd'.repeat(64));
+  conversationCallbackUrl.searchParams.set('state', conversationAuthorize.searchParams.get('state'));
+  conversationCallbackUrl.searchParams.set('iss', issuer);
+  const conversationCallback = await fetch(conversationCallbackUrl, { redirect: 'manual',
+    headers: { cookie: conversationPending } });
+  assert.equal(conversationCallback.status, 303);
+  assert.equal(new URL(conversationCallback.headers.get('location')).pathname +
+    new URL(conversationCallback.headers.get('location')).search,
+    '/hh/response-conversation?vacancy_id=' + vacancyId + '&negotiation_id=' + negotiationId);
+  const conversationSessionCookie = cookie(conversationCallback, '__Host-recruiting-app-session');
+  const conversationSession = await (await fetch(base + '/auth/connected/session',
+    { headers: { cookie: conversationSessionCookie } })).json();
+  const conversationUrl = base + '/hh/response-conversation?vacancy_id=' + vacancyId +
+    '&negotiation_id=' + negotiationId;
+  const confirmation = await fetch(conversationUrl, { headers: { cookie: conversationSessionCookie } });
+  assert.equal(confirmation.status, 200);
+  assert.match(await confirmation.text(), /может отметить отклик просмотренным/);
+  assert.equal(messageCalls, 0, 'confirmation page must not prefetch HH messages');
+  const deniedWithoutCsrf = await fetch(conversationUrl, { method: 'POST',
+    headers: { cookie: conversationSessionCookie, origin } });
+  assert.equal(deniedWithoutCsrf.status, 401);
+  assert.equal(messageCalls, 0, 'missing CSRF cannot trigger a message read');
+  const openedConversation = await fetch(conversationUrl, { method: 'POST', headers: {
+    cookie: conversationSessionCookie, origin, 'x-csrf-token': conversationSession.csrfToken } });
+  assert.equal(openedConversation.status, 200);
+  assert.equal((await openedConversation.json()).messages[0].text, 'synthetic private conversation');
+  assert.equal(messageCalls, 1, 'only explicit CSRF-protected POST reaches HH conversation endpoint');
+
+  activeScopes = [...scopes];
   await new Promise(resolve => server.close(resolve));
   server = createPrivateWebRuntime(runtimeOptions);
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
@@ -163,12 +313,37 @@ test('private runtime composes accepted HH response source, encrypted draft, BFF
   const afterRestart = await fetch(restartedBase + '/api/v1/ui/accepted-report-drafts/' +
     draft.reportRef + '/preview', { headers: { cookie: sessionCookie } });
   assert.equal(afterRestart.status, 200, 'encrypted report and BFF session survive process restart');
+  const changedPolicy = await fetch(restartedBase + '/api/v1/ui/accepted-report-policy', { method: 'PUT', headers: {
+    cookie: sessionCookie, origin, 'x-csrf-token': session.csrfToken, 'content-type': 'application/json' },
+    body: JSON.stringify({ candidateId: negotiationId, vacancyId, sourceKind: 'accepted_hh_response',
+      expectedPolicyRevision: 2, policy: { forbiddenPhrases: ['confidential'] } }) });
+  assert.equal(changedPolicy.status, 200);
+  assert.equal((await changedPolicy.json()).policyRevision, 'policy-r3');
+  const staleByPolicy = await fetch(restartedBase + '/api/v1/ui/accepted-report-drafts/' +
+    draft.reportRef + '/preview', { headers: { cookie: sessionCookie } });
+  assert.equal(staleByPolicy.status, 409);
+  assert.equal((await staleByPolicy.json()).error, 'stale_report_policy');
+  const damagedPolicyDb = new Database(reportDb);
+  damagedPolicyDb.exec('DROP TABLE accepted_report_policy');
+  damagedPolicyDb.close();
+  const policyUnavailable = await fetch(new URL(policyUrl.pathname + policyUrl.search, restartedBase), {
+    headers: { cookie: sessionCookie } });
+  assert.equal(policyUnavailable.status, 503);
+  assert.equal((await policyUnavailable.json()).error, 'report_policy_unavailable');
+  const policyWriteUnavailable = await fetch(restartedBase + '/api/v1/ui/accepted-report-policy', { method: 'PUT', headers: {
+    cookie: sessionCookie, origin, 'x-csrf-token': session.csrfToken, 'content-type': 'application/json' },
+    body: JSON.stringify({ candidateId: negotiationId, vacancyId, sourceKind: 'accepted_hh_response',
+      expectedPolicyRevision: 3, policy: { forbiddenPhrases: ['confidential'] } }) });
+  assert.equal(policyWriteUnavailable.status, 503);
+  assert.equal((await policyWriteUnavailable.json()).error, 'report_policy_unavailable');
+  assert.equal((await fetch(restartedBase + '/health/ready')).status, 200,
+    'policy store failure is contained to report policy operations');
   currentResume = { ...currentResume, title: 'Changed outside the accepted ATS input' };
   const stale = await fetch(restartedBase + '/api/v1/ui/accepted-report-drafts/' +
     draft.reportRef + '/preview', { headers: { cookie: sessionCookie } });
   assert.equal(stale.status, 409);
   assert.equal((await stale.json()).error, 'stale_report_source');
-  assert.equal(messageCalls, 0);
+  assert.equal(messageCalls, 1, 'restart and report preview never re-read the conversation');
   assert.equal(readFileSync(reportDb, 'utf8').includes('Synthetic'), false,
     'encrypted database bytes do not contain report content');
 });

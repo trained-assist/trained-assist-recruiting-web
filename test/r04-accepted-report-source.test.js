@@ -9,16 +9,28 @@ const profileId = 'profile_demo_001';
 const vacancyId = 'vac_demo_001';
 const candidateId = 'candidate_demo_001';
 const candidate = { id: candidateId, vacancyId, jobId: 'job_demo_001', firstName: 'Test', lastName: 'Person',
-  title: 'Engineer', experience: [{ position: 'Developer', company: 'Example', start: '2020', end: null }],
+  title: 'Engineer', area: 'Synthetic region', totalExperienceMonths: 60,
+  experience: [{ position: 'Developer', company: 'Example', start: '2020', end: null }],
   review: { status: 'starred', revision: 2 }, atsScore: 8, atsTag: 'PASS',
   comment: 'INTERNAL_ONLY', salary: { amount: 999999 }, hhUrl: 'https://hh.ru/resume/private' };
+const acceptedCandidate = { id: candidateId, vacancyId, firstName: 'Test', lastName: 'Person', title: 'Engineer',
+  area: 'Synthetic region', totalExperienceMonths: 60,
+  experience: [{ position: 'Developer', company: 'Example', start: '2020', end: null }] };
 const snapshot = { jobId: 'job_demo_001', resultRevision: 'snapshot-r1', criteriaRevision: 'criteria-r1' };
 const ports = () => ({
   feed: { read: () => ({ resultRevision: 'feed-r1', items: [candidate] }) },
   candidateState: { latestSnapshot: () => snapshot, assessmentForLatest: () =>
-    ({ kind: 'scored', assessment: { atsScore: 8, atsTag: 'PASS', knockout: { status: 'passed', criteria: [] } } }) },
+    ({ kind: 'scored', candidate: acceptedCandidate,
+      assessment: { atsScore: 8, atsTag: 'PASS', knockout: { status: 'passed', criteria: [] } } }) },
   loadBasePlan: async () => ({ profileId, vacancyId, criteriaRevision: 'criteria-r1',
     atsConfig: { vacancy_title: 'Senior Engineer', vacancy_context: 'SECRET_CONTEXT' } }),
+  readResume: async (_context, { vacancyId: requestedVacancy, resumeId }) => ({ status: 200, body: {
+    profileId, vacancyId: requestedVacancy, resumeId, sourceRevision: 'b'.repeat(64), criteriaRevision: 'criteria-r1',
+    candidateProjection: structuredClone(acceptedCandidate),
+    resume: { firstName: 'Test', lastName: 'Person', title: 'Engineer', experience: acceptedCandidate.experience,
+      education: ['Synthetic university'], courses: ['Synthetic course'], skills: ['TypeScript'],
+      languages: ['English — C1'], location: 'Synthetic region' }
+  } }),
   isVacancyOwned: (id, vacancy) => id === profileId && vacancy === vacancyId
 });
 
@@ -27,6 +39,11 @@ test('accepted current assessment gives only allowlisted proposal fields with re
   const result = await read({ profileId }, { vacancyId, candidateId });
   assert.equal(result.status, 200);
   assert.equal(result.body.clientDraftFields.candidateName, 'Test Person');
+  assert.deepEqual(result.body.clientDraftFields.education, ['Synthetic university']);
+  assert.deepEqual(result.body.clientDraftFields.courses, ['Synthetic course']);
+  assert.deepEqual(result.body.clientDraftFields.skills, ['TypeScript']);
+  assert.deepEqual(result.body.clientDraftFields.languages, ['English — C1']);
+  assert.equal(result.body.clientDraftFields.location, 'Synthetic region');
   assert.equal(result.body.internalAssessment.atsScore, 8);
   assert.equal(result.body.publication, 'disabled');
   assert.equal(JSON.stringify(result.body).includes('INTERNAL_ONLY'), false);
@@ -39,6 +56,28 @@ test('accepted current assessment gives only allowlisted proposal fields with re
   const changed = createAcceptedReportSourceRead({ ...ports(), feed: { read: () =>
     ({ resultRevision: 'feed-r2', items: [{ ...candidate, review: { status: 'starred', revision: 3 } }] }) } });
   assert.notEqual((await changed({ profileId }, { vacancyId, candidateId })).body.sourceRevision, result.body.sourceRevision);
+});
+
+test('cold-search report binds detailed HH resume to the accepted snapshot and rechecks its revision', async () => {
+  const changing = ports();
+  let reads = 0;
+  changing.readResume = async (...args) => {
+    const result = await ports().readResume(...args);
+    result.body.sourceRevision = (++reads === 1 ? 'b' : 'c').repeat(64);
+    return result;
+  };
+  assert.deepEqual(await createAcceptedReportSourceRead(changing)({ profileId }, { vacancyId, candidateId }),
+    { status: 409, body: { error: 'candidate_source_stale' } });
+  assert.equal(reads, 2);
+
+  const mismatched = ports();
+  mismatched.readResume = async (...args) => {
+    const result = await ports().readResume(...args);
+    result.body.candidateProjection.title = 'Changed resume title';
+    return result;
+  };
+  assert.deepEqual(await createAcceptedReportSourceRead(mismatched)({ profileId }, { vacancyId, candidateId }),
+    { status: 409, body: { error: 'candidate_source_stale' } });
 });
 
 test('archived, unscored, mismatched and stale candidates cannot become report sources', async () => {
@@ -72,6 +111,7 @@ test('report source HTTP route requires trusted report scope and exact query', a
   assert.equal((await fetch(url)).status, 401);
   assert.equal((await fetch(url, { headers: { 'x-test-principal': 'noscope' } })).status, 403);
   assert.equal((await fetch(`${url}&profileId=${profileId}`, { headers: { 'x-test-principal': 'owner' } })).status, 400);
-  assert.equal((await fetch(url, { headers: { 'x-test-principal': 'owner' } })).status, 200);
+  const accepted = await fetch(url, { headers: { 'x-test-principal': 'owner' } });
+  assert.equal(accepted.status, 200, await accepted.text());
   assert.equal((await fetch(url, { method: 'POST', headers: { 'x-test-principal': 'owner' } })).status, 405);
 });
