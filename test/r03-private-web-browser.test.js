@@ -25,11 +25,12 @@ test('browser page uses profile cookie API, exact review revisions, idempotent m
   ]);
   const cardElements = new Map([
     ['.save-status', element('save-status')], ['.save-comment', element('save-comment')],
+    ['.score-now', element('score-now')], ['.score-result', element('score-result')],
     ['.candidate-status', element('candidate-status', { value: 'starred' })],
     ['.candidate-comment', element('candidate-comment', { value: 'Invented note' })],
     ['.candidate-exclude', element('candidate-exclude', { checked: true })]
   ]);
-  const card = { dataset: { candidateId: 'invented_resume', reviewRevision: '2' },
+  const card = { dataset: { candidateId: 'invented_resume', jobId: 'invented_job', reviewRevision: '2' },
     querySelector: selector => cardElements.get(selector) };
   const root = { dataset: { profileId: 'invented_profile_A', vacancyId } };
   let reloads = 0;
@@ -38,12 +39,14 @@ test('browser page uses profile cookie API, exact review revisions, idempotent m
   const session = new Map();
   const fetch = async (path, options = {}) => {
     calls.push({ path, options });
+    if (path === '/auth/connected/session') return { ok: false, status: 404, json: async () => ({}) };
     let body = { ok: true };
     if (path.startsWith('/api/hh/proactive/schedule?')) body = { ok: true, schedules: [],
       flags: { starred: false, archived: false, revision: 0 } };
     if (path.startsWith('/api/hh/proactive/prompt?')) body = { ok: true, queries: ['invented query'],
       query_revision: `queries-${'a'.repeat(24)}`, override_revision: 0 };
     if (path === '/api/hh/proactive/search') body = { ok: true, run: { runId: 'invented_run' } };
+    if (path === '/api/hh/proactive/ai-score') body = { ok: true, atsScore: 8, atsTag: 'PASS' };
     if (path.endsWith('/manual-runs/invented_run')) body = { ok: true,
       run: { status: polls++ ? 'completed' : 'running' } };
     return { ok: true, status: 200, json: async () => body };
@@ -70,8 +73,9 @@ test('browser page uses profile cookie API, exact review revisions, idempotent m
     const button = elements.get(id) ?? cardElements.get(`.${id}`);
     await handlers.get(id)({ currentTarget: button });
   }
+  await handlers.get('score-now')({ currentTarget: cardElements.get('.score-now') });
   const posts = calls.filter(call => call.options.method === 'POST');
-  assert.equal(posts.length, 6);
+  assert.equal(posts.length, 7);
   assert.deepEqual(JSON.parse(posts[1].options.body), { vacancy_id: vacancyId, action: 'enable', interval_hours: 24 });
   assert.deepEqual(JSON.parse(posts[2].options.body), { vacancy_id: vacancyId, action: 'disable' });
   assert.equal(posts[3].options.headers['Idempotency-Key'], 'invented_idempotency_key');
@@ -79,6 +83,9 @@ test('browser page uses profile cookie API, exact review revisions, idempotent m
     expected_revision: 2, status: 'starred' });
   assert.deepEqual(JSON.parse(posts[5].options.body), { vacancy_id: vacancyId, candidate_id: 'invented_resume',
     expected_revision: 2, comment: 'Invented note', exclude_from_search: true });
+  assert.deepEqual(JSON.parse(posts[6].options.body), { vacancy_id: vacancyId, candidate_id: 'invented_resume',
+    expected_job_id: 'invented_job' });
+  assert.match(cardElements.get('.score-result').textContent, /ATS: 8 \(PASS\)/);
   assert.ok(calls.every(call => call.options.credentials === 'same-origin'));
   assert.ok(posts.every(call => !('token' in JSON.parse(call.options.body))));
   assert.equal(polls, 2);
@@ -93,12 +100,14 @@ test('switching signed profile on the same vacancy does not resume or reuse the 
   const elements = new Map(['action-status', 'manual-status', 'schedule-status', 'vacancy-flags-status', 'interval-hours',
     'schedule-enable', 'schedule-disable', 'manual-search', 'prompt-status', 'prompt-queries',
     'prompt-save', 'prompt-reset', 'seen-status', 'seen-ids', 'seen-import',
+    'manual-candidate-input', 'manual-candidate-add', 'manual-candidate-status',
     'vacancy-star', 'vacancy-unstar', 'vacancy-archive', 'vacancy-restore'].map(id => [id, { id,
     value: id === 'interval-hours' ? '24' : '', textContent: '', disabled: false,
     addEventListener: (_name, handler) => handlers.set(id, handler) }]));
   const calls = [];
   const fetch = async (path, options = {}) => {
     calls.push({ path, options });
+    if (path === '/auth/connected/session') return { ok: false, status: 404, json: async () => ({}) };
     return { ok: true, status: 200, json: async () => path.includes('/schedule?') ? { schedules: [] } :
       path.includes('/prompt?') ? { queries: ['invented query'], query_revision: `queries-${'a'.repeat(24)}`, override_revision: 0 } :
       path.endsWith('/search') ? { run: { runId: 'run_B' } } : { run: { status: 'completed' } } };
@@ -125,6 +134,7 @@ test('browser prompt editor sends target revision and uses reset tombstone witho
   const elements = new Map(['action-status', 'manual-status', 'schedule-status', 'vacancy-flags-status', 'interval-hours',
     'schedule-enable', 'schedule-disable', 'manual-search', 'prompt-status', 'prompt-queries',
     'prompt-save', 'prompt-reset', 'seen-status', 'seen-ids', 'seen-import',
+    'manual-candidate-input', 'manual-candidate-add', 'manual-candidate-status',
     'vacancy-star', 'vacancy-unstar', 'vacancy-archive', 'vacancy-restore'].map(id => [id, { id, value: '', textContent: '', disabled: false,
     addEventListener: (_name, handler) => handlers.set(id, handler) }]));
   const calls = [];
@@ -133,6 +143,7 @@ test('browser prompt editor sends target revision and uses reset tombstone witho
   const secondRevision = `queries-${'b'.repeat(24)}`;
   const fetch = async (path, options = {}) => {
     calls.push({ path, options });
+    if (path === '/auth/connected/session') return { ok: false, status: 404, json: async () => ({}) };
     const body = path.includes('/schedule?') ? { schedules: [] } :
       path.includes('/prompt?') ? (promptReads++ ? { queries: ['regenerated'],
         query_revision: `queries-${'c'.repeat(24)}`, override_revision: 2 } :
@@ -141,7 +152,8 @@ test('browser prompt editor sends target revision and uses reset tombstone witho
         { ok: true, queries: ['manual query'], query_revision: secondRevision,
           override_revision: 1, queries_manual: true } :
         { ok: true, queries_state: 'reset', pending_regeneration: true, override_revision: 2 }) :
-      path.endsWith('/import-seen') ? { ok: true, imported: 2, total: 2 } : {};
+      path.endsWith('/import-seen') ? { ok: true, imported: 2, total: 2 } :
+      path.endsWith('/add-manual') ? { ok: true, added: true, candidateId: 'resumeC3' } : {};
     return { ok: true, status: 200, json: async () => body };
   };
   runInNewContext(script, {
@@ -175,4 +187,47 @@ test('browser prompt editor sends target revision and uses reset tombstone witho
   elements.get('seen-ids').value = 'https://evil.example/resume/resumeX';
   await handlers.get('seen-import')({ currentTarget: elements.get('seen-import') });
   assert.equal(calls.filter(call => call.path === '/api/hh/proactive/import-seen').length, 1);
+  elements.get('manual-candidate-input').value = 'https://hh.ru/resume/resumeC3?from=search';
+  await handlers.get('manual-candidate-add')({ currentTarget: elements.get('manual-candidate-add') });
+  const manualWrites = calls.filter(call => call.path === '/api/hh/proactive/add-manual');
+  assert.equal(manualWrites.length, 1);
+  assert.deepEqual(JSON.parse(manualWrites[0].options.body), { vacancy_id: vacancyId,
+    resume_url_or_id: 'resumeC3' });
+  assert.match(elements.get('manual-candidate-status').textContent, /Кандидат добавлен/);
+});
+
+test('browser commands obtain the Connected App CSRF token from the session endpoint', async () => {
+  const handlers = new Map();
+  const elements = new Map(['action-status', 'manual-status', 'schedule-status', 'vacancy-flags-status', 'interval-hours',
+    'schedule-enable', 'schedule-disable', 'manual-search', 'prompt-status', 'prompt-queries',
+    'prompt-save', 'prompt-reset', 'seen-status', 'seen-ids', 'seen-import',
+    'manual-candidate-input', 'manual-candidate-add', 'manual-candidate-status',
+    'vacancy-star', 'vacancy-unstar', 'vacancy-archive', 'vacancy-restore'].map(id => [id, { id,
+    value: id === 'interval-hours' ? '24' : '', textContent: '', disabled: false,
+    addEventListener: (_name, handler) => handlers.set(id, handler) }]));
+  const calls = [];
+  const csrfToken = 'c'.repeat(43);
+  const fetch = async (path, options = {}) => {
+    calls.push({ path, options });
+    const body = path === '/auth/connected/session' ? { csrfToken } :
+      path.includes('/schedule?') ? { schedules: [] } :
+      path.includes('/prompt?') ? { queries: [], query_revision: 'queries-' + 'a'.repeat(24), override_revision: 0 } : {};
+    return { ok: true, status: 200, json: async () => body };
+  };
+  runInNewContext(script, {
+    document: { querySelector: () => ({ dataset: { profileId: 'invented_profile', vacancyId } }),
+      getElementById: id => elements.get(id), querySelectorAll: () => [] },
+    location: { href: `https://recruiter-assistant.ru/hh/proactive?vacancy_id=${vacancyId}`, reload: () => {} },
+    history: { replaceState: () => {} }, crypto: { randomUUID: () => 'invented-key' },
+    sessionStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+    fetch, URL, setTimeout: callback => { callback(); return 1; }
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  await handlers.get('schedule-enable')({ currentTarget: elements.get('schedule-enable') });
+  const sessionCalls = calls.filter(call => call.path === '/auth/connected/session');
+  const writes = calls.filter(call => call.path === '/api/hh/proactive/vacancy-state');
+  assert.equal(sessionCalls.length, 1);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].options.headers['X-CSRF-Token'], csrfToken);
+  assert.ok(!('token' in JSON.parse(writes[0].options.body)));
 });

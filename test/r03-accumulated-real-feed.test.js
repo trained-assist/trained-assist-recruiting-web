@@ -63,6 +63,8 @@ test('feed accumulates accepted scheduled and manual candidates across two vacan
     loadAcceptedManualReceipts: f.loadAcceptedManualReceipts });
   const items = feed.read(context(profileA), vacancyA).items;
   assert.equal(items.length, 3);
+  assert.equal(feed.read(context(profileA), vacancyA).assessmentStatus, 'assessment_pending');
+  assert.equal(feed.read(context(profileA), vacancyA).assessmentPendingCount, 2);
   assert.equal(items[0].id, toScore.candidate.id, 'assessed candidates rank ahead of pending ATS evaluations');
   assert.equal(items.find(item => item.id === toScore.candidate.id).atsScore, 9);
   assert.equal(items.find(item => item.id === candidate(2, vacancyA).id).title, 'Вымышленный старший инженер');
@@ -116,4 +118,20 @@ test('committed manual snapshot stays hidden until a matching durable completion
   assert.equal(feed.read(context(profileA), vacancyA).total, 0);
   f.manualReceipts[0] = receipt(completed);
   assert.equal(feed.read(context(profileA), vacancyA).total, 1);
+});
+
+test('accepted search with zero matches is fresh and has no ATS backlog', t => {
+  const f = fixture(t);
+  const state = f.open();
+  const completed = state.recordCompletedSearch(search({ jobId: 'job_synthetic_empty', source: 'manual',
+    searchedAt: '2026-10-06T06:00:00.000Z', candidates: [] }));
+  f.manualReceipts.push(receipt(completed));
+  const feed = createR03AccumulatedRealFeed({ scheduleRepository: f.scheduleRepository, candidateState: state,
+    loadAcceptedManualReceipts: f.loadAcceptedManualReceipts });
+  const result = feed.read(context(profileA), vacancyA);
+  assert.equal(result.status, 'completed');
+  assert.equal(result.freshness, 'latest_completed');
+  assert.equal(result.total, 0);
+  assert.equal(result.assessmentStatus, 'not_applicable');
+  assert.equal(result.assessmentPendingCount, 0);
 });

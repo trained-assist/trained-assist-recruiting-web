@@ -85,7 +85,7 @@ export class R03LegacyScheduleImport {
           definition.action !== 'hh_proactive_search' || !allowed(definition.arguments, ['vacancy_id']) ||
           Object.keys(definition.arguments).length !== 1 || definition.arguments.vacancy_id !== definition.vacancyId ||
           definition.timezone !== COLD_SEARCH_TIMEZONE || definition.enabled !== false ||
-          !['success', 'failed', 'unknown'].includes(definition.lastStatus) || ids.has(definition.legacyJobId))
+          !['success', 'succeeded', 'failed', 'unknown'].includes(definition.lastStatus) || ids.has(definition.legacyJobId))
         throw new Error('invalid_legacy_schedule_definition');
       const profileId = this.bindProfile(definition.sourceProfileRef);
       if (!safeId(profileId) || !this.isVacancyOwned(profileId, definition.vacancyId))
