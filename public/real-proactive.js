@@ -1,5 +1,5 @@
-// Browser client for the private real-HH page. The signed legacy URL is only
-// used to establish the server-side profile session; requests carry no token.
+// Browser client for the private real-HH page. Authentication is a server-side
+// session; requests never carry an app token or legacy link secret in JSON.
 const root = document.querySelector('main[data-vacancy-id]');
 if (root) {
   const profileId = root.dataset.profileId;
@@ -18,8 +18,19 @@ if (root) {
     if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
     return body;
   };
-  const command = (path, body, headers = {}) => request(path, { method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
+  let commandCsrf;
+  const csrfHeader = async () => {
+    if (commandCsrf !== undefined) return commandCsrf ? { 'X-CSRF-Token': commandCsrf } : {};
+    const response = await fetch('/auth/connected/session', { credentials: 'same-origin', cache: 'no-store' });
+    if (response.status === 404) { commandCsrf = null; return {}; } // Legacy signed-link mode.
+    const session = await response.json().catch(() => ({}));
+    if (!response.ok || !/^[A-Za-z0-9_-]{43}$/.test(session.csrfToken ?? ''))
+      throw new Error(session.error || 'browser_session_unavailable');
+    commandCsrf = session.csrfToken;
+    return { 'X-CSRF-Token': commandCsrf };
+  };
+  const command = async (path, body, headers = {}) => request(path, { method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...await csrfHeader(), ...headers }, body: JSON.stringify(body) });
   const message = error => error instanceof Error ? error.message : 'action_unavailable';
   let manualBlocked = false;
   const run = async (button, action) => {
@@ -95,6 +106,17 @@ if (root) {
     const result = await command('/api/hh/proactive/import-seen', { vacancy_id: vacancyId, ids });
     seenStatus.textContent = `Добавлено ${result.imported}; всего просмотренных по вакансии ${result.total}.`;
     seenInput.value = '';
+  }));
+  const manualCandidateInput = document.getElementById('manual-candidate-input');
+  const manualCandidateStatus = document.getElementById('manual-candidate-status');
+  document.getElementById('manual-candidate-add')?.addEventListener('click', event => run(event.currentTarget, async () => {
+    const value = manualCandidateInput.value.trim();
+    const id = resumeId(value);
+    const result = await command('/api/hh/proactive/add-manual', { vacancy_id: vacancyId,
+      resume_url_or_id: id });
+    manualCandidateStatus.textContent = result.added ? 'Кандидат добавлен. Обновите страницу.' :
+      'Этот кандидат уже добавлен в вакансию.';
+    manualCandidateInput.value = '';
   }));
   document.getElementById('schedule-enable').addEventListener('click', event => run(event.currentTarget, async () => {
     const interval = Number(document.getElementById('interval-hours').value);
@@ -174,6 +196,12 @@ if (root) {
   for (const card of document.querySelectorAll('article[data-candidate-id]')) {
     const candidateId = card.dataset.candidateId;
     const expectedRevision = () => Number(card.dataset.reviewRevision);
+    const scoreButton = card.querySelector('.score-now');
+    if (scoreButton) scoreButton.addEventListener('click', event => run(event.currentTarget, async () => {
+      const result = await command('/api/hh/proactive/ai-score', { vacancy_id: vacancyId,
+        candidate_id: candidateId, expected_job_id: card.dataset.jobId });
+      card.querySelector('.score-result').textContent = ` ATS: ${result.atsScore} (${result.atsTag}).`;
+    }));
     card.querySelector('.save-status').addEventListener('click', event => run(event.currentTarget, async () => {
       await command('/api/hh/proactive/set-status', { vacancy_id: vacancyId, candidate_id: candidateId,
         expected_revision: expectedRevision(), status: card.querySelector('.candidate-status').value });

@@ -12,8 +12,13 @@ test('minute and score units load private credentials and require explicit live 
     assert.match(unit, /^UMask=0077$/m);
     assert.match(unit, /^ProtectSystem=strict$/m);
     assert.ok(unit.includes(`--mode ${mode} --config /etc/trained-assist/recruiting-web/config.json --secrets ${'${CREDENTIALS_DIRECTORY}'} --live-execution`));
-    for (const name of ['hh_encryption_key', 'hh_client_id', 'hh_client_secret', 'ladder_token'])
+    for (const name of mode === 'minute'
+      ? ['hh_encryption_key', 'hh_client_id', 'hh_client_secret', 'ladder_token'] : ['ladder_token'])
       assert.match(unit, new RegExp(`^LoadCredential=${name}:`, 'm'));
+    if (mode === 'score') {
+      assert.doesNotMatch(unit, /^LoadCredential=hh_/m);
+      assert.match(unit, /^TimeoutStartSec=5min$/m);
+    }
     assert.doesNotMatch(unit, /AGENT_SECRET|\[Install\]/);
   }
 });

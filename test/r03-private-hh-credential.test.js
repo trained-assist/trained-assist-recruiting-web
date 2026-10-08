@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createCipheriv } from 'node:crypto';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createPrivateHhCredentialBroker } from '../src/r03-private-hh-credential.js';
@@ -20,25 +20,40 @@ function fixture(t, token = { access_token: 'old_synthetic_access', refresh_toke
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const tokenDirectory = join(root, 'tokens');
   mkdirSync(tokenDirectory, { mode: 0o700 });
-  writeFileSync(join(tokenDirectory, 'hh'), JSON.stringify(token), { mode: 0o600 });
+  writeFileSync(join(tokenDirectory, 'hh'), encrypted(token), { mode: 0o600 });
   const resolveProfileBinding = async profile => profile === profileId
     ? { profileId, tokenDirectory } : null;
   return { root, tokenDirectory, resolveProfileBinding };
 }
 
-test('private broker reads legacy plaintext and v2 credential for one bound profile', async t => {
+test('private broker reads only encrypted v2 credentials for one bound profile', async t => {
   const f = fixture(t);
   const broker = createPrivateHhCredentialBroker({ resolveProfileBinding: f.resolveProfileBinding,
     encryptionKey: key, clientId: 'synthetic_client', clientSecret: 'synthetic_secret',
     fetchImpl: async () => { throw new Error('no network expected'); } });
+  const raw = readFileSync(join(f.tokenDirectory, 'hh'), 'utf8');
+  assert.equal(raw.includes('old_synthetic_access'), false, 'raw access token is not present on disk');
   assert.deepEqual(await broker.loadCredential(profileId), { profileId, accessToken: 'old_synthetic_access' });
+  writeFileSync(join(f.tokenDirectory, 'hh'), JSON.stringify({ access_token: 'legacy_plaintext_secret' }), { mode: 0o600 });
+  await assert.rejects(broker.loadCredential(profileId), /hh_credential_unencrypted/);
   writeFileSync(join(f.tokenDirectory, 'hh'), encrypted({ access_token: 'sealed_synthetic_access',
-    refresh_token: 'sealed_synthetic_refresh' }));
+    refresh_token: 'sealed_synthetic_refresh' }), { mode: 0o600 });
   assert.deepEqual(await broker.loadCredential(profileId), { profileId, accessToken: 'sealed_synthetic_access' });
   await assert.rejects(broker.loadCredential('profile_synthetic_002'), /hh_credential_scope_denied/);
   const wrong = createPrivateHhCredentialBroker({ resolveProfileBinding: f.resolveProfileBinding,
     encryptionKey: '5'.repeat(64), fetchImpl: async () => null });
   await assert.rejects(wrong.loadCredential(profileId), /hh_credential_decryption_failed/);
+  const missingKey = createPrivateHhCredentialBroker({ resolveProfileBinding: f.resolveProfileBinding,
+    fetchImpl: async () => null });
+  await assert.rejects(missingKey.loadCredential(profileId), /hh_credential_key_unavailable/);
+});
+
+test('credential file with group or world permissions is rejected', async t => {
+  const f = fixture(t);
+  chmodSync(join(f.tokenDirectory, 'hh'), 0o644);
+  const broker = createPrivateHhCredentialBroker({ resolveProfileBinding: f.resolveProfileBinding,
+    encryptionKey: key, fetchImpl: async () => null });
+  await assert.rejects(broker.loadCredential(profileId), /hh_credential_unavailable/);
 });
 
 test('401 refresh uses one OAuth request, rotates encrypted token and retries HH read once', async t => {

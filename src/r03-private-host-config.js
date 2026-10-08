@@ -75,6 +75,6 @@ export function loadPrivateHostConfig(filename) {
 export function loadPrivateHostSecret(directory, name) {
   if (!safeId(name)) fail();
   const value = privateFile(`${directory}/${name}`, 16_000).trim();
-  if (!value || /\s/.test(value)) fail();
+  if (!value || (name === 'hh_user_agent' ? /[\x00-\x1f\x7f]/.test(value) : /\s/.test(value))) fail();
   return value;
 }

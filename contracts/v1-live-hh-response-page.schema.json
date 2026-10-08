@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trained-assist.github.io/trained-assist-recruiting-web/contracts/v1-live-hh-response-page.schema.json",
+  "title": "Trusted-profile HH response page read",
+  "type": "object",
+  "required": ["domainApiVersion", "profileId", "vacancyId", "state", "page", "total", "pages", "items", "sourceRevision", "fetchedAt", "freshness", "paginationConsistency"],
+  "properties": {
+    "domainApiVersion": { "const": "v1" },
+    "profileId": { "type": "string", "minLength": 1 },
+    "vacancyId": { "type": "string", "minLength": 1 },
+    "state": { "const": "response" },
+    "page": { "type": "integer", "minimum": 0 },
+    "total": { "type": "integer", "minimum": 0 },
+    "pages": { "type": "integer", "minimum": 0 },
+    "items": {
+      "type": "array", "maxItems": 20,
+      "items": {
+        "type": "object",
+        "required": ["id", "resumeId", "state", "receivedAt", "updatedAt", "name", "title"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "resumeId": { "type": "string", "minLength": 1 },
+          "state": { "const": "response" },
+          "receivedAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" },
+          "name": { "type": "string", "maxLength": 300 },
+          "title": { "type": "string", "maxLength": 300 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "sourceRevision": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "fetchedAt": { "type": "string", "format": "date-time" },
+    "freshness": { "const": "live_at_request" },
+    "paginationConsistency": { "const": "best_effort" }
+  },
+  "additionalProperties": false
+}
