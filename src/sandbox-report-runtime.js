@@ -5,10 +5,19 @@ import { resolve } from 'node:path';
 import { createRecruitingConnectedAppBff } from './connected-app-bff.js';
 import { createRecruitingServer } from './server.js';
 import { SqliteAcceptedReportDraftStore } from './sqlite-accepted-report-draft-store.js';
+import { createHhResponseRead } from './r01-live-responses.js';
+import { createHhResponseDetailRead } from './r01-live-response-detail.js';
+import { createHhResponseConversationRead } from './r01-live-response-conversation.js';
+import { SqliteResponseConversationAudit } from './sqlite-response-conversation-audit.js';
 
 export const sandboxReportFixture = Object.freeze({
   candidateId: 'candidate_search_demo_001',
   vacancyId: 'vac_demo_001',
+});
+export const sandboxResponseFixture = Object.freeze({
+  negotiationId: 'negotiation_demo_001',
+  chatId: 'chat_demo_001',
+  resumeId: 'resume_demo_001',
 });
 
 const reportScopes = Object.freeze([
@@ -18,6 +27,12 @@ const reportScopes = Object.freeze([
 const candidateSearchScope = 'recruiting.candidateSearch';
 const demoProfileId = 'profile_demo_001';
 const demoVacancyId = 'vac_demo_001';
+const responseProfileId = 'profile_sandbox_responses_001';
+const responseVacancyId = 'vacancy_responses_demo_001';
+const responseReadScopes = Object.freeze(['recruiting.responses.read']);
+const responseConversationScopes = Object.freeze([
+  'recruiting.responses.read', 'recruiting.responses.conversation.open',
+]);
 const reportFields = Object.freeze({
   candidateName: 'Синтетический кандидат',
   position: 'Инженер Node.js',
@@ -69,13 +84,15 @@ function createSyntheticIdentity({ publicOrigin, store, issuedProfiles }) {
   const bff = createRecruitingConnectedAppBff({ issuer: publicOrigin,
     allowedIssuerOrigins: [publicOrigin], publicOrigin,
     redirectUri: `${publicOrigin}/auth/connected/callback`, store,
-    scopes: [...reportScopes, candidateSearchScope],
+    scopes: [...reportScopes, candidateSearchScope, ...responseReadScopes, ...responseConversationScopes],
     exchangeCode: async ({ code, state, verifier, redirectUri }) => {
       const issued = issuedProfiles.get(code);
       if (!issued || issued.state !== state || issued.used ||
           redirectUri !== `${publicOrigin}/auth/connected/callback` ||
           createHash('sha256').update(verifier).digest('base64url') !== issued.challenge) return null;
+      if (issued.profileId === responseProfileId && issued.exchanged) return null;
       issued.used = true;
+      if (issued.profileId === responseProfileId) issued.exchanged = true;
       issued.expiresAt = clockSeconds() + 300;
       return { token: code, expiresAt: issued.expiresAt };
     },
@@ -97,7 +114,8 @@ function createSyntheticIdentity({ publicOrigin, store, issuedProfiles }) {
     if ([...params.keys()].length !== 7 || params.get('response_type') !== 'code' ||
         params.get('client_id') !== 'recruiting-web' ||
         redirectUri !== `${publicOrigin}/auth/connected/callback` ||
-        ![reportScopes.join(' '), candidateSearchScope].includes(scope) ||
+        ![reportScopes.join(' '), candidateSearchScope, responseReadScopes.join(' '),
+          responseConversationScopes.join(' ')].includes(scope) ||
         params.get('code_challenge_method') !== 'S256' ||
         !/^[A-Za-z0-9_-]{32,128}$/.test(state ?? '') ||
         !/^[A-Za-z0-9_-]{43}$/.test(challenge ?? '')) {
@@ -112,9 +130,12 @@ function createSyntheticIdentity({ publicOrigin, store, issuedProfiles }) {
       return true;
     }
     const code = randomBytes(32).toString('hex');
-    const scopes = scope === candidateSearchScope ? [candidateSearchScope] : [...reportScopes];
+    const scopes = scope === candidateSearchScope ? [candidateSearchScope] :
+      scope === responseReadScopes.join(' ') ? [...responseReadScopes] :
+        scope === responseConversationScopes.join(' ') ? [...responseConversationScopes] : [...reportScopes];
     const profileId = scope === candidateSearchScope ? demoProfileId :
-      `profile_sandbox_report_${randomBytes(20).toString('hex')}`;
+      scope === responseReadScopes.join(' ') || scope === responseConversationScopes.join(' ') ? responseProfileId :
+        `profile_sandbox_report_${randomBytes(20).toString('hex')}`;
     issuedProfiles.set(code, { profileId, scopes, state, challenge, used: false, expiresAt: clockSeconds() + 300 });
     const callback = new URL('/auth/connected/callback', publicOrigin);
     callback.searchParams.set('code', code);
@@ -125,6 +146,54 @@ function createSyntheticIdentity({ publicOrigin, store, issuedProfiles }) {
     res.end();
     return true;
   } };
+}
+
+function createSyntheticHhTransport() {
+  const metrics = { listReads: 0, detailReads: 0, conversationHistoryReads: 0, foreignEgress: 0 };
+  const vacancyId = responseVacancyId;
+  const negotiationId = sandboxResponseFixture.negotiationId;
+  const chatId = sandboxResponseFixture.chatId;
+  const resumeId = sandboxResponseFixture.resumeId;
+  const createdAt = '2026-10-08T09:00:00.000Z';
+  const conversationText = 'Синтетическое сообщение для проверки Recruiting Web.';
+
+  return {
+    metrics,
+    async fetch(input, options = {}) {
+      const url = new URL(input);
+      if (url.origin !== 'https://api.hh.ru') {
+        metrics.foreignEgress++;
+        throw new Error('sandbox_hh_transport_rejected_foreign_egress');
+      }
+      if (options.method !== 'GET' || options.headers?.authorization !== 'Bearer synthetic-hh-response-token' ||
+          options.headers?.['HH-User-Agent'] !== 'Recruiting sandbox sandbox@example.invalid')
+        return Response.json({ error: 'synthetic_hh_auth_rejected' }, { status: 401 });
+
+      if (url.pathname === '/negotiations/response' && url.searchParams.get('vacancy_id') === vacancyId &&
+          url.searchParams.get('per_page') === '20' && url.searchParams.get('page') === '0') {
+        metrics.listReads++;
+        return Response.json({ found: 1, pages: 1, page: 0, items: [{
+          id: negotiationId, state: { id: 'response' }, vacancy: { id: vacancyId },
+          resume: { id: resumeId, first_name: 'Синтетический', last_name: 'Кандидат', title: 'Synthetic engineer' },
+          created_at: createdAt, updated_at: createdAt,
+        }] });
+      }
+      if (url.pathname === `/negotiations/${negotiationId}`) {
+        metrics.detailReads++;
+        return Response.json({ id: negotiationId, vacancy: { id: vacancyId }, chat_id: chatId,
+          resume: { id: resumeId }, state: { id: 'response' }, updated_at: createdAt });
+      }
+      if (url.pathname === `/common/chats/${chatId}/messages` && url.searchParams.get('order') === 'prev' &&
+          url.searchParams.get('limit') === '50') {
+        metrics.conversationHistoryReads++;
+        return Response.json({ id: chatId, vacancy_id: vacancyId, has_more: false, messages: [{
+          id: 'message_demo_001', creation_time: createdAt, type: 'SIMPLE', viewed_by_opponent: false,
+          payload: { text: conversationText },
+        }] });
+      }
+      return Response.json({ error: 'synthetic_hh_resource_not_found' }, { status: 404 });
+    },
+  };
 }
 
 export function createSandboxReportRuntime({ publicOrigin, reportDraftsDbPath, encryptionKey } = {}) {
@@ -152,8 +221,24 @@ export function createSandboxReportRuntime({ publicOrigin, reportDraftsDbPath, e
     } };
   };
   const issuedProfiles = new Map();
+  const hhTransport = createSyntheticHhTransport();
   const identity = createSyntheticIdentity({ publicOrigin, store: createBoundedSandboxBffStore(), issuedProfiles });
+  const conversationAudit = new SqliteResponseConversationAudit({ filename: reportDraftsDbPath });
+  const responseCredential = async profileId => profileId === responseProfileId
+    ? { profileId, accessToken: 'synthetic-hh-response-token' } : null;
+  const responseOwnership = (profileId, vacancyId) => profileId === responseProfileId && vacancyId === responseVacancyId;
+  const liveResponseRead = createHhResponseRead({ loadCredential: responseCredential,
+    refreshCredential: responseCredential, fetchImpl: hhTransport.fetch,
+    isVacancyOwned: responseOwnership, userAgent: 'Recruiting sandbox sandbox@example.invalid' });
+  const liveResponseDetailRead = createHhResponseDetailRead({ loadCredential: responseCredential,
+    refreshCredential: responseCredential, fetchImpl: hhTransport.fetch,
+    isVacancyOwned: responseOwnership, userAgent: 'Recruiting sandbox sandbox@example.invalid' });
+  const liveResponseConversationRead = createHhResponseConversationRead({ loadCredential: responseCredential,
+    refreshCredential: responseCredential, fetchImpl: hhTransport.fetch,
+    isVacancyOwned: responseOwnership, userAgent: 'Recruiting sandbox sandbox@example.invalid',
+    conversationAudit });
   const app = createRecruitingServer({ connectedAppBff: identity.bff,
+    liveResponseRead, liveResponseDetailRead, liveResponseConversationRead,
     acceptedReportSourceRead: sourceRead, acceptedReportDraftStore: draftStore,
     sandboxSyntheticReportLink: true,
     resolveCurrentSearchCriteriaRevision: (_context, vacancyId) =>
@@ -215,7 +300,8 @@ export function createSandboxReportRuntime({ publicOrigin, reportDraftsDbPath, e
       res.end();
     });
   });
-  server.on('close', () => { draftStore.close(); issuedProfiles.clear(); });
+  server.sandboxResponseMetrics = () => structuredClone(hhTransport.metrics);
+  server.on('close', () => { draftStore.close(); conversationAudit.close(); issuedProfiles.clear(); });
   return server;
 }
 
