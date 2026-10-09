@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ensureSandboxReportState, createSandboxReportRuntime, sandboxReportFixture } from '../src/sandbox-report-runtime.js';
+import { ensureSandboxReportState, createSandboxReportRuntime, sandboxReportFixture, sandboxResponseFixture } from '../src/sandbox-report-runtime.js';
 
 const publicOrigin = 'https://trained-assist-recruiting-web-sandbox-bridge.skillset-apply.workers.dev';
 
@@ -15,6 +15,8 @@ function cookie(response, name) {
 async function connect(base, from = 'report', source = sandboxReportFixture) {
   const startPath = from === 'report'
     ? `/auth/connected/start?from=report&vacancy_id=${source.vacancyId}&candidate_id=${source.candidateId}`
+    : from === 'responses' ? '/auth/connected/start?from=responses&vacancy_id=vacancy_responses_demo_001'
+      : from === 'conversation' ? `/auth/connected/start?from=conversation&vacancy_id=vacancy_responses_demo_001&negotiation_id=${sandboxResponseFixture.negotiationId}`
     : '/auth/connected/start?from=proactive&vacancy_id=vac_demo_001';
   const start = await fetch(`${base}${startPath}`, { redirect: 'manual' });
   assert.equal(start.status, 303);
@@ -84,6 +86,49 @@ test('opt-in sandbox runs accepted report HTTP/BFF/SQLite flow with isolated syn
   assert.equal(candidates.status, 200);
   assert.ok((await candidates.json()).candidates.some(candidate => candidate.candidateRef === sandboxReportFixture.candidateId),
     'the morning feed includes the same synthetic candidate as the report source');
+
+  const responseVacancy = 'vacancy_responses_demo_001';
+  const responseEntry = await fetch(`${base}/hh/responses?vacancy_id=${responseVacancy}`, { redirect: 'manual' });
+  assert.equal(responseEntry.status, 303);
+  assert.match(responseEntry.headers.get('location'), /from=responses/);
+  const responseOwner = await connect(base, 'responses');
+  const responseList = await fetch(`${base}/hh/responses?vacancy_id=${responseVacancy}`, {
+    headers: { cookie: responseOwner.cookie },
+  });
+  assert.equal(responseList.status, 200);
+  assert.match(await responseList.text(), /Кандидат Синтетический/);
+  assert.deepEqual(server.sandboxResponseMetrics(), { listReads: 1, detailReads: 0,
+    conversationHistoryReads: 0, foreignEgress: 0 }, 'listing responses never reads conversation history');
+
+  const negotiationId = sandboxResponseFixture.negotiationId;
+  const confirmPath = `/hh/response-conversation?vacancy_id=${responseVacancy}&negotiation_id=${negotiationId}`;
+  const confirmation = await fetch(`${base}${confirmPath}`, { headers: { cookie: responseOwner.cookie } });
+  assert.equal(confirmation.status, 200);
+  assert.match(await confirmation.text(), /История ещё не загружена/);
+  assert.equal(server.sandboxResponseMetrics().conversationHistoryReads, 0,
+    'GET confirmation cannot open HH chat');
+  const readOnlyPost = await fetch(`${base}${confirmPath}`, { method: 'POST',
+    headers: { cookie: responseOwner.cookie, origin: publicOrigin, 'x-csrf-token': responseOwner.csrfToken } });
+  assert.equal(readOnlyPost.status, 403, 'responses.read alone cannot open chat history');
+  assert.equal(server.sandboxResponseMetrics().conversationHistoryReads, 0);
+
+  const conversationOwner = await connect(base, 'conversation');
+  const conversation = await fetch(`${base}${confirmPath}`, { method: 'POST',
+    headers: { cookie: conversationOwner.cookie, origin: publicOrigin,
+      'x-csrf-token': conversationOwner.csrfToken } });
+  assert.equal(conversation.status, 200, await conversation.clone().text());
+  const conversationBody = await conversation.json();
+  assert.equal(conversationBody.messages[0].text, 'Синтетическое сообщение для проверки Recruiting Web.');
+  assert.equal(server.sandboxResponseMetrics().conversationHistoryReads, 1);
+  assert.equal(server.sandboxResponseMetrics().foreignEgress, 0);
+  assert.equal(JSON.stringify(conversationBody).includes('synthetic-hh-response-token'), false);
+
+  const foreignConversation = await fetch(`${base}/hh/response-conversation?vacancy_id=vacancy_other_demo_001&negotiation_id=${negotiationId}`, {
+    method: 'POST', headers: { cookie: conversationOwner.cookie, origin: publicOrigin,
+      'x-csrf-token': conversationOwner.csrfToken },
+  });
+  assert.equal(foreignConversation.status, 404, 'the synthetic response profile cannot read a foreign vacancy');
+  assert.equal(server.sandboxResponseMetrics().conversationHistoryReads, 1);
 
   const entry = await fetch(`${base}/hh/candidate-report?vacancy_id=${sandboxReportFixture.vacancyId}&candidate_id=${sandboxReportFixture.candidateId}`, { redirect: 'manual' });
   assert.equal(entry.status, 303);

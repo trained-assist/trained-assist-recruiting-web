@@ -11,7 +11,8 @@
     "test:sandbox-agent-cold-search": "node scripts/sandbox-agent-cold-search-probe.mjs",
     "test:sandbox:agent-mcp": "node scripts/sandbox-agent-mcp-probe.mjs",
     "sandbox:reports": "node src/sandbox-report-runtime.js",
-    "test:sandbox:reports": "node scripts/sandbox-accepted-report-probe.mjs"
+    "test:sandbox:reports": "node scripts/sandbox-accepted-report-probe.mjs",
+    "test:sandbox:responses": "node scripts/sandbox-response-probe.mjs"
   },
   "engines": {
     "node": ">=20"
