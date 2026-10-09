@@ -6,7 +6,17 @@ const candidatesNode = document.querySelector('#candidates');
 const api = '/api/hh/proactive';
 
 async function request(path, options = {}) {
-  const response = await fetch(`${api}/${path}`, { credentials: 'same-origin', ...options });
+  const headers = { ...(options.headers ?? {}) };
+  if (options.method && !['GET', 'HEAD', 'OPTIONS'].includes(options.method.toUpperCase())) {
+    try {
+      const sessionResponse = await fetch('/auth/connected/session', { credentials: 'same-origin', cache: 'no-store' });
+      if (sessionResponse.ok) {
+        const session = await sessionResponse.json();
+        if (/^[A-Za-z0-9_-]{43}$/.test(session.csrfToken ?? '')) headers['x-csrf-token'] = session.csrfToken;
+      }
+    } catch { /* Local fixture mode does not have a Connected App session. */ }
+  }
+  const response = await fetch(`${api}/${path}`, { credentials: 'same-origin', ...options, headers });
   const body = await response.json();
   if (!response.ok) throw new Error(body.error ?? `Request failed: ${response.status}`);
   return body;

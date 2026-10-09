@@ -20,7 +20,8 @@ export async function proxySandboxRequest(request, upstreamOrigin, fetchImpl = f
   catch { return new Response("sandbox upstream unavailable", { status: 502, headers: { "cache-control": "no-store", "x-robots-tag": "noindex" } }); }
 
   const responseHeaders = new Headers(result.headers);
-  responseHeaders.set("cache-control", "no-store");
+  const upstreamCacheControl = responseHeaders.get("cache-control") ?? "";
+  responseHeaders.set("cache-control", /\bprivate\b/i.test(upstreamCacheControl) ? "private, no-store" : "no-store");
   responseHeaders.set("x-robots-tag", "noindex, nofollow");
   const location = responseHeaders.get("location");
   if (location) {

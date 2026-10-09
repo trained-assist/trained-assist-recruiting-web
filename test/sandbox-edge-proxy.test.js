@@ -26,3 +26,13 @@ test("sandbox edge proxy refuses arbitrary upstreams and unsupported methods", a
   const method = await proxySandboxRequest({ method: "TRACE" }, "https://local-tunnel.trycloudflare.com");
   assert.equal(method.status, 405);
 });
+
+test("sandbox edge proxy preserves private no-store on approved report downloads", async () => {
+  const response = await proxySandboxRequest(new Request("https://recruiting-sandbox.example.test/api/report/export", {
+    method: "POST"
+  }), "https://local-tunnel.trycloudflare.com", async () => new Response("synthetic report", {
+    status: 200, headers: { "cache-control": "private, no-store", "content-disposition": 'attachment; filename="candidate-report-report_0123456789abcdef0123456789abcdef.html"' }
+  }));
+  assert.equal(response.headers.get("cache-control"), "private, no-store");
+  assert.equal(response.headers.get("content-disposition"), 'attachment; filename="candidate-report-report_0123456789abcdef0123456789abcdef.html"');
+});

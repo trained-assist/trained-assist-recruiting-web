@@ -247,7 +247,7 @@ function validReportAction(value) {
   return isPlainObject(value) && Object.keys(value).sort().join(',') === 'expectedReportRevision' && isReportRevision(value.expectedReportRevision);
 }
 
-export function createRecruitingServer({ resolveTrustedProfileContext = () => null, connectedAppBff = null, resolveLegacyOpenTab = null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, candidateSearchJobStore = null, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), scheduleLeaseMs = 5 * 60_000, maxCandidateSearchJobs = 100, publicationAdapter, realProactiveFeed = null, realProactiveHistoricalRead = null, realProactiveActions = null, realProactivePrompt = null, realProactiveSeenImport = null, realProactiveAiScore = null, realProactiveManualCandidate = null, liveResponseRead = null, liveResponseDetailRead = null, liveResponseConversationRead = null, liveAssignmentRead = null, liveAssignmentSave = null, acceptedReportSourceRead = null, acceptedHhResponseReportSourceRead = null, acceptedReportDraftStore = null, acceptedReportFieldGenerator = null, acceptedReportFieldGeneratorTimeoutMs = 30_000, resolveRealVacancyOwnership = null, resolveRealDefaultVacancy = () => null, listRealVacancies = () => [], privateProactiveOnly = false, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
+export function createRecruitingServer({ resolveTrustedProfileContext = () => null, connectedAppBff = null, resolveLegacyOpenTab = null, evaluator = evaluateSyntheticResponse, candidateSearchProvider, candidateSearchJobStore = null, resolveCurrentSearchCriteriaRevision = () => null, resolveScheduledSearchRequest = async () => null, candidateSearchScheduleRepository = new InMemoryColdSearchScheduleRepository(), candidateStateStore = createMemoryCandidateStateStore(), scheduleClock = () => new Date(), scheduleLeaseMs = 5 * 60_000, maxCandidateSearchJobs = 100, publicationAdapter, realProactiveFeed = null, realProactiveHistoricalRead = null, realProactiveActions = null, realProactivePrompt = null, realProactiveSeenImport = null, realProactiveAiScore = null, realProactiveManualCandidate = null, liveResponseRead = null, liveResponseDetailRead = null, liveResponseConversationRead = null, liveAssignmentRead = null, liveAssignmentSave = null, acceptedReportSourceRead = null, acceptedHhResponseReportSourceRead = null, acceptedReportDraftStore = null, acceptedReportFieldGenerator = null, acceptedReportFieldGeneratorTimeoutMs = 30_000, sandboxSyntheticReportLink = false, resolveRealVacancyOwnership = null, resolveRealDefaultVacancy = () => null, listRealVacancies = () => [], privateProactiveOnly = false, resolveCurrentReportSourceRevision = (_context, candidateId, vacancyId) => { const source = findReportSource(candidateId); return source?.vacancyId === vacancyId ? source.sourceRevision : null; } } = {}) {
   if (realProactiveFeed !== null && (typeof realProactiveFeed.read !== 'function' || typeof resolveRealVacancyOwnership !== 'function'))
     throw new TypeError('real proactive feed and trusted vacancy ownership ports required');
   if (realProactiveActions !== null && realProactiveFeed === null) throw new TypeError('real actions require real feed mode');
@@ -268,6 +268,9 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
   if (acceptedReportDraftStore !== null &&
       (acceptedReportSourceRead === null && acceptedHhResponseReportSourceRead === null || connectedAppBff === null))
     throw new TypeError('accepted report drafts require source read and Connected App BFF');
+  if (typeof sandboxSyntheticReportLink !== 'boolean' ||
+      sandboxSyntheticReportLink && (acceptedReportDraftStore === null || connectedAppBff === null))
+    throw new TypeError('sandbox synthetic report link requires the opt-in report runtime');
   if (resolveLegacyOpenTab !== null && (!privateProactiveOnly || typeof resolveLegacyOpenTab !== 'function'))
     throw new TypeError('legacy open-tab resolver requires private proactive mode');
   if (connectedAppBff !== null && (privateProactiveOnly && resolveLegacyOpenTab !== null ||
@@ -933,6 +936,8 @@ export function createRecruitingServer({ resolveTrustedProfileContext = () => nu
         } else {
           type = mime.html;
           body = proactivePage;
+          if (sandboxSyntheticReportLink && url.searchParams.get('vacancy_id') === 'vac_demo_001')
+            body = proactivePage.replace('</main>', '<p><a href="/hh/candidate-report?vacancy_id=vac_demo_001&amp;candidate_id=candidate_search_demo_001">Prepare synthetic candidate report</a></p></main>');
           res.setHeader('Cache-Control', 'no-store');
           res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'");
         }
